@@ -402,6 +402,191 @@
   ::-webkit-scrollbar-track { background: var(--surface); }
   ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 
+  /* ── TEAM SELECT OVERLAY ── */
+  #team-select-overlay {
+    display: none; position: fixed; inset: 0;
+    background: var(--bg); z-index: 600;
+    overflow-y: auto;
+  }
+  #team-select-overlay.open { display: block; }
+  .team-select-inner {
+    max-width: 700px; margin: 0 auto; padding: 3rem 1.5rem;
+  }
+  .team-select-title {
+    font-family: var(--display); font-size: 3rem; letter-spacing: 3px;
+    color: var(--accent); margin-bottom: .4rem;
+  }
+  .team-select-sub {
+    font-family: var(--mono); font-size: .8rem; color: var(--muted);
+    margin-bottom: 2rem; letter-spacing: 1px;
+  }
+  .team-select-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(280px,1fr));
+    gap: 1rem;
+  }
+  .team-select-card {
+    background: var(--card); border: 2px solid var(--border);
+    border-radius: 10px; padding: 1.25rem; cursor: pointer;
+    transition: border-color .2s, transform .15s, background .2s;
+  }
+  .team-select-card:hover {
+    border-color: var(--accent); background: rgba(240,165,0,.06);
+    transform: translateY(-2px);
+  }
+  .team-select-card .ts-abbrev {
+    font-family: var(--display); font-size: 2rem; letter-spacing: 2px;
+    color: var(--accent); line-height: 1; margin-bottom: .3rem;
+  }
+  .team-select-card .ts-name { font-weight: 600; font-size: 1rem; margin-bottom: .2rem; }
+  .team-select-card .ts-owner { font-size: .78rem; color: var(--muted); }
+
+  /* ── MY TEAM NAV INDICATOR ── */
+  .nav-my-team-badge {
+    background: rgba(240,165,0,.15); border: 1px solid rgba(240,165,0,.4);
+    border-radius: 4px; padding: .2rem .6rem;
+    font-family: var(--mono); font-size: .68rem; color: var(--accent);
+    letter-spacing: .5px; white-space: nowrap;
+  }
+
+  /* ── LINEUP EDITOR ── */
+  .lineup-editor {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem;
+  }
+  @media (max-width: 700px) { .lineup-editor { grid-template-columns: 1fr; } }
+
+  .lineup-zone {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 8px; overflow: hidden;
+  }
+  .lineup-zone-header {
+    background: var(--surface); border-bottom: 1px solid var(--border);
+    padding: .6rem 1rem; display: flex; align-items: center;
+    justify-content: space-between;
+  }
+  .lineup-zone-title {
+    font-family: var(--mono); font-size: .72rem; text-transform: uppercase;
+    letter-spacing: 1px; color: var(--muted);
+  }
+  .lineup-zone-score {
+    font-family: var(--display); font-size: 1.4rem; color: var(--accent); letter-spacing: 1px;
+  }
+
+  .lineup-slot {
+    display: flex; align-items: center; gap: .75rem;
+    padding: .7rem 1rem; border-bottom: 1px solid var(--border);
+    transition: background .15s;
+    cursor: default;
+  }
+  .lineup-slot:last-child { border-bottom: none; }
+  .lineup-slot.droppable-over { background: rgba(240,165,0,.08); }
+  .lineup-slot.selected { background: rgba(240,165,0,.12); outline: 1px solid var(--accent); }
+
+  .slot-pos-badge {
+    font-family: var(--mono); font-size: .65rem; font-weight: 600;
+    text-transform: uppercase; letter-spacing: .5px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 3px; padding: .2rem .45rem;
+    min-width: 38px; text-align: center; color: var(--muted);
+    flex-shrink: 0;
+  }
+  .slot-pos-badge.eligible { border-color: var(--accent); color: var(--accent); }
+
+  .slot-player {
+    flex: 1; min-width: 0;
+  }
+  .slot-player-name {
+    font-size: .88rem; font-weight: 500;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .slot-player-positions {
+    font-size: .68rem; color: var(--muted); font-family: var(--mono);
+    margin-top: .1rem;
+  }
+  .slot-player-best {
+    font-family: var(--display); font-size: 1.3rem; color: var(--accent);
+    letter-spacing: 1px; min-width: 44px; text-align: right; flex-shrink: 0;
+  }
+  .slot-player-best.no-score { color: var(--border); }
+  .slot-empty {
+    flex: 1; color: var(--border); font-size: .8rem; font-family: var(--mono);
+    font-style: italic;
+  }
+
+  .lineup-slot.editable { cursor: pointer; }
+  .lineup-slot.editable:hover { background: rgba(255,255,255,.03); }
+
+  .swap-hint {
+    background: rgba(240,165,0,.08); border: 1px solid rgba(240,165,0,.2);
+    border-radius: 6px; padding: .6rem 1rem; margin-bottom: 1rem;
+    font-family: var(--mono); font-size: .75rem; color: var(--accent);
+    display: flex; align-items: center; gap: .5rem;
+  }
+
+  .locked-banner {
+    background: rgba(239,68,68,.08); border: 1px solid rgba(239,68,68,.25);
+    border-radius: 6px; padding: .75rem 1rem; margin-bottom: 1rem;
+    font-family: var(--mono); font-size: .78rem; color: var(--bad);
+    display: flex; align-items: center; gap: .5rem;
+  }
+
+  /* ── DAILY SCORE TABLE ── */
+  .daily-score-table { width: 100%; border-collapse: collapse; font-size: .78rem; }
+  .daily-score-table th {
+    font-size: .62rem; padding: .3rem .5rem; color: var(--muted);
+    border-bottom: 1px solid var(--border); white-space: nowrap;
+  }
+  .daily-score-table td { padding: .35rem .5rem; border-bottom: 1px solid var(--border); }
+  .daily-score-table tr:last-child td { border-bottom: none; }
+  .daily-score-table .best-cell {
+    background: rgba(240,165,0,.12); color: var(--accent);
+    font-weight: 600; font-family: var(--mono);
+  }
+  .daily-score-table .score-cell { font-family: var(--mono); text-align: right; }
+  .daily-score-table .zero-cell { color: var(--border); font-family: var(--mono); text-align: right; }
+  .daily-score-table .name-cell { font-weight: 500; max-width: 130px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .daily-score-table .pos-cell { font-family: var(--mono); font-size: .62rem; color: var(--muted); }
+
+  .day-headers { display: flex; gap: 0; margin-bottom: .5rem; }
+
+  /* ── PLAYER GAME LOG EXPAND ── */
+  .game-log-row {
+    background: var(--surface); padding: .4rem .75rem .4rem 3.5rem;
+    border-bottom: 1px solid var(--border); font-size: .72rem;
+    font-family: var(--mono); color: var(--muted);
+    display: flex; gap: .5rem; flex-wrap: wrap; align-items: center;
+  }
+  .game-log-entry {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 3px; padding: .15rem .45rem; white-space: nowrap;
+  }
+  .game-log-entry.best-game {
+    border-color: var(--accent); color: var(--accent);
+    background: rgba(240,165,0,.1);
+  }
+
+  /* ── MY TEAM PAGE ── */
+  .my-team-header {
+    display: flex; align-items: flex-start; justify-content: space-between;
+    gap: 1rem; flex-wrap: wrap; margin-bottom: 1.5rem;
+  }
+  .my-team-score-band {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 8px; padding: 1rem 1.25rem; margin-bottom: 1.25rem;
+    display: flex; align-items: center; gap: 2rem; flex-wrap: wrap;
+  }
+  .week-score-big {
+    font-family: var(--display); font-size: 3.5rem;
+    color: var(--accent); letter-spacing: 2px; line-height: 1;
+  }
+  .week-score-label {
+    font-family: var(--mono); font-size: .7rem; text-transform: uppercase;
+    letter-spacing: 1px; color: var(--muted);
+  }
+
+  /* ── POSITION COMPAT COLORS ── */
+  .pos-ok { color: var(--good); }
+  .pos-warn { color: var(--bad); }
+
   /* ── RESPONSIVE ── */
   @media (max-width: 700px) {
     .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
@@ -410,8 +595,6 @@
     .matchup-score { font-size: 2rem; }
     .section-title { font-size: 1.8rem; }
   }
-
-  /* ── TRADE BUILDER ── */
   .trade-team-panel {
     background: var(--surface); border: 1px solid var(--border);
     border-radius: 6px; padding: 1rem;
@@ -476,18 +659,36 @@
     <button onclick="goto('home')" id="nav-home" class="active">Home</button>
     <button onclick="goto('standings')" id="nav-standings">Standings</button>
     <button onclick="goto('matchups')" id="nav-matchups">Matchups</button>
+    <button onclick="goto('myteam')" id="nav-myteam">My Team</button>
     <button onclick="goto('teams')" id="nav-teams">Teams</button>
     <button onclick="goto('playoffs')" id="nav-playoffs">Playoffs</button>
     <button onclick="goto('draft')" id="nav-draft">Draft Picks</button>
   </div>
   <div class="nav-right">
     <div class="nav-week-badge">Week <strong id="nav-week">—</strong></div>
+    <span class="nav-my-team-badge" id="nav-my-team-name" style="display:none"></span>
     <button class="btn btn-ghost btn-sm" onclick="openAdmin()">⚙</button>
   </div>
 </nav>
 
 <!-- TOAST -->
 <div id="toast"></div>
+
+<!-- TEAM SELECT OVERLAY (shown at first launch) -->
+<div id="team-select-overlay">
+  <div class="team-select-inner">
+    <div class="team-select-title">WELCOME</div>
+    <div class="team-select-sub">SELECT YOUR TEAM TO GET STARTED</div>
+    <div id="team-select-loading" style="color:var(--muted);font-family:var(--mono);font-size:.82rem">
+      <div class="loading-bar"><div class="loading-bar-fill"></div></div>
+      Loading teams from ESPN…
+    </div>
+    <div class="team-select-grid" id="team-select-grid"></div>
+    <div style="margin-top:1.5rem;font-size:.75rem;color:var(--muted);font-family:var(--mono)">
+      You can only edit your own team's lineup. You can switch teams later from your team page.
+    </div>
+  </div>
+</div>
 
 <!-- PIN OVERLAY -->
 <div id="pin-overlay">
@@ -648,6 +849,82 @@
   </div>
   <div class="grid-2" id="teams-grid">
     <div class="empty-state"><div class="empty-icon">👥</div>No teams loaded.</div>
+  </div>
+</div>
+
+<!-- MY TEAM -->
+<div id="page-myteam" class="page">
+  <div class="my-team-header">
+    <div>
+      <div class="section-title" id="myteam-name">My Team</div>
+      <div style="color:var(--muted);font-size:.82rem;margin-top:.2rem" id="myteam-owner"></div>
+    </div>
+    <div style="display:flex;gap:.75rem;align-items:center;flex-wrap:wrap">
+      <div class="tab-bar" style="margin-bottom:0;border:none;gap:.5rem">
+        <button class="tab active" id="myteam-tab-lineup" onclick="showMyTeamTab('lineup')">Lineup</button>
+        <button class="tab" id="myteam-tab-scores" onclick="showMyTeamTab('scores')">Week Scores</button>
+        <button class="tab" id="myteam-tab-history" onclick="showMyTeamTab('history')">History</button>
+      </div>
+      <button class="btn btn-ghost btn-sm" onclick="openTeamSelectOverlay(true)">Switch Team</button>
+    </div>
+  </div>
+
+  <!-- Week score band -->
+  <div class="my-team-score-band">
+    <div>
+      <div class="week-score-label">Week <span id="myteam-week-num">—</span> Score</div>
+      <div class="week-score-big" id="myteam-week-score">0.0</div>
+    </div>
+    <div style="flex:1">
+      <div style="font-family:var(--mono);font-size:.7rem;color:var(--muted);margin-bottom:.3rem">VS THIS WEEK</div>
+      <div id="myteam-opponent" style="font-size:.9rem;font-weight:600">—</div>
+      <div id="myteam-opponent-score" style="font-family:var(--mono);font-size:.82rem;color:var(--muted)"></div>
+    </div>
+    <div>
+      <div style="font-family:var(--mono);font-size:.7rem;color:var(--muted);margin-bottom:.3rem">RECORD</div>
+      <div id="myteam-record" style="font-family:var(--display);font-size:1.6rem;letter-spacing:1px">—</div>
+    </div>
+  </div>
+
+  <!-- Lineup editor tab -->
+  <div id="myteam-tab-content-lineup">
+    <div id="lineup-locked-banner" class="locked-banner" style="display:none">
+      🔒 Lineup is locked for this week. Changes cannot be made after Sunday 10 AM.
+    </div>
+    <div id="lineup-swap-hint" class="swap-hint" style="display:none">
+      Tap a player to select, then tap an eligible slot to swap. Position must be compatible.
+    </div>
+    <div class="lineup-editor">
+      <div class="lineup-zone">
+        <div class="lineup-zone-header">
+          <div class="lineup-zone-title">Starters</div>
+          <div class="lineup-zone-score" id="lineup-starter-score">0.0</div>
+        </div>
+        <div id="lineup-starters"></div>
+      </div>
+      <div class="lineup-zone">
+        <div class="lineup-zone-header">
+          <div class="lineup-zone-title">Bench</div>
+          <div class="lineup-zone-score" style="color:var(--border)">—</div>
+        </div>
+        <div id="lineup-bench"></div>
+      </div>
+    </div>
+    <div style="margin-top:1rem;display:flex;gap:.75rem;flex-wrap:wrap" id="lineup-actions">
+      <button class="btn" id="lineup-save-btn" onclick="saveLineup()">Save Lineup</button>
+      <button class="btn btn-ghost" onclick="cancelLineupEdit()">Reset</button>
+    </div>
+    <div id="lineup-save-msg" style="font-family:var(--mono);font-size:.75rem;color:var(--muted);margin-top:.5rem"></div>
+  </div>
+
+  <!-- Week scores tab -->
+  <div id="myteam-tab-content-scores" style="display:none">
+    <div id="myteam-scores-content"></div>
+  </div>
+
+  <!-- History tab -->
+  <div id="myteam-tab-content-history" style="display:none">
+    <div id="myteam-history-content"></div>
   </div>
 </div>
 
@@ -891,19 +1168,65 @@ let STATE = {
   playoffStartWeek: 20,
   currentWeek: 1,
   sport: null,           // detected: 'fba' | 'flb' | 'ffl'
-  teams: [],             // [{id, name, abbrev, owner, wins, losses, pf, pa, streak, roster:[]}]
-  weeklyScores: {},      // { weekN: { teamId: { score, breakdown:[{playerId,name,pos,games:[],best}] } } }
-  lineupSnapshots: {},   // { weekN: { teamId: [starterPlayerIds at lock time] } }
-  matchups: {},          // { weekN: [{home:{teamId,score}, away:{teamId,score}, winner}] }
+  teams: [],
+  weeklyScores: {},
+  lineupSnapshots: {},   // { weekN: { teamId: { starters:[{id,name,pos}], bench:[...], lockedAt } } }
+  lineupEdits: {},       // { teamId: { weekN: { starters:[playerIds], bench:[playerIds] } } } — saved user edits
+  matchups: {},
   playoffMatchups: [],
-  draftPicks: [],        // [{id, season, round, pick, originalOwner, currentOwner, traded}]
-  trades: [],            // [{date, fromTeam, toTeam, picks:[], note}]
+  draftPicks: [],
+  trades: [],
+  myTeamId: null,        // chosen at launch, stored in localStorage
   selectedWeek: 1,
   selectedTeamId: null,
   draftTab: 'picks',
   tradeFromSelected: [],
   tradeToSelected: [],
 };
+
+// ── POSITION COMPATIBILITY ──
+// Maps a slot name → which player eligibility strings are allowed in that slot
+const POS_COMPAT = {
+  // Basketball slots
+  'PG':   ['PG'],
+  'SG':   ['SG'],
+  'SF':   ['SF'],
+  'PF':   ['PF'],
+  'C':    ['C'],
+  'G':    ['PG','SG','PG/SG','G'],
+  'F':    ['SF','PF','SF/PF','F'],
+  'G/F':  ['PG','SG','SF','PF','G','F','PG/SG','SF/PF'],
+  'F/C':  ['SF','PF','C','F','PF/C'],
+  'UTIL': ['PG','SG','SF','PF','C','G','F'],
+  'BE':   null, // bench accepts all
+  'IL':   null,
+  // Baseball slots
+  'C':    ['C'],
+  '1B':   ['1B'],
+  '2B':   ['2B'],
+  '3B':   ['3B'],
+  'SS':   ['SS'],
+  'MI':   ['2B','SS','2B/SS'],
+  'CI':   ['1B','3B'],
+  'OF':   ['OF','LF','CF','RF'],
+  'UTIL': ['C','1B','2B','3B','SS','OF'],
+  'SP':   ['SP','P'],
+  'RP':   ['RP','P'],
+  'P':    ['SP','RP','P'],
+  'BE':   null,
+  'DL':   null,
+};
+
+function positionCompatible(slotPos, playerEligibility) {
+  // playerEligibility: comma-separated string like "PG, SG" or array
+  if (!slotPos || slotPos === 'BE' || slotPos === 'IL' || slotPos === 'DL') return true;
+  const allowed = POS_COMPAT[slotPos];
+  if (!allowed) return true;
+  const playerPositions = Array.isArray(playerEligibility)
+    ? playerEligibility
+    : String(playerEligibility || '').split(',').map(s => s.trim());
+  return playerPositions.some(p => allowed.includes(p));
+}
 
 /* ══════════════════════════════════════
    FIREBASE HELPERS
@@ -942,12 +1265,18 @@ async function fbAdd(colPath, data) {
    LOCAL STORAGE FALLBACK
 ══════════════════════════════════════ */
 function saveLocal() {
-  try { localStorage.setItem('bgl_state', JSON.stringify(STATE)); } catch(e){}
+  try {
+    localStorage.setItem('bgl_state', JSON.stringify(STATE));
+    // myTeamId stored separately so it persists independently
+    if (STATE.myTeamId !== null) localStorage.setItem('bgl_myteam', String(STATE.myTeamId));
+  } catch(e){}
 }
 function loadLocal() {
   try {
     const s = localStorage.getItem('bgl_state');
     if (s) Object.assign(STATE, JSON.parse(s));
+    const mt = localStorage.getItem('bgl_myteam');
+    if (mt) STATE.myTeamId = Number(mt);
   } catch(e){}
 }
 
@@ -1372,6 +1701,7 @@ async function persistState() {
   await fbSet('leagues/main/matchups', { data: STATE.matchups });
   await fbSet('leagues/main/weeklyScores', { data: STATE.weeklyScores });
   await fbSet('leagues/main/lineupSnapshots', { data: STATE.lineupSnapshots });
+  await fbSet('leagues/main/lineupEdits', { data: STATE.lineupEdits });
   await fbSet('leagues/main/draftPicks', { data: STATE.draftPicks });
   await fbSet('leagues/main/playoffs', { matchups: STATE.playoffMatchups });
   saveLocal();
@@ -1389,6 +1719,8 @@ async function loadFromDB() {
   if (scores?.data) STATE.weeklyScores = scores.data;
   const snaps = await fbGet('leagues/main/lineupSnapshots');
   if (snaps?.data) STATE.lineupSnapshots = snaps.data;
+  const ledits = await fbGet('leagues/main/lineupEdits');
+  if (ledits?.data) STATE.lineupEdits = ledits.data;
   const picks = await fbGet('leagues/main/draftPicks');
   if (picks?.data) STATE.draftPicks = picks.data;
   const playoffs = await fbGet('leagues/main/playoffs');
@@ -1409,6 +1741,8 @@ function renderAll() {
   renderDraftPicks();
   renderDraftTrades();
   updateAdminFields();
+  updateNavMyTeam();
+  if (document.getElementById('page-myteam')?.classList.contains('active')) renderMyTeam();
 }
 
 function renderHome() {
@@ -1614,59 +1948,6 @@ function renderMatchups() {
   content.innerHTML += details;
 }
 
-function rosterBreakdownCard(team, breakdown, week) {
-  // Use lineup snapshot if available (locked starters are authoritative)
-  const snap = STATE.lineupSnapshots[week || STATE.selectedWeek]?.[team.id];
-  const lockedStarterIds = snap?.starters?.map(s => String(s.id)) || null;
-
-  const starters = lockedStarterIds
-    ? breakdown.filter(p => lockedStarterIds.includes(String(p.playerId)))
-    : breakdown.filter(p => p.isStarter);
-
-  const bench = breakdown.filter(p => !starters.includes(p));
-  const total = starters.reduce((s,p) => s + (p.bestGame||0), 0);
-
-  const snapNote = snap
-    ? `<div style="font-size:.65rem;font-family:var(--mono);color:var(--muted);margin-bottom:.75rem">
-        Locked ${new Date(snap.lockedAt).toLocaleDateString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}
-      </div>`
-    : '';
-
-  const starterRows = starters.map(p => {
-    const gamesHtml = p.games?.length
-      ? p.games.map(g => {
-          const isBest = g === p.bestGame && p.bestGame > 0;
-          return `<span class="score-game-pill ${isBest?'best':''}">${g.toFixed(1)}</span>`;
-        }).join('')
-      : '<span style="color:var(--muted);font-size:.72rem;font-family:var(--mono)">no games</span>';
-    const manualBadge = p.manual
-      ? '<span style="font-size:.6rem;color:var(--muted);font-family:var(--mono);margin-left:.3rem">manual</span>' : '';
-    return `<div class="player-row">
-      <div class="player-pos">${esc(p.pos)}</div>
-      <div style="flex:1;min-width:0">
-        <div class="player-name">${esc(p.name)}${manualBadge}</div>
-        <div class="score-games" style="margin-top:.2rem">${gamesHtml}</div>
-      </div>
-      <div class="player-best">${(p.bestGame||0).toFixed(1)}</div>
-    </div>`;
-  }).join('');
-
-  const benchRows = bench.slice(0,5).map(p =>
-    `<div class="player-row player-bench">
-      <div class="player-pos" style="opacity:.35">${esc(p.pos)}</div>
-      <div class="player-name" style="flex:1">${esc(p.name)}</div>
-      <div class="player-best">—</div>
-    </div>`
-  ).join('');
-
-  return `<div class="card">
-    <div class="card-title">${esc(team.name)}</div>
-    ${snapNote}
-    <div style="font-family:var(--display);font-size:2.2rem;color:var(--accent);letter-spacing:1px;margin-bottom:.75rem;line-height:1">${total.toFixed(1)}</div>
-    ${starterRows || '<div class="muted" style="font-size:.8rem">No starter data.</div>'}
-    ${bench.length ? `<div class="bench-divider">Bench (not scored)</div>${benchRows}` : ''}
-  </div>`;
-}
 
 function renderTeams() {
   const grid = document.getElementById('teams-grid');
@@ -2281,7 +2562,7 @@ window.executeTrade = async function() {
 /* ══════════════════════════════════════
    NAV / ROUTING
 ══════════════════════════════════════ */
-const PAGES = ['home','standings','matchups','teams','playoffs','draft','admin'];
+const PAGES = ['home','standings','matchups','myteam','teams','playoffs','draft','admin'];
 
 window.goto = function(page) {
   PAGES.forEach(p => {
@@ -2291,6 +2572,7 @@ window.goto = function(page) {
   document.getElementById('page-' + page)?.classList.add('active');
   document.getElementById('nav-' + page)?.classList.add('active');
   if (page === 'matchups') renderMatchups();
+  if (page === 'myteam') renderMyTeam();
   if (page === 'teams') renderTeams();
   if (page === 'draft') { renderDraftPicks(); renderDraftTrades(); }
 }
@@ -2378,6 +2660,685 @@ function esc(s) {
 }
 
 /* ══════════════════════════════════════
+   TEAM SELECT / IDENTITY
+══════════════════════════════════════ */
+function showTeamSelectLoading() {
+  document.getElementById('team-select-overlay').classList.add('open');
+  document.getElementById('team-select-loading').style.display = 'block';
+  document.getElementById('team-select-grid').innerHTML = '';
+}
+
+function showTeamSelectOverlay(allowCancel = false) {
+  const overlay = document.getElementById('team-select-overlay');
+  overlay.classList.add('open');
+  document.getElementById('team-select-loading').style.display = 'none';
+
+  const grid = document.getElementById('team-select-grid');
+  if (!STATE.teams.length) {
+    grid.innerHTML = '<div class="muted" style="font-family:var(--mono);font-size:.82rem">No teams loaded. Import from ESPN first.</div>';
+    return;
+  }
+
+  grid.innerHTML = STATE.teams.map(t => `
+    <div class="team-select-card" onclick="selectMyTeam(${t.id})">
+      <div class="ts-abbrev">${esc(t.abbrev)}</div>
+      <div class="ts-name">${esc(t.name)}</div>
+      <div class="ts-owner">${esc(t.owner)}</div>
+    </div>`
+  ).join('');
+
+  if (allowCancel) {
+    grid.innerHTML += `<div style="grid-column:1/-1;margin-top:.5rem">
+      <button class="btn btn-ghost btn-sm" onclick="closeTeamSelectOverlay()">Cancel</button>
+    </div>`;
+  }
+}
+
+window.openTeamSelectOverlay = function(allowCancel = false) {
+  showTeamSelectOverlay(allowCancel);
+}
+
+function closeTeamSelectOverlay() {
+  document.getElementById('team-select-overlay').classList.remove('open');
+}
+
+window.selectMyTeam = function(teamId) {
+  STATE.myTeamId = teamId;
+  saveLocal();
+  closeTeamSelectOverlay();
+  updateNavMyTeam();
+  toast('Team selected: ' + (teamById(teamId).name));
+  renderMyTeam();
+}
+
+function updateNavMyTeam() {
+  const badge = document.getElementById('nav-my-team-name');
+  if (!badge) return;
+  if (STATE.myTeamId && STATE.teams.length) {
+    const t = teamById(STATE.myTeamId);
+    badge.textContent = t.abbrev || t.name;
+    badge.style.display = '';
+  } else {
+    badge.style.display = 'none';
+  }
+}
+
+/* ══════════════════════════════════════
+   LINEUP STATE (per-team, per-week)
+   Stored as STATE.lineupEdits[teamId][week] = {
+     slots: [{slotPos, playerId}],  // ordered starter slots
+     bench: [playerId, ...]          // bench player IDs (rest of roster)
+   }
+══════════════════════════════════════ */
+
+// Get the full roster for a team (all players, from ESPN import)
+function getTeamRoster(teamId) {
+  const t = STATE.teams.find(t => String(t.id) === String(teamId));
+  return t?.roster || [];
+}
+
+// Get the current lineup for a team+week (edits take priority, then snapshot, then ESPN roster)
+function getLineupForWeek(teamId, week) {
+  const tid = String(teamId);
+  const w = String(week);
+
+  // User-saved edits take highest priority
+  if (STATE.lineupEdits[tid]?.[w]) {
+    return STATE.lineupEdits[tid][w];
+  }
+
+  // Fall back to ESPN roster for this week
+  const roster = getTeamRoster(teamId);
+  if (!roster.length) return { slots: [], bench: [] };
+
+  // Build default lineup from ESPN's slot assignments
+  const sport = STATE.sport || 'fba';
+  const starters = roster.filter(p => p.isStarter);
+  const bench = roster.filter(p => !p.isStarter);
+
+  return {
+    slots: starters.map(p => ({ slotPos: p.pos, playerId: String(p.id) })),
+    bench: bench.map(p => String(p.id)),
+  };
+}
+
+// Resolve player object from id within a team's roster
+function rosterPlayerById(teamId, playerId) {
+  const roster = getTeamRoster(teamId);
+  return roster.find(p => String(p.id) === String(playerId)) || null;
+}
+
+// Get player's weekly game scores (from weeklyScores breakdown)
+function getPlayerWeekScores(teamId, playerId, week) {
+  const breakdown = STATE.weeklyScores[week]?.[teamId]?.breakdown || [];
+  return breakdown.find(p => String(p.playerId) === String(playerId)) || null;
+}
+
+/* ══════════════════════════════════════
+   MY TEAM PAGE
+══════════════════════════════════════ */
+let lineupEditorState = {
+  week: 1,
+  teamId: null,
+  // Working copy of slots/bench for editing (before save)
+  slots: [],   // [{slotPos, playerId}]
+  bench: [],   // [playerId, ...]
+  selectedSlot: null,  // index into slots or 'bench-N'
+  selectedFrom: null,  // {type:'starter'|'bench', index}
+  dirty: false,
+};
+
+function renderMyTeam() {
+  if (!STATE.myTeamId) { showTeamSelectOverlay(false); return; }
+  const t = teamById(STATE.myTeamId);
+  const week = STATE.currentWeek;
+
+  document.getElementById('myteam-name').textContent = t.name || 'My Team';
+  document.getElementById('myteam-owner').textContent = t.owner || '';
+  document.getElementById('myteam-week-num').textContent = week;
+
+  // Week score
+  const weekData = STATE.weeklyScores[week]?.[STATE.myTeamId];
+  const lineup = getLineupForWeek(STATE.myTeamId, week);
+  const myScore = computeLineupScore(STATE.myTeamId, week, lineup);
+  document.getElementById('myteam-week-score').textContent = myScore.toFixed(1);
+  document.getElementById('myteam-record').textContent = `${t.wins}–${t.losses}`;
+
+  // Find opponent this week
+  const weekMatchups = STATE.matchups[week] || [];
+  const myMatchup = weekMatchups.find(m =>
+    String(m.home.teamId) === String(STATE.myTeamId) ||
+    String(m.away.teamId) === String(STATE.myTeamId)
+  );
+  if (myMatchup) {
+    const oppId = String(myMatchup.home.teamId) === String(STATE.myTeamId)
+      ? myMatchup.away.teamId : myMatchup.home.teamId;
+    const opp = teamById(oppId);
+    const oppScore = computeLineupScore(oppId, week, getLineupForWeek(oppId, week));
+    document.getElementById('myteam-opponent').textContent = opp.name;
+    document.getElementById('myteam-opponent-score').textContent = oppScore.toFixed(1) + ' pts';
+  } else {
+    document.getElementById('myteam-opponent').textContent = '—';
+    document.getElementById('myteam-opponent-score').textContent = '';
+  }
+
+  // Init editor state
+  lineupEditorState.week = week;
+  lineupEditorState.teamId = STATE.myTeamId;
+  lineupEditorState.selectedFrom = null;
+  lineupEditorState.dirty = false;
+
+  const savedLineup = getLineupForWeek(STATE.myTeamId, week);
+  lineupEditorState.slots = savedLineup.slots.map(s => ({...s}));
+  lineupEditorState.bench = [...savedLineup.bench];
+
+  renderLineupEditor();
+  renderMyTeamScoresTab();
+  renderMyTeamHistoryTab();
+}
+
+// Compute score from a given lineup config (uses best-game from breakdown)
+function computeLineupScore(teamId, week, lineup) {
+  let total = 0;
+  (lineup.slots || []).forEach(slot => {
+    const pd = getPlayerWeekScores(teamId, slot.playerId, week);
+    if (pd?.bestGame) total += pd.bestGame;
+  });
+  return Math.round(total * 100) / 100;
+}
+
+window.showMyTeamTab = function(tab) {
+  ['lineup','scores','history'].forEach(t => {
+    document.getElementById(`myteam-tab-content-${t}`).style.display = t === tab ? '' : 'none';
+    document.getElementById(`myteam-tab-${t}`)?.classList.toggle('active', t === tab);
+  });
+}
+
+/* ── LINEUP EDITOR ── */
+function renderLineupEditor() {
+  const week = lineupEditorState.week;
+  const locked = isLineupLocked(week);
+
+  // Lock banner
+  document.getElementById('lineup-locked-banner').style.display = locked ? '' : 'none';
+  document.getElementById('lineup-swap-hint').style.display = (!locked && lineupEditorState.selectedFrom) ? '' : 'none';
+  document.getElementById('lineup-actions').style.display = locked ? 'none' : '';
+
+  // Starters
+  const startersEl = document.getElementById('lineup-starters');
+  let starterScore = 0;
+  startersEl.innerHTML = lineupEditorState.slots.map((slot, i) => {
+    const player = rosterPlayerById(lineupEditorState.teamId, slot.playerId);
+    const scores = getPlayerWeekScores(lineupEditorState.teamId, slot.playerId, week);
+    const best = scores?.bestGame || 0;
+    if (player) starterScore += best;
+
+    const isSelected = lineupEditorState.selectedFrom?.type === 'starter'
+      && lineupEditorState.selectedFrom?.index === i;
+    const isEligible = lineupEditorState.selectedFrom && !isSelected
+      ? canSwapIntoStarterSlot(lineupEditorState.selectedFrom, i)
+      : false;
+
+    const editable = !locked;
+    const gamesHtml = scores?.games?.length
+      ? scores.games.map(g => {
+          const isBest = g > 0 && g === scores.bestGame;
+          return `<span class="score-game-pill ${isBest?'best':''}">${g.toFixed(1)}</span>`;
+        }).join('')
+      : '<span style="color:var(--border);font-size:.68rem">—</span>';
+
+    return `<div class="lineup-slot ${editable?'editable':''} ${isSelected?'selected':''} ${isEligible?'droppable-over':''}"
+        onclick="${editable ? `handleSlotClick('starter',${i})` : ''}">
+      <div class="slot-pos-badge ${isEligible?'eligible':''}">${esc(slot.slotPos)}</div>
+      ${player
+        ? `<div class="slot-player">
+            <div class="slot-player-name">${esc(player.name)}</div>
+            <div style="display:flex;align-items:center;gap:.3rem;margin-top:.2rem;flex-wrap:wrap">
+              <span class="slot-player-positions">${esc(player.eligiblePositions?.join(', ') || player.pos || '')}</span>
+              <div class="score-games" style="margin-left:.25rem">${gamesHtml}</div>
+            </div>
+          </div>
+          <div class="slot-player-best ${best===0?'no-score':''}">${best > 0 ? best.toFixed(1) : '—'}</div>`
+        : `<div class="slot-empty">Empty</div>`
+      }
+    </div>`;
+  }).join('');
+
+  document.getElementById('lineup-starter-score').textContent = starterScore.toFixed(1);
+
+  // Bench
+  const benchEl = document.getElementById('lineup-bench');
+  benchEl.innerHTML = lineupEditorState.bench.map((pid, i) => {
+    const player = rosterPlayerById(lineupEditorState.teamId, pid);
+    if (!player) return '';
+    const scores = getPlayerWeekScores(lineupEditorState.teamId, pid, week);
+    const best = scores?.bestGame || 0;
+    const isSelected = lineupEditorState.selectedFrom?.type === 'bench'
+      && lineupEditorState.selectedFrom?.index === i;
+    const isEligible = lineupEditorState.selectedFrom?.type === 'starter' && !isSelected;
+
+    const editable = !locked;
+    const gamesHtml = scores?.games?.length
+      ? scores.games.map(g => {
+          const isBest = g > 0 && g === scores.bestGame;
+          return `<span class="score-game-pill ${isBest?'best':''}">${g.toFixed(1)}</span>`;
+        }).join('')
+      : '<span style="color:var(--border);font-size:.68rem">—</span>';
+
+    return `<div class="lineup-slot ${editable?'editable':''} ${isSelected?'selected':''} ${isEligible?'droppable-over':''}"
+        onclick="${editable ? `handleSlotClick('bench',${i})` : ''}">
+      <div class="slot-pos-badge" style="opacity:.4">BE</div>
+      <div class="slot-player">
+        <div class="slot-player-name" style="color:var(--muted)">${esc(player.name)}</div>
+        <div style="display:flex;align-items:center;gap:.3rem;margin-top:.2rem;flex-wrap:wrap">
+          <span class="slot-player-positions">${esc(player.eligiblePositions?.join(', ') || player.pos || '')}</span>
+          <div class="score-games" style="margin-left:.25rem">${gamesHtml}</div>
+        </div>
+      </div>
+      <div class="slot-player-best no-score" style="font-size:1rem">—</div>
+    </div>`;
+  }).join('');
+
+  // Hint
+  document.getElementById('lineup-swap-hint').style.display =
+    (!locked && lineupEditorState.selectedFrom) ? '' : 'none';
+
+  // Save button state
+  const saveBtn = document.getElementById('lineup-save-btn');
+  if (saveBtn) {
+    saveBtn.style.opacity = lineupEditorState.dirty ? '1' : '.5';
+    saveBtn.textContent = lineupEditorState.dirty ? 'Save Lineup' : 'No Changes';
+  }
+}
+
+// Can a bench player (or starter) swap into starter slot at index i?
+function canSwapIntoStarterSlot(from, toSlotIndex) {
+  if (!lineupEditorState.selectedFrom) return false;
+  const toSlotPos = lineupEditorState.slots[toSlotIndex]?.slotPos;
+  let candidatePlayerId;
+  if (from.type === 'bench') {
+    candidatePlayerId = lineupEditorState.bench[from.index];
+  } else {
+    // starter-to-starter: check if the two can swap (both must fit each other's slot)
+    candidatePlayerId = lineupEditorState.slots[from.index]?.playerId;
+  }
+  const player = rosterPlayerById(lineupEditorState.teamId, candidatePlayerId);
+  if (!player) return false;
+  const eligPos = player.eligiblePositions || [player.pos];
+  return positionCompatible(toSlotPos, eligPos);
+}
+
+window.handleSlotClick = function(type, index) {
+  const sel = lineupEditorState.selectedFrom;
+
+  if (!sel) {
+    // First click — select this slot
+    lineupEditorState.selectedFrom = { type, index };
+    renderLineupEditor();
+    return;
+  }
+
+  // Second click — attempt swap
+  if (sel.type === type && sel.index === index) {
+    // Clicked same slot — deselect
+    lineupEditorState.selectedFrom = null;
+    renderLineupEditor();
+    return;
+  }
+
+  // Validate swap
+  const valid = attemptSwap(sel, { type, index });
+  if (!valid) {
+    toast('Position mismatch — player not eligible for that slot', true);
+  }
+  lineupEditorState.selectedFrom = null;
+  renderLineupEditor();
+}
+
+function attemptSwap(from, to) {
+  const slots = lineupEditorState.slots;
+  const bench = lineupEditorState.bench;
+
+  if (from.type === 'starter' && to.type === 'starter') {
+    // Swap two starters: check each fits the other's slot
+    const aPos = slots[from.index]?.slotPos;
+    const bPos = slots[to.index]?.slotPos;
+    const aPid = slots[from.index]?.playerId;
+    const bPid = slots[to.index]?.playerId;
+    const aPlayer = rosterPlayerById(lineupEditorState.teamId, aPid);
+    const bPlayer = rosterPlayerById(lineupEditorState.teamId, bPid);
+    const aElig = aPlayer?.eligiblePositions || [aPlayer?.pos];
+    const bElig = bPlayer?.eligiblePositions || [bPlayer?.pos];
+
+    if (!positionCompatible(bPos, aElig) || !positionCompatible(aPos, bElig)) return false;
+    // Do the swap
+    slots[from.index].playerId = bPid;
+    slots[to.index].playerId = aPid;
+
+  } else if (from.type === 'bench' && to.type === 'starter') {
+    // Bench → starter slot
+    const slotPos = slots[to.index]?.slotPos;
+    const bPid = bench[from.index];
+    const bPlayer = rosterPlayerById(lineupEditorState.teamId, bPid);
+    const bElig = bPlayer?.eligiblePositions || [bPlayer?.pos];
+
+    if (!positionCompatible(slotPos, bElig)) return false;
+
+    // Swap: starter goes to bench, bench player takes slot
+    const oldStarterPid = slots[to.index].playerId;
+    slots[to.index].playerId = bPid;
+    bench[from.index] = oldStarterPid;
+
+  } else if (from.type === 'starter' && to.type === 'bench') {
+    // Starter → bench: swap with bench player, validate bench player fits starter slot
+    const slotPos = slots[from.index]?.slotPos;
+    const sPid = slots[from.index]?.playerId;
+    const bPid = bench[to.index];
+    const bPlayer = rosterPlayerById(lineupEditorState.teamId, bPid);
+    const bElig = bPlayer?.eligiblePositions || [bPlayer?.pos];
+
+    if (!positionCompatible(slotPos, bElig)) return false;
+
+    slots[from.index].playerId = bPid;
+    bench[to.index] = sPid;
+
+  } else if (from.type === 'bench' && to.type === 'bench') {
+    // Bench ↔ bench: always valid
+    const tmp = bench[from.index];
+    bench[from.index] = bench[to.index];
+    bench[to.index] = tmp;
+  }
+
+  lineupEditorState.dirty = true;
+  return true;
+}
+
+window.cancelLineupEdit = function() {
+  const saved = getLineupForWeek(lineupEditorState.teamId, lineupEditorState.week);
+  lineupEditorState.slots = saved.slots.map(s => ({...s}));
+  lineupEditorState.bench = [...saved.bench];
+  lineupEditorState.selectedFrom = null;
+  lineupEditorState.dirty = false;
+  document.getElementById('lineup-save-msg').textContent = '';
+  renderLineupEditor();
+}
+
+window.saveLineup = async function() {
+  if (isLineupLocked(lineupEditorState.week)) {
+    toast('Lineup is locked — cannot save changes', true); return;
+  }
+  if (!lineupEditorState.dirty) { toast('No changes to save'); return; }
+
+  const tid = String(lineupEditorState.teamId);
+  const w = String(lineupEditorState.week);
+  if (!STATE.lineupEdits[tid]) STATE.lineupEdits[tid] = {};
+  STATE.lineupEdits[tid][w] = {
+    slots: lineupEditorState.slots.map(s => ({...s})),
+    bench: [...lineupEditorState.bench],
+    savedAt: new Date().toISOString(),
+  };
+
+  // Also update the lineupSnapshot for this week (this IS the locked lineup)
+  if (!STATE.lineupSnapshots[w]) STATE.lineupSnapshots[w] = {};
+  STATE.lineupSnapshots[w][tid] = {
+    starters: lineupEditorState.slots.map(s => {
+      const p = rosterPlayerById(tid, s.playerId);
+      return { id: s.playerId, name: p?.name || '', pos: s.slotPos };
+    }),
+    bench: lineupEditorState.bench.map(pid => {
+      const p = rosterPlayerById(tid, pid);
+      return { id: pid, name: p?.name || '' };
+    }),
+    lockedAt: new Date().toISOString(),
+  };
+
+  // Recompute BGL score for this team this week using new lineup
+  recomputeTeamWeekScore(tid, Number(w));
+  updateMatchupWinners(Number(w));
+  recomputeStandings();
+
+  await persistState();
+  lineupEditorState.dirty = false;
+  document.getElementById('lineup-save-msg').textContent =
+    '✓ Lineup saved at ' + new Date().toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+  toast('Lineup saved');
+  renderLineupEditor();
+  renderMyTeam();
+}
+
+// Recompute a single team's score for a week based on their lineup edit
+function recomputeTeamWeekScore(teamId, week) {
+  const lineup = getLineupForWeek(teamId, week);
+  const existingBreakdown = STATE.weeklyScores[week]?.[teamId]?.breakdown || [];
+
+  if (!STATE.weeklyScores[week]) STATE.weeklyScores[week] = {};
+  if (!STATE.weeklyScores[week][teamId]) STATE.weeklyScores[week][teamId] = { score: 0, breakdown: [] };
+
+  // Mark which players are starters per new lineup
+  const starterIds = new Set(lineup.slots.map(s => String(s.playerId)));
+  existingBreakdown.forEach(p => {
+    p.isStarter = starterIds.has(String(p.playerId));
+    p.bestGame = p.isStarter ? (p.games?.length ? Math.max(...p.games) : 0) : 0;
+  });
+
+  const score = existingBreakdown
+    .filter(p => p.isStarter)
+    .reduce((sum, p) => sum + (p.bestGame || 0), 0);
+  STATE.weeklyScores[week][teamId].score = Math.round(score * 100) / 100;
+  STATE.weeklyScores[week][teamId].breakdown = existingBreakdown;
+}
+
+/* ── MY TEAM SCORES TAB ── */
+function renderMyTeamScoresTab() {
+  const el = document.getElementById('myteam-scores-content');
+  if (!el) return;
+  const week = lineupEditorState.week;
+  const teamId = STATE.myTeamId;
+  const lineup = getLineupForWeek(teamId, week);
+
+  // Build a daily game table — rows=players, cols=days Mon–Sun
+  const DAYS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+  const breakdown = STATE.weeklyScores[week]?.[teamId]?.breakdown || [];
+  const starters = lineup.slots
+    .map(s => {
+      const p = rosterPlayerById(teamId, s.playerId);
+      const scores = breakdown.find(b => String(b.playerId) === String(s.playerId));
+      return { slot: s.slotPos, player: p, scores };
+    })
+    .filter(r => r.player);
+
+  if (!starters.length) {
+    el.innerHTML = '<div class="empty-state"><div class="empty-icon">📊</div>No score data yet for Week ' + week + '.<br>Import from ESPN to load scores.</div>';
+    return;
+  }
+
+  const totalScore = starters.reduce((s, r) => s + (r.scores?.bestGame || 0), 0);
+
+  // Header
+  let html = `
+    <div style="margin-bottom:1rem;display:flex;align-items:baseline;gap:1rem">
+      <div style="font-family:var(--display);font-size:2.5rem;color:var(--accent);letter-spacing:1px">${totalScore.toFixed(1)}</div>
+      <div style="font-family:var(--mono);font-size:.75rem;color:var(--muted)">WEEK ${week} TOTAL</div>
+    </div>
+    <div class="card" style="padding:0;overflow:hidden">
+      <div class="tbl-wrap">
+        <table class="daily-score-table">
+          <thead>
+            <tr>
+              <th>Slot</th>
+              <th>Player</th>`;
+
+  // We show up to 7 game columns; label them by day if possible
+  const maxGames = Math.max(1, ...starters.map(r => r.scores?.games?.length || 0));
+  const gameCols = Math.min(maxGames, 7);
+  for (let d = 0; d < gameCols; d++) {
+    html += `<th class="td-right">${gameCols <= 7 ? DAYS[d] : 'G'+(d+1)}</th>`;
+  }
+  html += `<th class="td-right" style="color:var(--accent)">Best</th></tr></thead><tbody>`;
+
+  starters.forEach(({slot, player, scores}) => {
+    const games = scores?.games || [];
+    const best = scores?.bestGame || 0;
+    html += `<tr>
+      <td class="pos-cell">${esc(slot)}</td>
+      <td class="name-cell">${esc(player?.name || '—')}</td>`;
+    for (let d = 0; d < gameCols; d++) {
+      const g = games[d];
+      const isBest = g !== undefined && g > 0 && g === best;
+      if (g === undefined || g === null) {
+        html += `<td class="zero-cell">—</td>`;
+      } else if (isBest) {
+        html += `<td class="score-cell best-cell">${g.toFixed(1)}</td>`;
+      } else {
+        html += `<td class="${g > 0 ? 'score-cell' : 'zero-cell'}">${g > 0 ? g.toFixed(1) : '0'}</td>`;
+      }
+    }
+    html += `<td class="score-cell" style="color:var(--accent);font-weight:600">${best > 0 ? best.toFixed(1) : '—'}</td>`;
+    html += '</tr>';
+  });
+
+  html += '</tbody></table></div></div>';
+
+  // Bench note
+  html += `<div style="margin-top:.75rem;font-family:var(--mono);font-size:.72rem;color:var(--muted)">
+    Bench players do not score. Only the highlighted best game counts per starter.
+  </div>`;
+
+  el.innerHTML = html;
+}
+
+/* ── MY TEAM HISTORY TAB ── */
+function renderMyTeamHistoryTab() {
+  const el = document.getElementById('myteam-history-content');
+  if (!el) return;
+  const teamId = STATE.myTeamId;
+  const t = teamById(teamId);
+
+  const weeks = Object.keys(STATE.matchups)
+    .map(Number).sort((a,b) => b - a)
+    .filter(w => w < (STATE.playoffStartWeek || 99));
+
+  if (!weeks.length) {
+    el.innerHTML = '<div class="empty-state"><div class="empty-icon">📈</div>No history yet.</div>';
+    return;
+  }
+
+  let html = `<div class="card" style="padding:0;overflow:hidden"><div class="tbl-wrap">
+    <table>
+      <thead><tr>
+        <th>Week</th><th>Opponent</th>
+        <th class="td-right">My Score</th>
+        <th class="td-right">Opp Score</th>
+        <th class="td-right">Result</th>
+      </tr></thead>
+      <tbody>`;
+
+  weeks.forEach(w => {
+    const weekMatchups = STATE.matchups[w] || [];
+    const myMatch = weekMatchups.find(m =>
+      String(m.home.teamId) === String(teamId) ||
+      String(m.away.teamId) === String(teamId)
+    );
+    if (!myMatch) return;
+
+    const imHome = String(myMatch.home.teamId) === String(teamId);
+    const oppId = imHome ? myMatch.away.teamId : myMatch.home.teamId;
+    const opp = teamById(oppId);
+    const myScore = imHome ? myMatch.home.score : myMatch.away.score;
+    const oppScore = imHome ? myMatch.away.score : myMatch.home.score;
+    const won = myMatch.winner && String(myMatch.winner) === String(teamId);
+    const hasResult = !!myMatch.winner;
+
+    html += `<tr style="cursor:pointer" onclick="goto('matchups');selectWeek(${w})">
+      <td class="mono">W${w}</td>
+      <td>${esc(opp.name)}<div style="font-size:.7rem;color:var(--muted)">${esc(opp.owner)}</div></td>
+      <td class="td-right accent-val">${(myScore||0).toFixed(1)}</td>
+      <td class="td-right mono">${(oppScore||0).toFixed(1)}</td>
+      <td class="td-right">
+        ${hasResult
+          ? `<span style="font-family:var(--mono);font-size:.8rem;font-weight:600;color:${won?'var(--good)':'var(--bad)'}">${won?'W':'L'}</span>`
+          : '<span style="color:var(--muted);font-size:.75rem">—</span>'}
+      </td>
+    </tr>`;
+  });
+
+  html += '</tbody></table></div></div>';
+  el.innerHTML = html;
+}
+
+/* ══════════════════════════════════════
+   MATCHUP DAILY SCORES (Matchups page)
+══════════════════════════════════════ */
+// Replace rosterBreakdownCard to show full daily game table
+function rosterBreakdownCard(team, breakdown, week) {
+  const snap = STATE.lineupSnapshots[week || STATE.selectedWeek]?.[team.id];
+  const lineup = getLineupForWeek(team.id, week || STATE.selectedWeek);
+  const starterIds = new Set(lineup.slots.map(s => String(s.playerId)));
+
+  const starters = lineup.slots.map(s => {
+    const pd = breakdown.find(b => String(b.playerId) === String(s.playerId));
+    const p = rosterPlayerById(team.id, s.playerId) || { name: 'Unknown', pos: s.slotPos };
+    return { slot: s.slotPos, player: p, scores: pd };
+  });
+  const bench = breakdown.filter(b => !starterIds.has(String(b.playerId)));
+
+  const total = starters.reduce((s, r) => s + (r.scores?.bestGame || 0), 0);
+  const DAYS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+  const maxGames = Math.max(1, ...starters.map(r => r.scores?.games?.length || 0));
+  const gameCols = Math.min(maxGames, 7);
+
+  const snapNote = snap?.lockedAt
+    ? `<div style="font-size:.62rem;font-family:var(--mono);color:var(--muted);margin-bottom:.5rem">
+        Locked ${new Date(snap.lockedAt).toLocaleDateString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}
+      </div>` : '';
+
+  let tableHtml = '';
+  // Build header inline
+  let headerCols = '';
+  for (let d = 0; d < gameCols; d++) {
+    headerCols += `<th class="td-right" style="font-size:.6rem">${DAYS[d]||('G'+(d+1))}</th>`;
+  }
+  tableHtml = `<table class="daily-score-table" style="width:100%">
+    <thead><tr><th>Slot</th><th>Player</th>${headerCols}<th class="td-right" style="color:var(--accent)">Best</th></tr></thead>
+    <tbody>`;
+
+  starters.forEach(({slot, player, scores}) => {
+    const games = scores?.games || [];
+    const best = scores?.bestGame || 0;
+    tableHtml += `<tr>
+      <td class="pos-cell">${esc(slot)}</td>
+      <td class="name-cell">${esc(player?.name || '—')}</td>`;
+    for (let d = 0; d < gameCols; d++) {
+      const g = games[d];
+      const isBest = g !== undefined && g > 0 && g === best;
+      if (g === undefined) tableHtml += `<td class="zero-cell">—</td>`;
+      else if (isBest) tableHtml += `<td class="score-cell best-cell">${g.toFixed(1)}</td>`;
+      else tableHtml += `<td class="${g>0?'score-cell':'zero-cell'}">${g>0?g.toFixed(1):'0'}</td>`;
+    }
+    tableHtml += `<td class="score-cell" style="color:var(--accent);font-weight:600">${best>0?best.toFixed(1):'—'}</td></tr>`;
+  });
+  tableHtml += '</tbody></table>';
+
+  // Bench summary (compact)
+  const benchHtml = bench.length
+    ? `<div class="bench-divider" style="margin-top:.5rem">Bench — not scored</div>
+       ${bench.slice(0,4).map(p =>
+         `<div style="display:flex;justify-content:space-between;padding:.2rem 0;font-size:.75rem;color:var(--muted)">
+           <span>${esc(p.name)}</span>
+           <span style="font-family:var(--mono)">${p.games?.length ? Math.max(...p.games).toFixed(1) : '—'}</span>
+         </div>`
+       ).join('')}` : '';
+
+  return `<div class="card" style="padding:1rem">
+    <div class="card-title">${esc(team.name)}</div>
+    ${snapNote}
+    <div style="font-family:var(--display);font-size:2.2rem;color:var(--accent);letter-spacing:1px;margin-bottom:.75rem;line-height:1">${total.toFixed(1)}</div>
+    <div class="tbl-wrap">${tableHtml}</div>
+    ${benchHtml}
+  </div>`;
+}
+
+/* ══════════════════════════════════════
    INIT
 ══════════════════════════════════════ */
 async function init() {
@@ -2394,9 +3355,16 @@ async function init() {
 
   renderAll();
 
-  // Auto-import if no data
+  // Auto-import if no data, then show team select
   if (!STATE.teams.length) {
-    setTimeout(() => importFromESPN(), 800);
+    showTeamSelectLoading();
+    await importFromESPN();
+    showTeamSelectOverlay();
+  } else if (!STATE.myTeamId) {
+    // Have data but no team chosen yet
+    showTeamSelectOverlay();
+  } else {
+    updateNavMyTeam();
   }
 }
 
