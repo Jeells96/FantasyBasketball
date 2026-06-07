@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Best Game League v1.0</title>
+<title>Best Game League v1.3</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500;600&display=swap');
 
@@ -654,7 +654,7 @@
 
 <!-- NAV -->
 <nav>
-  <div class="nav-brand" onclick="goto('home')">BGL<span>.</span></div>
+  <div class="nav-brand" onclick="goto('home')">BGL<span style="font-size:.6rem;color:var(--muted);letter-spacing:1px;vertical-align:super;margin-left:.2rem">v1.3</span></div>
   <div class="nav-links">
     <button onclick="goto('home')" id="nav-home" class="active">Home</button>
     <button onclick="goto('standings')" id="nav-standings">Standings</button>
@@ -1186,46 +1186,47 @@ let STATE = {
 
 // ── POSITION COMPATIBILITY ──
 // Maps a slot name → which player eligibility strings are allowed in that slot
-const POS_COMPAT = {
-  // Basketball slots
+// ── Per-sport position compatibility tables
+// Maps starter SLOT label → which player defaultPos values are eligible
+const POS_COMPAT_FBA = {
   'PG':   ['PG'],
   'SG':   ['SG'],
   'SF':   ['SF'],
   'PF':   ['PF'],
   'C':    ['C'],
-  'G':    ['PG','SG','PG/SG','G'],
-  'F':    ['SF','PF','SF/PF','F'],
-  'G/F':  ['PG','SG','SF','PF','G','F','PG/SG','SF/PF'],
-  'F/C':  ['SF','PF','C','F','PF/C'],
-  'UTIL': ['PG','SG','SF','PF','C','G','F'],
-  'BE':   null, // bench accepts all
-  'IL':   null,
-  // Baseball slots
-  'C':    ['C'],
-  '1B':   ['1B'],
-  '2B':   ['2B'],
-  '3B':   ['3B'],
-  'SS':   ['SS'],
-  'MI':   ['2B','SS','2B/SS'],
-  'CI':   ['1B','3B'],
-  'OF':   ['OF','LF','CF','RF'],
-  'UTIL': ['C','1B','2B','3B','SS','OF'],
-  'SP':   ['SP','P'],
-  'RP':   ['RP','P'],
-  'P':    ['SP','RP','P'],
-  'BE':   null,
-  'DL':   null,
+  'G':    ['PG','SG'],
+  'F':    ['SF','PF'],
+  'G/F':  ['PG','SG','SF','PF'],
+  'F/C':  ['SF','PF','C'],
+  'UTIL': ['PG','SG','SF','PF','C'],
 };
 
-function positionCompatible(slotPos, playerEligibility) {
-  // playerEligibility: comma-separated string like "PG, SG" or array
-  if (!slotPos || slotPos === 'BE' || slotPos === 'IL' || slotPos === 'DL') return true;
-  const allowed = POS_COMPAT[slotPos];
-  if (!allowed) return true;
-  const playerPositions = Array.isArray(playerEligibility)
-    ? playerEligibility
-    : String(playerEligibility || '').split(',').map(s => s.trim());
-  return playerPositions.some(p => allowed.includes(p));
+const POS_COMPAT_FLB = {
+  'C':      ['C'],
+  '1B':     ['1B'],
+  '2B':     ['2B'],
+  '3B':     ['3B'],
+  'SS':     ['SS'],
+  '2B/SS':  ['2B','SS'],
+  '1B/3B':  ['1B','3B'],
+  'OF':     ['OF'],
+  'DH':     ['C','1B','2B','3B','SS','OF','DH'],
+  'UTIL':   ['C','1B','2B','3B','SS','OF','DH'],
+  'SP':     ['SP','P'],
+  'RP':     ['RP','P'],
+  'P':      ['SP','RP','P'],
+};
+
+function positionCompatible(slotPos, playerEligiblePositions, sport) {
+  if (!slotPos || ['BE','IL','DL','NA'].includes(slotPos)) return true;
+  const sp = sport || STATE.sport || 'fba';
+  const table = sp === 'flb' ? POS_COMPAT_FLB : POS_COMPAT_FBA;
+  const allowed = table[slotPos];
+  if (!allowed) return true; // unknown slot — allow
+  const playerPos = Array.isArray(playerEligiblePositions)
+    ? playerEligiblePositions
+    : String(playerEligiblePositions || '').split(',').map(s => s.trim()).filter(Boolean);
+  return playerPos.some(p => allowed.includes(p));
 }
 
 /* ══════════════════════════════════════
@@ -1308,24 +1309,73 @@ async function detectSport(leagueId, season) {
 }
 
 // ── Slot ID → position label (basketball-aware)
+// ── ESPN lineupSlotId → position label for the SLOT (where player is placed)
 function slotName(id, sport) {
   if (sport === 'fba') {
-    // Basketball slot IDs
-    const m = {0:'PG',1:'SG',2:'SF',3:'PF',4:'C',5:'G',6:'F',7:'C',
-               9:'G/F',10:'F/C',11:'UTIL',12:'BE',13:'IL',17:'BE'};
-    return m[id] ?? String(id);
+    // NBA Fantasy lineup slot IDs (from ESPN API)
+    const m = {
+      0:'PG', 1:'SG', 2:'SF', 3:'PF', 4:'C',
+      5:'G',  6:'F',  7:'C',  8:'G/F', 9:'F/C',
+      10:'UTIL', 11:'BE', 12:'BE', 13:'IL', 17:'BE'
+    };
+    return m[id] ?? 'S'+id;
   }
-  // Baseball / generic
-  const m = {0:'C',1:'1B',2:'2B',3:'3B',4:'SS',5:'MI',6:'CI',7:'OF',
-             8:'OF',9:'OF',10:'OF',11:'UTIL',12:'SP',13:'RP',14:'P',
-             15:'BE',16:'DL',17:'BE',18:'UTIL',19:'NA',20:'BE',21:'IL'};
-  return m[id] ?? String(id);
+  if (sport === 'flb') {
+    // MLB Fantasy lineup slot IDs
+    const m = {
+      0:'C',  1:'1B', 2:'2B', 3:'3B', 4:'SS',
+      5:'OF', 6:'2B/SS', 7:'1B/3B', 8:'OF', 9:'OF',
+      10:'DH', 11:'UTIL', 12:'SP',  13:'RP', 14:'P',
+      15:'BE', 16:'IL', 17:'BE', 19:'NA', 21:'IL'
+    };
+    return m[id] ?? 'S'+id;
+  }
+  // NFL
+  const m = {0:'QB',2:'RB',4:'WR',6:'TE',16:'K',20:'BE',21:'IR',23:'FLEX'};
+  return m[id] ?? 'S'+id;
 }
 
-// Bench slot IDs differ by sport
+// ── Which slot IDs count as bench/IL (never score)
 function isStarterSlot(slotId, sport) {
-  if (sport === 'fba') return ![12, 13, 17].includes(slotId); // BE, IL
-  return ![15, 16, 17, 20, 21].includes(slotId); // BE, DL, IL
+  if (sport === 'fba') return ![11,12,13,17].includes(slotId);   // BE=11,12,17  IL=13
+  if (sport === 'flb') return ![15,16,17,19,21].includes(slotId); // BE=15,17 IL=16,21 NA=19
+  return ![20,21].includes(slotId); // NFL
+}
+
+// ── ESPN defaultPositionId → canonical abbreviation (used for player eligibility)
+const ESPN_DEFAULT_POS = {
+  // Basketball
+  1:'PG', 2:'SG', 3:'SF', 4:'PF', 5:'C',
+  // Baseball
+  0:'P', 6:'C', 7:'1B', 8:'2B', 9:'3B', 10:'SS',
+  11:'OF', 12:'DH', 13:'SP', 14:'RP',
+  // Football
+  15:'QB', 16:'RB', 17:'WR', 18:'TE', 19:'K', 21:'DEF',
+};
+
+// ── Resolve which POSITIONS a player can fill (their eligibility)
+// ESPN provides player.eligibleSlots (array of slotIds player can occupy)
+function resolveEligiblePositions(player, sport) {
+  // Use eligibleSlots → map to position abbreviations, skipping bench slots
+  const eligSlots = player.eligibleSlots || [];
+
+  if (sport === 'fba') {
+    const benches = new Set([11,12,13,17]);
+    const slotToPos = {0:'PG',1:'SG',2:'SF',3:'PF',4:'C',5:'G',6:'F',7:'C',8:'G/F',9:'F/C',10:'UTIL'};
+    const positions = [...new Set(eligSlots.filter(s=>!benches.has(s)).map(s=>slotToPos[s]).filter(Boolean))];
+    if (positions.length) return positions;
+  }
+
+  if (sport === 'flb') {
+    const benches = new Set([15,16,17,19,21]);
+    const slotToPos = {0:'C',1:'1B',2:'2B',3:'3B',4:'SS',5:'OF',6:'2B/SS',7:'1B/3B',8:'OF',9:'OF',10:'DH',11:'UTIL',12:'SP',13:'RP',14:'P'};
+    const positions = [...new Set(eligSlots.filter(s=>!benches.has(s)).map(s=>slotToPos[s]).filter(Boolean))];
+    if (positions.length) return positions;
+  }
+
+  // Fallback to defaultPositionId
+  const dp = ESPN_DEFAULT_POS[player.defaultPositionId];
+  return dp ? [dp] : ['?'];
 }
 
 /* ══════════════════════════════════════
@@ -1461,10 +1511,17 @@ function parseRoster(roster, week, sport) {
   return roster.entries.map(e => {
     const player = e.playerPoolEntry?.player || {};
     const lineupSlot = e.lineupSlotId;
+    const eligiblePositions = resolveEligiblePositions(player, sport);
+    const defaultPos = ESPN_DEFAULT_POS[player.defaultPositionId] || eligiblePositions[0] || '?';
     return {
       id: player.id || e.playerId,
-      name: (player.fullName || player.lastName || 'Unknown'),
+      name: player.fullName || player.lastName || 'Unknown',
+      // pos = the slot this player is currently IN (PG, SG, BE, etc.)
       pos: slotName(lineupSlot, sport),
+      // eligiblePositions = which starter slots this player CAN fill
+      eligiblePositions,
+      // defaultPos = their primary position (shown as label)
+      defaultPos,
       lineupSlotId: lineupSlot,
       isStarter: isStarterSlot(lineupSlot, sport),
       games: [],
@@ -1601,10 +1658,15 @@ async function processPlayerScores(scoringData, week, sport) {
         if (weekly > 0) { games = [weekly]; best = weekly; }
       }
 
+      const eligiblePositions = resolveEligiblePositions(player, sport);
+      const defaultPos = ESPN_DEFAULT_POS[player.defaultPositionId] || eligiblePositions[0] || '?';
+
       breakdown.push({
         playerId: pid,
         name: pname,
         pos: slotName(slotId, sport),
+        eligiblePositions,
+        defaultPos,
         lineupSlotId: slotId,
         isStarter,
         games: games.map(g => Math.round(g * 100) / 100),
@@ -2893,9 +2955,9 @@ function renderLineupEditor() {
       ${player
         ? `<div class="slot-player">
             <div class="slot-player-name">${esc(player.name)}</div>
-            <div style="display:flex;align-items:center;gap:.3rem;margin-top:.2rem;flex-wrap:wrap">
-              <span class="slot-player-positions">${esc(player.eligiblePositions?.join(', ') || player.pos || '')}</span>
-              <div class="score-games" style="margin-left:.25rem">${gamesHtml}</div>
+            <div style="display:flex;align-items:center;gap:.4rem;margin-top:.2rem;flex-wrap:wrap">
+              <span class="slot-player-positions">${esc(player.eligiblePositions?.join(', ') || player.defaultPos || player.pos || '')}</span>
+              <div class="score-games">${gamesHtml}</div>
             </div>
           </div>
           <div class="slot-player-best ${best===0?'no-score':''}">${best > 0 ? best.toFixed(1) : '—'}</div>`
@@ -2930,9 +2992,9 @@ function renderLineupEditor() {
       <div class="slot-pos-badge" style="opacity:.4">BE</div>
       <div class="slot-player">
         <div class="slot-player-name" style="color:var(--muted)">${esc(player.name)}</div>
-        <div style="display:flex;align-items:center;gap:.3rem;margin-top:.2rem;flex-wrap:wrap">
-          <span class="slot-player-positions">${esc(player.eligiblePositions?.join(', ') || player.pos || '')}</span>
-          <div class="score-games" style="margin-left:.25rem">${gamesHtml}</div>
+        <div style="display:flex;align-items:center;gap:.4rem;margin-top:.2rem;flex-wrap:wrap">
+          <span class="slot-player-positions">${esc(player.eligiblePositions?.join(', ') || player.defaultPos || player.pos || '')}</span>
+          <div class="score-games">${gamesHtml}</div>
         </div>
       </div>
       <div class="slot-player-best no-score" style="font-size:1rem">—</div>
@@ -2964,8 +3026,8 @@ function canSwapIntoStarterSlot(from, toSlotIndex) {
   }
   const player = rosterPlayerById(lineupEditorState.teamId, candidatePlayerId);
   if (!player) return false;
-  const eligPos = player.eligiblePositions || [player.pos];
-  return positionCompatible(toSlotPos, eligPos);
+  const eligPos = player.eligiblePositions || (player.defaultPos ? [player.defaultPos] : []);
+  return positionCompatible(toSlotPos, eligPos, STATE.sport);
 }
 
 window.handleSlotClick = function(type, index) {
@@ -2998,47 +3060,37 @@ window.handleSlotClick = function(type, index) {
 function attemptSwap(from, to) {
   const slots = lineupEditorState.slots;
   const bench = lineupEditorState.bench;
+  const sport = STATE.sport;
+
+  const getElig = (pid) => {
+    const p = rosterPlayerById(lineupEditorState.teamId, pid);
+    return p?.eligiblePositions || (p?.defaultPos ? [p.defaultPos] : []);
+  };
 
   if (from.type === 'starter' && to.type === 'starter') {
-    // Swap two starters: check each fits the other's slot
-    const aPos = slots[from.index]?.slotPos;
-    const bPos = slots[to.index]?.slotPos;
+    const aSlotPos = slots[from.index]?.slotPos;
+    const bSlotPos = slots[to.index]?.slotPos;
     const aPid = slots[from.index]?.playerId;
     const bPid = slots[to.index]?.playerId;
-    const aPlayer = rosterPlayerById(lineupEditorState.teamId, aPid);
-    const bPlayer = rosterPlayerById(lineupEditorState.teamId, bPid);
-    const aElig = aPlayer?.eligiblePositions || [aPlayer?.pos];
-    const bElig = bPlayer?.eligiblePositions || [bPlayer?.pos];
-
-    if (!positionCompatible(bPos, aElig) || !positionCompatible(aPos, bElig)) return false;
-    // Do the swap
+    // Each player must fit the other's slot
+    if (!positionCompatible(bSlotPos, getElig(aPid), sport)) return false;
+    if (!positionCompatible(aSlotPos, getElig(bPid), sport)) return false;
     slots[from.index].playerId = bPid;
     slots[to.index].playerId = aPid;
 
   } else if (from.type === 'bench' && to.type === 'starter') {
-    // Bench → starter slot
     const slotPos = slots[to.index]?.slotPos;
     const bPid = bench[from.index];
-    const bPlayer = rosterPlayerById(lineupEditorState.teamId, bPid);
-    const bElig = bPlayer?.eligiblePositions || [bPlayer?.pos];
-
-    if (!positionCompatible(slotPos, bElig)) return false;
-
-    // Swap: starter goes to bench, bench player takes slot
+    if (!positionCompatible(slotPos, getElig(bPid), sport)) return false;
     const oldStarterPid = slots[to.index].playerId;
     slots[to.index].playerId = bPid;
     bench[from.index] = oldStarterPid;
 
   } else if (from.type === 'starter' && to.type === 'bench') {
-    // Starter → bench: swap with bench player, validate bench player fits starter slot
     const slotPos = slots[from.index]?.slotPos;
     const sPid = slots[from.index]?.playerId;
     const bPid = bench[to.index];
-    const bPlayer = rosterPlayerById(lineupEditorState.teamId, bPid);
-    const bElig = bPlayer?.eligiblePositions || [bPlayer?.pos];
-
-    if (!positionCompatible(slotPos, bElig)) return false;
-
+    if (!positionCompatible(slotPos, getElig(bPid), sport)) return false;
     slots[from.index].playerId = bPid;
     bench[to.index] = sPid;
 
