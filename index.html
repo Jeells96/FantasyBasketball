@@ -1,0 +1,2406 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Best Game League v1.0</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500;600&display=swap');
+
+  :root {
+    --bg:      #080a0e;
+    --surface: #0f1218;
+    --card:    #141820;
+    --border:  #1e2530;
+    --accent:  #f0a500;
+    --accent2: #e05c00;
+    --good:    #22c55e;
+    --bad:     #ef4444;
+    --text:    #e8eaf0;
+    --muted:   #6b7585;
+    --mono:    'DM Mono', monospace;
+    --sans:    'DM Sans', sans-serif;
+    --display: 'Bebas Neue', sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* ── NAV ── */
+  nav {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 100;
+    display: flex; align-items: center;
+    padding: 0 1.5rem; height: 56px;
+    gap: 0;
+  }
+  .nav-brand {
+    font-family: var(--display);
+    font-size: 1.6rem;
+    letter-spacing: 2px;
+    color: var(--accent);
+    margin-right: 2rem;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .nav-brand span { color: var(--text); }
+  .nav-links { display: flex; gap: 0; overflow-x: auto; flex: 1; }
+  .nav-links button {
+    background: none; border: none; cursor: pointer;
+    color: var(--muted); font-family: var(--sans); font-size: .82rem;
+    font-weight: 500; letter-spacing: .5px; text-transform: uppercase;
+    padding: 0 1rem; height: 56px; white-space: nowrap;
+    border-bottom: 2px solid transparent;
+    transition: color .2s, border-color .2s;
+  }
+  .nav-links button:hover { color: var(--text); }
+  .nav-links button.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .nav-right { margin-left: auto; display: flex; align-items: center; gap: .75rem; }
+  .nav-week-badge {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 4px; padding: .3rem .75rem;
+    font-family: var(--mono); font-size: .75rem; color: var(--muted);
+    white-space: nowrap;
+  }
+  .nav-week-badge strong { color: var(--accent); }
+
+  /* ── PAGE WRAPPER ── */
+  .page { display: none; padding: 2rem 1.5rem; max-width: 1200px; margin: 0 auto; }
+  .page.active { display: block; }
+
+  /* ── SECTION HEADER ── */
+  .section-header {
+    display: flex; align-items: baseline; gap: 1rem;
+    margin-bottom: 1.5rem;
+  }
+  .section-title {
+    font-family: var(--display); font-size: 2.4rem;
+    letter-spacing: 2px; color: var(--text);
+  }
+  .section-sub { color: var(--muted); font-size: .82rem; font-family: var(--mono); }
+
+  /* ── CARDS ── */
+  .card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 8px; padding: 1.25rem;
+  }
+  .card-title {
+    font-family: var(--display); font-size: 1.2rem; letter-spacing: 1px;
+    color: var(--muted); margin-bottom: .75rem;
+    text-transform: uppercase;
+  }
+
+  /* ── GRID HELPERS ── */
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+  .grid-3 { display: grid; grid-template-columns: repeat(3,1fr); gap: 1rem; }
+  .grid-4 { display: grid; grid-template-columns: repeat(4,1fr); gap: 1rem; }
+
+  /* ── STAT CHIP ── */
+  .stat-chip {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 6px; padding: .75rem 1rem;
+    display: flex; flex-direction: column; gap: .2rem;
+  }
+  .stat-chip .label { font-size: .7rem; text-transform: uppercase;
+    letter-spacing: 1px; color: var(--muted); font-family: var(--mono); }
+  .stat-chip .value { font-family: var(--display); font-size: 2rem;
+    letter-spacing: 1px; color: var(--accent); line-height: 1; }
+  .stat-chip .sub { font-size: .72rem; color: var(--muted); }
+
+  /* ── BUTTONS ── */
+  .btn {
+    background: var(--accent); color: #000; border: none; cursor: pointer;
+    font-family: var(--sans); font-weight: 600; font-size: .82rem;
+    padding: .55rem 1.25rem; border-radius: 4px; letter-spacing: .3px;
+    transition: opacity .15s, transform .1s;
+  }
+  .btn:hover { opacity: .88; transform: translateY(-1px); }
+  .btn:active { transform: translateY(0); }
+  .btn-ghost {
+    background: transparent; color: var(--muted); border: 1px solid var(--border);
+  }
+  .btn-ghost:hover { color: var(--text); border-color: var(--muted); }
+  .btn-danger { background: var(--bad); color: #fff; }
+  .btn-sm { padding: .3rem .75rem; font-size: .75rem; }
+
+  /* ── TABLE ── */
+  .tbl-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: .84rem; }
+  th {
+    font-family: var(--mono); font-size: .68rem; text-transform: uppercase;
+    letter-spacing: 1px; color: var(--muted); font-weight: 500;
+    padding: .55rem .75rem; text-align: left;
+    border-bottom: 1px solid var(--border);
+  }
+  td { padding: .6rem .75rem; border-bottom: 1px solid var(--border); }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: rgba(255,255,255,.02); }
+  .td-right { text-align: right; }
+  .td-center { text-align: center; }
+  .mono { font-family: var(--mono); }
+  .accent-val { color: var(--accent); font-family: var(--mono); font-weight: 500; }
+  .good { color: var(--good); }
+  .bad { color: var(--bad); }
+  .muted { color: var(--muted); }
+
+  /* ── MATCHUP CARD ── */
+  .matchup-card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 8px; overflow: hidden;
+  }
+  .matchup-header {
+    background: var(--surface); border-bottom: 1px solid var(--border);
+    padding: .5rem 1rem; font-family: var(--mono); font-size: .7rem;
+    color: var(--muted); letter-spacing: 1px; text-transform: uppercase;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .matchup-body { display: grid; grid-template-columns: 1fr auto 1fr; }
+  .matchup-team {
+    padding: 1.25rem 1rem; display: flex; flex-direction: column;
+    gap: .25rem;
+  }
+  .matchup-team.right { align-items: flex-end; }
+  .matchup-team-name { font-weight: 600; font-size: .95rem; }
+  .matchup-owner { font-size: .75rem; color: var(--muted); }
+  .matchup-score {
+    font-family: var(--display); font-size: 2.5rem;
+    letter-spacing: 1px; color: var(--accent); line-height: 1;
+  }
+  .matchup-score.winner { color: var(--good); }
+  .matchup-score.loser { color: var(--muted); }
+  .matchup-vs {
+    display: flex; align-items: center; justify-content: center;
+    padding: 0 1rem; color: var(--border); font-family: var(--display);
+    font-size: 1.2rem;
+  }
+  .matchup-status {
+    font-size: .7rem; font-family: var(--mono); color: var(--muted);
+    text-transform: uppercase; letter-spacing: 1px;
+  }
+
+  /* ── PLAYER ROW ── */
+  .player-row {
+    display: flex; align-items: center; gap: .75rem;
+    padding: .5rem 0; border-bottom: 1px solid var(--border);
+  }
+  .player-row:last-child { border-bottom: none; }
+  .player-pos {
+    font-family: var(--mono); font-size: .68rem; font-weight: 500;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 3px; padding: .15rem .4rem;
+    color: var(--muted); min-width: 36px; text-align: center;
+  }
+  .player-name { flex: 1; font-size: .88rem; font-weight: 500; }
+  .player-best {
+    font-family: var(--display); font-size: 1.4rem;
+    color: var(--accent); letter-spacing: 1px; min-width: 48px; text-align: right;
+  }
+  .player-bench .player-name { color: var(--muted); }
+  .player-bench .player-best { color: var(--border); }
+  .bench-divider {
+    font-family: var(--mono); font-size: .65rem; color: var(--muted);
+    text-transform: uppercase; letter-spacing: 1px;
+    padding: .4rem 0; display: flex; align-items: center; gap: .5rem;
+  }
+  .bench-divider::before, .bench-divider::after {
+    content: ''; flex: 1; height: 1px; background: var(--border);
+  }
+
+  /* ── WEEK SELECTOR ── */
+  .week-selector {
+    display: flex; align-items: center; gap: .5rem; margin-bottom: 1.5rem;
+  }
+  .week-btn {
+    background: var(--card); border: 1px solid var(--border);
+    color: var(--muted); font-family: var(--mono); font-size: .75rem;
+    padding: .35rem .75rem; border-radius: 4px; cursor: pointer;
+    transition: all .15s;
+  }
+  .week-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .week-btn.active { background: var(--accent); color: #000; border-color: var(--accent); font-weight: 600; }
+
+  /* ── MODAL ── */
+  .modal-overlay {
+    display: none; position: fixed; inset: 0;
+    background: rgba(0,0,0,.75); z-index: 200;
+    align-items: center; justify-content: center;
+    backdrop-filter: blur(4px);
+  }
+  .modal-overlay.open { display: flex; }
+  .modal {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 2rem; max-width: 480px; width: 90%;
+    max-height: 90vh; overflow-y: auto;
+  }
+  .modal-title {
+    font-family: var(--display); font-size: 1.8rem; letter-spacing: 1px;
+    margin-bottom: 1.25rem; color: var(--accent);
+  }
+  .modal-footer { display: flex; gap: .75rem; margin-top: 1.5rem; justify-content: flex-end; }
+
+  /* ── FORM ── */
+  .form-group { display: flex; flex-direction: column; gap: .4rem; margin-bottom: 1rem; }
+  .form-label { font-size: .75rem; font-family: var(--mono); text-transform: uppercase;
+    letter-spacing: 1px; color: var(--muted); }
+  .form-input {
+    background: var(--surface); border: 1px solid var(--border);
+    color: var(--text); font-family: var(--sans); font-size: .9rem;
+    padding: .6rem .85rem; border-radius: 4px; outline: none;
+    transition: border-color .15s;
+    width: 100%;
+  }
+  .form-input:focus { border-color: var(--accent); }
+  .form-select {
+    background: var(--surface); border: 1px solid var(--border);
+    color: var(--text); font-family: var(--sans); font-size: .9rem;
+    padding: .6rem .85rem; border-radius: 4px; outline: none; width: 100%;
+    cursor: pointer;
+  }
+  .form-hint { font-size: .72rem; color: var(--muted); }
+
+  /* ── TOAST ── */
+  #toast {
+    position: fixed; bottom: 1.5rem; right: 1.5rem;
+    background: var(--good); color: #000; font-weight: 600;
+    padding: .75rem 1.25rem; border-radius: 6px; font-size: .85rem;
+    opacity: 0; transform: translateY(12px);
+    transition: all .3s; z-index: 300; pointer-events: none;
+    max-width: 320px;
+  }
+  #toast.show { opacity: 1; transform: translateY(0); }
+  #toast.error { background: var(--bad); color: #fff; }
+
+  /* ── PIN SCREEN ── */
+  #pin-overlay {
+    display: none; position: fixed; inset: 0;
+    background: var(--bg); z-index: 500;
+    align-items: center; justify-content: center; flex-direction: column; gap: 1.5rem;
+  }
+  #pin-overlay.open { display: flex; }
+  .pin-title { font-family: var(--display); font-size: 3rem; color: var(--accent); letter-spacing: 4px; }
+  .pin-dots { display: flex; gap: .75rem; }
+  .pin-dot {
+    width: 14px; height: 14px; border-radius: 50%;
+    border: 2px solid var(--border); background: transparent;
+    transition: background .15s;
+  }
+  .pin-dot.filled { background: var(--accent); border-color: var(--accent); }
+  .pin-numpad { display: grid; grid-template-columns: repeat(3,1fr); gap: .5rem; max-width: 220px; }
+  .pin-key {
+    background: var(--card); border: 1px solid var(--border);
+    color: var(--text); font-family: var(--display); font-size: 1.6rem;
+    letter-spacing: 1px; padding: 1rem; border-radius: 6px; cursor: pointer;
+    text-align: center; transition: all .15s; user-select: none;
+  }
+  .pin-key:hover { background: var(--surface); border-color: var(--accent); color: var(--accent); }
+  .pin-error { color: var(--bad); font-size: .8rem; font-family: var(--mono); min-height: 1.2rem; }
+
+  /* ── DRAFT PICK ── */
+  .pick-chip {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 4px; padding: .3rem .6rem;
+    font-family: var(--mono); font-size: .72rem; color: var(--muted);
+    display: inline-flex; align-items: center; gap: .3rem;
+  }
+  .pick-chip .pick-rd { color: var(--accent); font-weight: 500; }
+
+  /* ── LOADING ── */
+  .loading-bar {
+    width: 100%; height: 3px; background: var(--border);
+    border-radius: 2px; overflow: hidden; margin: .75rem 0;
+  }
+  .loading-bar-fill {
+    height: 100%; background: var(--accent);
+    animation: loadingPulse 1.4s ease-in-out infinite;
+  }
+  @keyframes loadingPulse {
+    0%   { width: 0%; margin-left: 0; }
+    50%  { width: 70%; margin-left: 15%; }
+    100% { width: 0%; margin-left: 100%; }
+  }
+  .loading-text { color: var(--muted); font-family: var(--mono); font-size: .78rem; text-align: center; padding: 1rem; }
+
+  /* ── STANDINGS RANK ── */
+  .rank-badge {
+    font-family: var(--display); font-size: 1.2rem; color: var(--border);
+    width: 28px; text-align: center;
+  }
+  .rank-badge.r1 { color: #f0a500; }
+  .rank-badge.r2 { color: #9ca3af; }
+  .rank-badge.r3 { color: #b45309; }
+
+  /* ── HERO BAND ── */
+  .hero-band {
+    background: linear-gradient(135deg, #0f1218 0%, #141820 50%, #0a0d12 100%);
+    border: 1px solid var(--border); border-radius: 10px;
+    padding: 2rem; margin-bottom: 1.5rem; position: relative; overflow: hidden;
+  }
+  .hero-band::before {
+    content: '';
+    position: absolute; top: -50%; right: -10%;
+    width: 400px; height: 400px;
+    background: radial-gradient(circle, rgba(240,165,0,.08) 0%, transparent 70%);
+    pointer-events: none;
+  }
+  .hero-band-title {
+    font-family: var(--display); font-size: 1rem; letter-spacing: 3px;
+    color: var(--muted); text-transform: uppercase; margin-bottom: .3rem;
+  }
+  .hero-band-league {
+    font-family: var(--display); font-size: 2.8rem; letter-spacing: 2px;
+    color: var(--text); line-height: 1;
+  }
+  .hero-band-meta { margin-top: .75rem; display: flex; gap: 1.5rem; flex-wrap: wrap; }
+  .hero-meta-item { font-family: var(--mono); font-size: .75rem; color: var(--muted); }
+  .hero-meta-item strong { color: var(--accent); }
+
+  /* ── TABS ── */
+  .tab-bar {
+    display: flex; gap: 0; border-bottom: 1px solid var(--border);
+    margin-bottom: 1.25rem;
+  }
+  .tab {
+    background: none; border: none; cursor: pointer; font-family: var(--sans);
+    font-size: .82rem; font-weight: 500; padding: .6rem 1.25rem;
+    color: var(--muted); border-bottom: 2px solid transparent;
+    transition: all .15s; text-transform: uppercase; letter-spacing: .4px;
+  }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+  /* ── SCORE BREAKDOWN ── */
+  .score-games {
+    display: flex; gap: .35rem; flex-wrap: wrap; align-items: center;
+  }
+  .score-game-pill {
+    font-family: var(--mono); font-size: .72rem;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 3px; padding: .15rem .4rem; color: var(--muted);
+  }
+  .score-game-pill.best {
+    background: rgba(240,165,0,.15); border-color: var(--accent);
+    color: var(--accent); font-weight: 500;
+  }
+
+  /* ── EMPTY STATE ── */
+  .empty-state {
+    text-align: center; padding: 3rem 1rem;
+    color: var(--muted); font-family: var(--mono); font-size: .82rem;
+  }
+  .empty-icon { font-size: 2.5rem; margin-bottom: .75rem; opacity: .3; }
+
+  /* ── SCROLLBAR ── */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: var(--surface); }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  /* ── RESPONSIVE ── */
+  @media (max-width: 700px) {
+    .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
+    .nav-brand { font-size: 1.3rem; margin-right: 1rem; }
+    .hero-band-league { font-size: 2rem; }
+    .matchup-score { font-size: 2rem; }
+    .section-title { font-size: 1.8rem; }
+  }
+
+  /* ── TRADE BUILDER ── */
+  .trade-team-panel {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 6px; padding: 1rem;
+  }
+  .trade-team-title { font-family: var(--mono); font-size: .72rem; text-transform: uppercase;
+    letter-spacing: 1px; color: var(--muted); margin-bottom: .75rem; }
+  .trade-pick-item {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: .4rem .6rem; border-radius: 4px; margin-bottom: .3rem;
+    border: 1px solid var(--border); background: var(--card);
+    font-size: .82rem; cursor: pointer; transition: border-color .15s;
+  }
+  .trade-pick-item:hover { border-color: var(--accent); }
+  .trade-pick-item.selected { border-color: var(--accent); background: rgba(240,165,0,.08); }
+
+  /* ── PLAYOFF BRACKET ── */
+  .bracket-round { display: flex; flex-direction: column; gap: 1rem; }
+  .bracket-matchup {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 6px; overflow: hidden;
+  }
+  .bracket-seed {
+    display: flex; align-items: center; gap: .75rem;
+    padding: .6rem 1rem; border-bottom: 1px solid var(--border);
+  }
+  .bracket-seed:last-child { border-bottom: none; }
+  .seed-num {
+    font-family: var(--mono); font-size: .68rem; color: var(--muted);
+    min-width: 18px;
+  }
+  .seed-name { flex: 1; font-size: .85rem; font-weight: 500; }
+  .seed-score {
+    font-family: var(--display); font-size: 1.2rem;
+    color: var(--accent); letter-spacing: 1px;
+  }
+
+  /* ── IMPORT STATUS ── */
+  .import-step {
+    display: flex; align-items: center; gap: .75rem;
+    padding: .5rem 0; font-size: .82rem; font-family: var(--mono);
+  }
+  .import-step-icon { width: 18px; text-align: center; }
+  .import-step.done .import-step-icon { color: var(--good); }
+  .import-step.pending .import-step-icon { color: var(--muted); }
+  .import-step.running .import-step-icon { color: var(--accent); }
+  .import-step.err .import-step-icon { color: var(--bad); }
+
+  /* ── ADMIN NOTE ── */
+  .admin-warning {
+    background: rgba(224,92,0,.1); border: 1px solid rgba(224,92,0,.3);
+    border-radius: 6px; padding: .75rem 1rem;
+    color: #f0a500; font-family: var(--mono); font-size: .75rem; margin-bottom: 1.25rem;
+  }
+</style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav>
+  <div class="nav-brand" onclick="goto('home')">BGL<span>.</span></div>
+  <div class="nav-links">
+    <button onclick="goto('home')" id="nav-home" class="active">Home</button>
+    <button onclick="goto('standings')" id="nav-standings">Standings</button>
+    <button onclick="goto('matchups')" id="nav-matchups">Matchups</button>
+    <button onclick="goto('teams')" id="nav-teams">Teams</button>
+    <button onclick="goto('playoffs')" id="nav-playoffs">Playoffs</button>
+    <button onclick="goto('draft')" id="nav-draft">Draft Picks</button>
+  </div>
+  <div class="nav-right">
+    <div class="nav-week-badge">Week <strong id="nav-week">—</strong></div>
+    <button class="btn btn-ghost btn-sm" onclick="openAdmin()">⚙</button>
+  </div>
+</nav>
+
+<!-- TOAST -->
+<div id="toast"></div>
+
+<!-- PIN OVERLAY -->
+<div id="pin-overlay">
+  <div class="pin-title">ADMIN</div>
+  <div class="pin-dots" id="pin-dots">
+    <div class="pin-dot"></div>
+    <div class="pin-dot"></div>
+    <div class="pin-dot"></div>
+    <div class="pin-dot"></div>
+  </div>
+  <div class="pin-error" id="pin-error"></div>
+  <div class="pin-numpad">
+    <div class="pin-key" onclick="pinKey('1')">1</div>
+    <div class="pin-key" onclick="pinKey('2')">2</div>
+    <div class="pin-key" onclick="pinKey('3')">3</div>
+    <div class="pin-key" onclick="pinKey('4')">4</div>
+    <div class="pin-key" onclick="pinKey('5')">5</div>
+    <div class="pin-key" onclick="pinKey('6')">6</div>
+    <div class="pin-key" onclick="pinKey('7')">7</div>
+    <div class="pin-key" onclick="pinKey('8')">8</div>
+    <div class="pin-key" onclick="pinKey('9')">9</div>
+    <div class="pin-key" onclick="pinKey('clr')" style="color:var(--muted);font-size:1rem">CLR</div>
+    <div class="pin-key" onclick="pinKey('0')">0</div>
+    <div class="pin-key" onclick="pinKey('del')" style="color:var(--muted);font-size:1rem">⌫</div>
+  </div>
+  <button class="btn btn-ghost btn-sm" onclick="closePinOverlay()">Cancel</button>
+</div>
+
+<!-- ══════════════════════════════════════
+     PAGES
+══════════════════════════════════════ -->
+
+<!-- HOME -->
+<div id="page-home" class="page active">
+  <div class="hero-band">
+    <div class="hero-band-title">Best Game League</div>
+    <div class="hero-band-league" id="home-league-name">Loading…</div>
+    <div class="hero-band-meta">
+      <div class="hero-meta-item">Season <strong id="home-season">—</strong></div>
+      <div class="hero-meta-item">Current Week <strong id="home-week">—</strong></div>
+      <div class="hero-meta-item">Teams <strong id="home-teams">—</strong></div>
+      <div class="hero-meta-item" id="home-lock-info">Lineup <strong>—</strong></div>
+    </div>
+    <div id="home-countdown" style="margin-top:.75rem;font-family:var(--mono);font-size:.78rem;color:var(--accent)"></div>
+  </div>
+
+  <div id="home-scoring-period" style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:1rem 1.25rem;margin-bottom:1.5rem"></div>
+
+  <div class="grid-4" id="home-stats" style="margin-bottom:1.5rem">
+    <div class="stat-chip">
+      <div class="label">Current Leader</div>
+      <div class="value" id="home-leader">—</div>
+      <div class="sub" id="home-leader-record">—</div>
+    </div>
+    <div class="stat-chip">
+      <div class="label">Highest Score</div>
+      <div class="value" id="home-high-score">—</div>
+      <div class="sub" id="home-high-score-team">—</div>
+    </div>
+    <div class="stat-chip">
+      <div class="label">Weeks Played</div>
+      <div class="value" id="home-weeks-played">—</div>
+      <div class="sub">of <span id="home-total-weeks">—</span> total</div>
+    </div>
+    <div class="stat-chip">
+      <div class="label">League ID</div>
+      <div class="value" id="home-league-id" style="font-size:1.1rem;margin-top:.25rem">—</div>
+      <div class="sub">ESPN</div>
+    </div>
+  </div>
+
+  <!-- Current week matchups preview -->
+  <div class="section-header">
+    <div class="section-title">This Week</div>
+    <div class="section-sub" id="home-week-label">Week —</div>
+  </div>
+  <div id="home-matchups-grid" class="grid-2">
+    <div class="loading-text">
+      <div class="loading-bar"><div class="loading-bar-fill"></div></div>
+      Importing from ESPN…
+    </div>
+  </div>
+
+  <div style="margin-top:2rem;display:flex;gap:1rem;flex-wrap:wrap">
+    <button class="btn" onclick="importFromESPN()">↻ Import from ESPN</button>
+    <button class="btn btn-ghost" onclick="goto('standings')">View Standings</button>
+  </div>
+
+  <div style="margin-top:2rem">
+    <div class="section-header"><div class="section-title" style="font-size:1.6rem">How BGL Scoring Works</div></div>
+    <div class="grid-3" style="gap:1rem">
+      <div class="card">
+        <div style="font-family:var(--display);font-size:1rem;letter-spacing:1px;color:var(--accent);margin-bottom:.5rem">01 — LOCK</div>
+        <div style="font-size:.84rem;line-height:1.6;color:var(--text)">
+          Every Sunday at 10 AM, your starting lineup locks. Those starters — and only those starters — count for the week. No swaps, no injury replacements.
+        </div>
+      </div>
+      <div class="card">
+        <div style="font-family:var(--display);font-size:1rem;letter-spacing:1px;color:var(--accent);margin-bottom:.5rem">02 — BEST GAME</div>
+        <div style="font-size:.84rem;line-height:1.6;color:var(--text)">
+          Monday through Sunday, each starter plays multiple games. Only their single highest-scoring game counts toward your weekly total.
+        </div>
+      </div>
+      <div class="card">
+        <div style="font-family:var(--display);font-size:1rem;letter-spacing:1px;color:var(--accent);margin-bottom:.5rem">03 — MATCHUP</div>
+        <div style="font-size:.84rem;line-height:1.6;color:var(--text)">
+          Sum each starter's best game. The team with the higher total wins the week. Standings are tracked here, independent of ESPN.
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- STANDINGS -->
+<div id="page-standings" class="page">
+  <div class="section-header">
+    <div class="section-title">Standings</div>
+    <div class="section-sub">Best-Game scoring, tracked independently</div>
+  </div>
+  <div class="card">
+    <div class="tbl-wrap">
+      <table id="standings-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Team</th>
+            <th class="td-center">W</th>
+            <th class="td-center">L</th>
+            <th class="td-right">PF</th>
+            <th class="td-right">PA</th>
+            <th class="td-right">Diff</th>
+            <th class="td-right">Streak</th>
+          </tr>
+        </thead>
+        <tbody id="standings-tbody">
+          <tr><td colspan="8" class="loading-text">No data yet. Import from ESPN to start.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- MATCHUPS -->
+<div id="page-matchups" class="page">
+  <div class="section-header">
+    <div class="section-title">Matchups</div>
+  </div>
+  <div class="week-selector" id="matchup-week-selector"></div>
+  <div id="matchups-content">
+    <div class="empty-state"><div class="empty-icon">🏟</div>No matchup data loaded.</div>
+  </div>
+</div>
+
+<!-- TEAMS -->
+<div id="page-teams" class="page">
+  <div class="section-header">
+    <div class="section-title">Teams</div>
+  </div>
+  <div class="grid-2" id="teams-grid">
+    <div class="empty-state"><div class="empty-icon">👥</div>No teams loaded.</div>
+  </div>
+</div>
+
+<!-- PLAYOFFS -->
+<div id="page-playoffs" class="page">
+  <div class="section-header">
+    <div class="section-title">Playoffs</div>
+    <div class="section-sub">Admin configured • Independent of ESPN</div>
+  </div>
+  <div id="playoffs-content">
+    <div class="empty-state"><div class="empty-icon">🏆</div>No playoff data configured yet.<br><br>
+      <button class="btn btn-ghost btn-sm" onclick="openAdmin()">Configure in Admin</button>
+    </div>
+  </div>
+</div>
+
+<!-- DRAFT PICKS -->
+<div id="page-draft" class="page">
+  <div class="section-header">
+    <div class="section-title">Draft Picks</div>
+    <div class="section-sub">Pick ownership & trade history</div>
+  </div>
+  <div class="tab-bar">
+    <button class="tab active" id="tab-picks" onclick="showDraftTab('picks')">Pick Board</button>
+    <button class="tab" id="tab-trades" onclick="showDraftTab('trades')">Trade History</button>
+  </div>
+  <div id="draft-picks-content"></div>
+  <div id="draft-trades-content" style="display:none"></div>
+</div>
+
+<!-- ADMIN/SETTINGS (hidden page, PIN protected) -->
+<div id="page-admin" class="page">
+  <div class="section-header">
+    <div class="section-title" style="color:var(--accent)">Admin</div>
+    <div class="section-sub">Settings & League Management</div>
+  </div>
+  <div class="admin-warning">⚠ Admin access — changes are permanent and affect all users.</div>
+
+  <!-- Firebase Setup (shown only when not configured) -->
+  <div id="firebase-setup-card" class="card" style="margin-bottom:1.5rem;border-color:rgba(240,165,0,.3);background:rgba(240,165,0,.05)">
+    <div class="card-title" style="color:var(--accent)">Firebase Setup Required</div>
+    <p style="font-size:.82rem;color:var(--text);line-height:1.7;margin-bottom:1rem">
+      This app uses Firebase Firestore for multi-device sync. To enable it:
+    </p>
+    <ol style="font-size:.82rem;color:var(--muted);line-height:2;padding-left:1.25rem">
+      <li>Go to <strong style="color:var(--text)">console.firebase.google.com</strong> → Create project</li>
+      <li>Add a Web app → copy the <code style="background:var(--surface);padding:.1rem .4rem;border-radius:3px;color:var(--accent)">firebaseConfig</code> object</li>
+      <li>Enable <strong style="color:var(--text)">Firestore Database</strong> in test mode</li>
+      <li>Replace the <code style="background:var(--surface);padding:.1rem .4rem;border-radius:3px;color:var(--accent)">FB_CONFIG</code> block in this file with your config</li>
+    </ol>
+    <p style="font-size:.78rem;color:var(--muted);margin-top:.75rem">
+      Without Firebase, data is stored in localStorage on this device only.
+    </p>
+    <button class="btn btn-ghost btn-sm" style="margin-top:.75rem" onclick="document.getElementById('firebase-setup-card').style.display='none'">Dismiss</button>
+  </div>
+
+  <div class="grid-2" style="gap:1.5rem">
+    <!-- League Settings -->
+    <div class="card">
+      <div class="card-title">League Settings</div>
+      <div class="form-group">
+        <div class="form-label">ESPN League ID</div>
+        <input class="form-input" id="admin-league-id" type="text" placeholder="e.g. 69029411">
+        <div class="form-hint">This is the leagueId from your ESPN fantasy URL.</div>
+      </div>
+      <div class="form-group">
+        <div class="form-label">League Name</div>
+        <input class="form-input" id="admin-league-name" type="text" placeholder="e.g. Best Game Basketball League">
+      </div>
+      <div class="form-group">
+        <div class="form-label">Season Year</div>
+        <input class="form-input" id="admin-season" type="number" placeholder="e.g. 2025">
+      </div>
+      <div class="form-group">
+        <div class="form-label">Total Regular Season Weeks</div>
+        <input class="form-input" id="admin-total-weeks" type="number" placeholder="e.g. 19">
+      </div>
+      <div class="form-group">
+        <div class="form-label">Playoff Start Week</div>
+        <input class="form-input" id="admin-playoff-week" type="number" placeholder="e.g. 20">
+      </div>
+      <button class="btn" onclick="saveLeagueSettings()">Save Settings</button>
+    </div>
+
+    <!-- ESPN Import -->
+    <div class="card">
+      <div class="card-title">ESPN Import</div>
+      <p style="font-size:.82rem;color:var(--muted);margin-bottom:1rem;">
+        Pulls teams, rosters, starters, matchups, and player game scores from ESPN's public API.
+        Run this weekly to keep scores current. Lineups lock Sunday 10 AM — run import after games complete.
+      </p>
+      <div class="form-group">
+        <div class="form-label">Scoring Week to Import</div>
+        <input class="form-input" id="admin-import-week" type="number" placeholder="e.g. 1">
+      </div>
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:.75rem">
+        <button class="btn" onclick="adminImport()">↻ Import Week</button>
+        <button class="btn btn-ghost" onclick="importFromESPN()">↻ Import Current Week</button>
+      </div>
+      <div id="admin-import-log" style="margin-top:.75rem;max-height:180px;overflow-y:auto;font-size:.78rem"></div>
+      <button class="btn btn-ghost btn-sm" onclick="document.getElementById('admin-import-log').innerHTML=''" style="margin-top:.5rem">Clear Log</button>
+    </div>
+
+    <!-- Manual Score Override -->
+    <div class="card">
+      <div class="card-title">Manual Score Override</div>
+      <p style="font-size:.82rem;color:var(--muted);margin-bottom:1rem;">
+        Manually set a player's best-game score for a week. Use when ESPN data is missing or incorrect.
+      </p>
+      <div class="form-group">
+        <div class="form-label">Week</div>
+        <input class="form-input" id="override-week" type="number" placeholder="e.g. 3">
+      </div>
+      <div class="form-group">
+        <div class="form-label">Team</div>
+        <select class="form-select" id="override-team" onchange="renderOverridePlayerList()"></select>
+      </div>
+      <div class="form-group">
+        <div class="form-label">Player</div>
+        <select class="form-select" id="override-player"></select>
+      </div>
+      <div class="form-group">
+        <div class="form-label">Best Game Score (pts)</div>
+        <input class="form-input" id="override-score" type="number" step="0.1" placeholder="e.g. 42.5">
+      </div>
+      <button class="btn" onclick="applyScoreOverride()">Apply Override</button>
+    </div>
+
+    <!-- Playoff Setup -->
+    <div class="card">
+      <div class="card-title">Playoff Setup</div>
+      <p style="font-size:.82rem;color:var(--muted);margin-bottom:1rem;">
+        Create custom playoff matchups. Playoff results are tracked on this site only.
+      </p>
+      <div id="playoff-matchup-builder"></div>
+      <button class="btn btn-ghost btn-sm" onclick="addPlayoffMatchup()" style="margin-top:.75rem">+ Add Matchup</button>
+      <button class="btn btn-sm" onclick="savePlayoffMatchups()" style="margin-top:.75rem">Save Bracket</button>
+    </div>
+
+    <!-- Draft Order -->
+    <div class="card">
+      <div class="card-title">Draft Order</div>
+      <div id="draft-order-editor"></div>
+      <button class="btn btn-ghost btn-sm" onclick="renderDraftOrderEditor()" style="margin-top:.75rem">Refresh</button>
+      <button class="btn btn-sm" onclick="saveDraftOrder()" style="margin-top:.75rem">Save Order</button>
+    </div>
+
+    <!-- Draft Pick Trading -->
+    <div class="card" style="grid-column:1/-1">
+      <div class="card-title">Trade Draft Picks</div>
+      <div class="grid-2" style="gap:1rem;margin-bottom:1rem">
+        <div>
+          <div class="form-group">
+            <div class="form-label">From Team</div>
+            <select class="form-select" id="trade-from-team" onchange="renderTradePickList('from')"></select>
+          </div>
+          <div id="trade-from-picks"></div>
+        </div>
+        <div>
+          <div class="form-group">
+            <div class="form-label">To Team</div>
+            <select class="form-select" id="trade-to-team" onchange="renderTradePickList('to')"></select>
+          </div>
+          <div id="trade-to-picks"></div>
+        </div>
+      </div>
+      <div class="form-group">
+        <div class="form-label">Trade Note (optional)</div>
+        <input class="form-input" id="trade-note" type="text" placeholder="e.g. Exchanged for player X">
+      </div>
+      <button class="btn" onclick="executeTrade()">Execute Trade</button>
+    </div>
+
+    <!-- Playoff Score Entry -->
+    <div class="card">
+      <div class="card-title">Playoff Scores</div>
+      <p style="font-size:.82rem;color:var(--muted);margin-bottom:.75rem">
+        Enter final scores for playoff matchups. Winner is determined automatically.
+      </p>
+      <div id="playoff-score-editor"></div>
+      <button class="btn btn-sm" onclick="savePlayoffScores()" style="margin-top:.75rem">Save Playoff Scores</button>
+    </div>
+
+    <!-- Recalculate -->
+    <div class="card">
+      <div class="card-title">Maintenance</div>
+      <p style="font-size:.82rem;color:var(--muted);margin-bottom:1rem">
+        Force recalculate standings from all stored weekly scores. Use if standings appear incorrect.
+      </p>
+      <button class="btn btn-ghost" onclick="forceRecalculate()" style="margin-bottom:.75rem;display:block;width:100%">↻ Recalculate Standings</button>
+      <button class="btn btn-ghost" onclick="clearWeekData()" style="display:block;width:100%">🗑 Clear Week Data…</button>
+      <div id="maintenance-log" style="margin-top:.75rem;font-size:.78rem;font-family:var(--mono);color:var(--muted)"></div>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- ══════════════════════════════════════
+     GENERIC MODAL
+══════════════════════════════════════ -->
+<div class="modal-overlay" id="modal-overlay">
+  <div class="modal" id="modal-body"></div>
+</div>
+
+<!-- ══════════════════════════════════════
+     FIREBASE + APP JS
+══════════════════════════════════════ -->
+<script type="module">
+import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
+import {
+  getFirestore, doc, getDoc, setDoc, updateDoc,
+  collection, getDocs, addDoc, serverTimestamp, query, orderBy
+} from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+
+/* ── FIREBASE CONFIG ── */
+const FB_CONFIG = {
+  apiKey: "REPLACE_WITH_YOUR_API_KEY",
+  authDomain: "REPLACE.firebaseapp.com",
+  projectId: "REPLACE_PROJECT_ID",
+  storageBucket: "REPLACE.appspot.com",
+  messagingSenderId: "REPLACE",
+  appId: "REPLACE"
+};
+
+let db;
+try {
+  const app = initializeApp(FB_CONFIG);
+  db = getFirestore(app);
+} catch(e) {
+  console.warn('Firebase init failed — running in local-only mode:', e);
+}
+
+/* ══════════════════════════════════════
+   STATE
+══════════════════════════════════════ */
+let STATE = {
+  leagueId: '69029411',
+  leagueName: 'Best Game League',
+  season: new Date().getFullYear(),
+  totalWeeks: 19,
+  playoffStartWeek: 20,
+  currentWeek: 1,
+  sport: null,           // detected: 'fba' | 'flb' | 'ffl'
+  teams: [],             // [{id, name, abbrev, owner, wins, losses, pf, pa, streak, roster:[]}]
+  weeklyScores: {},      // { weekN: { teamId: { score, breakdown:[{playerId,name,pos,games:[],best}] } } }
+  lineupSnapshots: {},   // { weekN: { teamId: [starterPlayerIds at lock time] } }
+  matchups: {},          // { weekN: [{home:{teamId,score}, away:{teamId,score}, winner}] }
+  playoffMatchups: [],
+  draftPicks: [],        // [{id, season, round, pick, originalOwner, currentOwner, traded}]
+  trades: [],            // [{date, fromTeam, toTeam, picks:[], note}]
+  selectedWeek: 1,
+  selectedTeamId: null,
+  draftTab: 'picks',
+  tradeFromSelected: [],
+  tradeToSelected: [],
+};
+
+/* ══════════════════════════════════════
+   FIREBASE HELPERS
+══════════════════════════════════════ */
+async function fbGet(path) {
+  if (!db) return null;
+  try {
+    const parts = path.split('/');
+    const d = parts.length % 2 === 0
+      ? await getDoc(doc(db, ...parts))
+      : await getDocs(collection(db, ...parts));
+    if (parts.length % 2 === 0) return d.exists() ? d.data() : null;
+    const out = {};
+    d.forEach(s => out[s.id] = s.data());
+    return out;
+  } catch(e) { console.error('fbGet', path, e); return null; }
+}
+
+async function fbSet(path, data) {
+  if (!db) { saveLocal(); return; }
+  try {
+    const parts = path.split('/');
+    await setDoc(doc(db, ...parts), data, {merge:true});
+  } catch(e) { console.error('fbSet', path, e); }
+}
+
+async function fbAdd(colPath, data) {
+  if (!db) return null;
+  try {
+    const ref = await addDoc(collection(db, colPath), {...data, createdAt: serverTimestamp()});
+    return ref.id;
+  } catch(e) { console.error('fbAdd', colPath, e); return null; }
+}
+
+/* ══════════════════════════════════════
+   LOCAL STORAGE FALLBACK
+══════════════════════════════════════ */
+function saveLocal() {
+  try { localStorage.setItem('bgl_state', JSON.stringify(STATE)); } catch(e){}
+}
+function loadLocal() {
+  try {
+    const s = localStorage.getItem('bgl_state');
+    if (s) Object.assign(STATE, JSON.parse(s));
+  } catch(e){}
+}
+
+/* ══════════════════════════════════════
+   ESPN API
+══════════════════════════════════════ */
+// ESPN fantasy API — sport codes: fba=basketball, flb=baseball, ffl=football
+const ESPN_SPORTS = ['fba', 'flb', 'ffl'];
+
+async function espnFetch(url) {
+  const res = await fetch(url, { headers: { 'X-Fantasy-Filter': '{}' } });
+  if (!res.ok) throw new Error(`ESPN ${res.status} — ${url.split('?')[0].split('/').slice(-1)}`);
+  return res.json();
+}
+
+function espnAPIUrl(sport, leagueId, season, params='') {
+  return `https://lm-api-reads.fantasy.espn.com/apis/v3/games/${sport}/seasons/${season}/segments/0/leagues/${leagueId}?${params}`;
+}
+
+// Detect sport by trying each code until one succeeds
+async function detectSport(leagueId, season) {
+  for (const sport of ESPN_SPORTS) {
+    try {
+      await espnFetch(espnAPIUrl(sport, leagueId, season, 'view=mSettings'));
+      return sport;
+    } catch(e) { /* try next */ }
+  }
+  throw new Error('Could not reach ESPN API. Check league ID and season year.');
+}
+
+// ── Slot ID → position label (basketball-aware)
+function slotName(id, sport) {
+  if (sport === 'fba') {
+    // Basketball slot IDs
+    const m = {0:'PG',1:'SG',2:'SF',3:'PF',4:'C',5:'G',6:'F',7:'C',
+               9:'G/F',10:'F/C',11:'UTIL',12:'BE',13:'IL',17:'BE'};
+    return m[id] ?? String(id);
+  }
+  // Baseball / generic
+  const m = {0:'C',1:'1B',2:'2B',3:'3B',4:'SS',5:'MI',6:'CI',7:'OF',
+             8:'OF',9:'OF',10:'OF',11:'UTIL',12:'SP',13:'RP',14:'P',
+             15:'BE',16:'DL',17:'BE',18:'UTIL',19:'NA',20:'BE',21:'IL'};
+  return m[id] ?? String(id);
+}
+
+// Bench slot IDs differ by sport
+function isStarterSlot(slotId, sport) {
+  if (sport === 'fba') return ![12, 13, 17].includes(slotId); // BE, IL
+  return ![15, 16, 17, 20, 21].includes(slotId); // BE, DL, IL
+}
+
+/* ══════════════════════════════════════
+   MAIN IMPORT
+══════════════════════════════════════ */
+window.importFromESPN = async function(weekOverride) {
+  const leagueId = STATE.leagueId;
+  const season = STATE.season;
+  const week = weekOverride || STATE.currentWeek;
+
+  logImport('Detecting sport…', 'running');
+  let sport;
+  try { sport = await detectSport(leagueId, season); }
+  catch(e) { logImport(e.message, 'err'); toast(e.message, true); return; }
+  STATE.sport = sport;
+  logImport(`Sport: ${sport === 'fba' ? 'Basketball' : sport === 'flb' ? 'Baseball' : 'Football'}`, 'done');
+
+  // 1. Fetch settings + teams
+  logImport('Fetching league settings…', 'running');
+  let settingsData;
+  try {
+    settingsData = await espnFetch(espnAPIUrl(sport, leagueId, season, 'view=mSettings&view=mTeam&view=mRoster&view=mMatchup'));
+  } catch(e) {
+    logImport('Failed to fetch league data: ' + e.message, 'err');
+    toast('ESPN import failed: ' + e.message, true); return;
+  }
+  logImport('League data received', 'done');
+
+  // Parse settings
+  const settings = settingsData.settings || {};
+  STATE.leagueName = settings.name || STATE.leagueName;
+  if (settings.scheduleSettings) {
+    STATE.totalWeeks = settings.scheduleSettings.matchupPeriodCount || STATE.totalWeeks;
+  }
+  // Detect current scoring period
+  const status = settingsData.status || {};
+  STATE.currentWeek = status.currentMatchupPeriod || week;
+  document.getElementById('nav-week').textContent = STATE.currentWeek;
+
+  // Parse teams
+  logImport('Parsing teams & rosters…', 'running');
+  const rawTeams = settingsData.teams || [];
+  const members = settingsData.members || [];
+  const memberMap = {};
+  members.forEach(m => memberMap[m.id] = (m.firstName||'') + ' ' + (m.lastName||''));
+
+  const existingTeamMap = {};
+  STATE.teams.forEach(t => existingTeamMap[t.id] = t);
+
+  STATE.teams = rawTeams.map(rt => {
+    const existing = existingTeamMap[rt.id] || {};
+    const ownerIds = (rt.owners || []);
+    const owner = ownerIds.map(id => memberMap[id] || id).join(', ') || 'Unknown';
+    const roster = parseRoster(rt.roster, week, sport);
+    return {
+      id: rt.id,
+      name: ((rt.location || '') + ' ' + (rt.nickname || '')).trim() || ('Team ' + rt.id),
+      abbrev: rt.abbrev || String(rt.id),
+      owner,
+      wins: existing.wins || 0,
+      losses: existing.losses || 0,
+      pf: existing.pf || 0,
+      pa: existing.pa || 0,
+      streak: existing.streak || 0,
+      roster,
+    };
+  });
+  logImport(`${STATE.teams.length} teams parsed`, 'done');
+
+  // Capture lineup snapshot for this week (locked starters)
+  logImport('Capturing lineup snapshot…', 'running');
+  captureLineupSnapshot(week, sport);
+  logImport('Lineup snapshot saved', 'done');
+
+  // Parse matchup schedule
+  logImport('Parsing matchups…', 'running');
+  const schedule = settingsData.schedule || [];
+  schedule.forEach(m => {
+    const w = m.matchupPeriodId;
+    if (!STATE.matchups[w]) STATE.matchups[w] = [];
+    const homeId = m.home?.teamId;
+    const awayId = m.away?.teamId;
+    if (!homeId || !awayId) return;
+    const existing = STATE.matchups[w].find(x =>
+      (x.home.teamId === homeId && x.away.teamId === awayId) ||
+      (x.home.teamId === awayId && x.away.teamId === homeId)
+    );
+    if (!existing) {
+      STATE.matchups[w].push({
+        home: { teamId: homeId, score: 0 },
+        away: { teamId: awayId, score: 0 },
+        winner: null,
+        locked: false,
+      });
+    }
+  });
+  logImport('Matchups parsed', 'done');
+
+  // Fetch per-player game scores for the week
+  logImport(`Fetching player game scores for week ${week}…`, 'running');
+  try {
+    const scoringData = await espnFetch(
+      espnAPIUrl(sport, leagueId, season,
+        `view=mMatchupScore&view=mScoreboard&scoringPeriodId=${week}`)
+    );
+    await processPlayerScores(scoringData, week, sport);
+    logImport('Player scores processed', 'done');
+  } catch(e) {
+    logImport('Player scores fetch failed: ' + e.message, 'err');
+  }
+
+  // Compute BGL scores
+  logImport('Computing Best-Game scores…', 'running');
+  computeBGLScores(week);
+  logImport('Scores computed', 'done');
+
+  // Update matchup winners
+  updateMatchupWinners(week);
+
+  // Recompute standings from all weeks
+  recomputeStandings();
+
+  // Save
+  await persistState();
+  logImport('Saved to Firebase', 'done');
+
+  toast('Import complete — Week ' + week);
+  renderAll();
+}
+
+function parseRoster(roster, week, sport) {
+  if (!roster || !roster.entries) return [];
+  return roster.entries.map(e => {
+    const player = e.playerPoolEntry?.player || {};
+    const lineupSlot = e.lineupSlotId;
+    return {
+      id: player.id || e.playerId,
+      name: (player.fullName || player.lastName || 'Unknown'),
+      pos: slotName(lineupSlot, sport),
+      lineupSlotId: lineupSlot,
+      isStarter: isStarterSlot(lineupSlot, sport),
+      games: [],
+      bestGame: 0,
+    };
+  });
+}
+
+// Lineup locks every Sunday at 10:00 AM for the UPCOMING scoring week
+// Returns the lock Date for the given week number
+function getLineupLockDate(week) {
+  // Week 1 lock = first Sunday of the season at 10am
+  // We use the season start (approx Oct for basketball, Apr for baseball)
+  const sport = STATE.sport || 'fba';
+  const year = STATE.season;
+  // Approximate season start months
+  const startMonth = sport === 'fba' ? 9 : sport === 'flb' ? 3 : 8; // Oct=9, Apr=3, Sep=8 (0-indexed)
+  const seasonStart = new Date(year, startMonth, 1);
+  // Find first Sunday on or after season start
+  const dayOfWeek = seasonStart.getDay(); // 0=Sun
+  const daysToSunday = dayOfWeek === 0 ? 0 : 7 - dayOfWeek;
+  const firstSunday = new Date(seasonStart);
+  firstSunday.setDate(firstSunday.getDate() + daysToSunday);
+  // Add (week-1) * 7 days
+  const lockDate = new Date(firstSunday);
+  lockDate.setDate(lockDate.getDate() + (week - 1) * 7);
+  lockDate.setHours(10, 0, 0, 0);
+  return lockDate;
+}
+
+function isLineupLocked(week) {
+  return new Date() >= getLineupLockDate(week);
+}
+
+// Snapshot the starting lineup at import time (serves as the lock record)
+function captureLineupSnapshot(week, sport) {
+  if (!STATE.lineupSnapshots[week]) STATE.lineupSnapshots[week] = {};
+  STATE.teams.forEach(t => {
+    // Only snapshot if not already captured (first import = lock snapshot)
+    if (STATE.lineupSnapshots[week][t.id]) return;
+    const starters = (t.roster || [])
+      .filter(p => p.isStarter)
+      .map(p => ({ id: p.id, name: p.name, pos: p.pos }));
+    STATE.lineupSnapshots[week][t.id] = {
+      starters,
+      lockedAt: new Date().toISOString(),
+    };
+  });
+}
+
+
+
+async function processPlayerScores(scoringData, week, sport) {
+  // ESPN's mMatchupScore view includes appliedStatTotal per player per matchup period
+  // For per-GAME breakdown we use the view=mBoxscore or per-scoring-period filter
+  const leagueId = STATE.leagueId;
+  const season = STATE.season;
+  const teams = scoringData.teams || [];
+  if (!STATE.weeklyScores[week]) STATE.weeklyScores[week] = {};
+
+  // Determine scoring period range for this matchup week
+  // ESPN uses scoringPeriodId = calendar day index; matchup weeks span 7 days
+  // We'll try to get per-period scores via the extended roster view
+  let perDayData = null;
+  try {
+    // Request with per-scoring-period breakdown via X-Fantasy-Filter
+    const filter = JSON.stringify({
+      players: {
+        filterSlotIds: { value: [] },
+        filterStatsForCurrentSeasonScoringPeriodId: { value: [week] },
+        sortAppliedStatTotal: { sortAscending: false, sortPriority: 1, value: `${week}_${week}` },
+      }
+    });
+    const url = espnAPIUrl(sport, leagueId, season,
+      `view=mRoster&view=mMatchupScore&scoringPeriodId=${week}`);
+    const res = await fetch(url, {
+      headers: {
+        'X-Fantasy-Filter': filter,
+        'X-Fantasy-Platform': 'kona-PROD-1dc6f1a3705b2958b1a1e8e7a6d7b9e6b5d3e2c1',
+      }
+    });
+    if (res.ok) perDayData = await res.json();
+  } catch(e) { /* fallback to scoringData */ }
+
+  const sourceTeams = (perDayData?.teams || teams);
+
+  for (const espnTeam of sourceTeams) {
+    const roster = espnTeam.roster?.entries || [];
+    const breakdown = [];
+
+    for (const entry of roster) {
+      const playerPool = entry.playerPoolEntry || {};
+      const player = playerPool.player || {};
+      const pid = player.id || entry.playerId;
+      const pname = player.fullName || player.lastName || 'Player ' + pid;
+      const slotId = entry.lineupSlotId;
+      const isStarter = isStarterSlot(slotId, sport);
+
+      // ESPN provides playerStats array with per-scoring-period totals
+      const playerStats = playerPool.playerStats || playerPool.stats || [];
+      let games = [];
+      let best = 0;
+
+      if (Array.isArray(playerStats) && playerStats.length > 0) {
+        // Filter to stats that fall within this matchup week
+        // ESPN scoringPeriodId for weekly leagues: each matchup covers period IDs
+        // We pick any stat whose scoringPeriodId is tagged to this week
+        const weekStats = playerStats.filter(s => {
+          // Some ESPN responses tag with matchupPeriodId, others with scoringPeriodId
+          if (s.scoringPeriodId !== undefined) {
+            // Daily sport: each scoringPeriodId = one game
+            // Check if within this week's range (ESPN uses sequential day IDs)
+            return true; // Include all; we'll trust the view=mMatchupScore filter
+          }
+          return false;
+        });
+
+        if (weekStats.length > 0) {
+          games = weekStats.map(s => {
+            // Use appliedTotal (fantasy-scored) rather than raw stats
+            const v = parseFloat(s.appliedTotal ?? s.appliedStatTotal ?? 0);
+            return Math.max(0, v);
+          }).filter((_, i, arr) => arr.indexOf(_) >= 0); // keep all including zeros
+
+          // Remove trailing zeros (games not yet played show as 0)
+          while (games.length > 1 && games[games.length - 1] === 0) games.pop();
+          best = games.length ? Math.max(...games) : 0;
+        }
+      }
+
+      // Fallback: use the single weekly appliedStatTotal if no per-game breakdown
+      if (!games.length) {
+        const weekly = parseFloat(playerPool.appliedStatTotal ?? entry.appliedStatTotal ?? 0);
+        if (weekly > 0) { games = [weekly]; best = weekly; }
+      }
+
+      breakdown.push({
+        playerId: pid,
+        name: pname,
+        pos: slotName(slotId, sport),
+        lineupSlotId: slotId,
+        isStarter,
+        games: games.map(g => Math.round(g * 100) / 100),
+        bestGame: isStarter ? Math.round(best * 100) / 100 : 0,
+      });
+    }
+
+    const teamScore = breakdown
+      .filter(p => p.isStarter)
+      .reduce((sum, p) => sum + p.bestGame, 0);
+
+    STATE.weeklyScores[week][espnTeam.id] = {
+      score: Math.round(teamScore * 100) / 100,
+      breakdown,
+    };
+  }
+}
+
+function computeBGLScores(week) {
+  // For each team, verify starter scores are summed correctly
+  if (!STATE.weeklyScores[week]) return;
+  for (const [teamId, data] of Object.entries(STATE.weeklyScores[week])) {
+    data.score = data.breakdown
+      .filter(p => p.isStarter)
+      .reduce((sum, p) => sum + (p.bestGame || 0), 0);
+  }
+}
+
+function updateMatchupWinners(week) {
+  const weekMatchups = STATE.matchups[week] || [];
+  const weekScores = STATE.weeklyScores[week] || {};
+  weekMatchups.forEach(m => {
+    const homeScore = weekScores[m.home.teamId]?.score || 0;
+    const awayScore = weekScores[m.away.teamId]?.score || 0;
+    m.home.score = homeScore;
+    m.away.score = awayScore;
+    if (homeScore > 0 || awayScore > 0) {
+      m.winner = homeScore >= awayScore ? m.home.teamId : m.away.teamId;
+    }
+  });
+}
+
+function recomputeStandings() {
+  // Reset
+  STATE.teams.forEach(t => { t.wins = 0; t.losses = 0; t.pf = 0; t.pa = 0; t.streak = 0; });
+  const teamMap = {};
+  STATE.teams.forEach(t => teamMap[t.id] = t);
+
+  const allWeeks = Object.keys(STATE.matchups).map(Number).sort((a,b)=>a-b);
+  allWeeks.forEach(w => {
+    if (w >= (STATE.playoffStartWeek || 99)) return; // skip playoffs
+    const weekMatchups = STATE.matchups[w] || [];
+    weekMatchups.forEach(m => {
+      if (!m.winner) return;
+      const home = teamMap[m.home.teamId];
+      const away = teamMap[m.away.teamId];
+      if (!home || !away) return;
+      home.pf += m.home.score;
+      home.pa += m.away.score;
+      away.pf += m.away.score;
+      away.pa += m.home.score;
+      if (m.winner === m.home.teamId) { home.wins++; away.losses++; }
+      else { away.wins++; home.losses++; }
+    });
+  });
+  // Compute streak (from most recent weeks)
+  allWeeks.slice().reverse().forEach(w => {
+    const weekMatchups = STATE.matchups[w] || [];
+    weekMatchups.forEach(m => {
+      if (!m.winner) return;
+      [m.home.teamId, m.away.teamId].forEach(tid => {
+        const t = teamMap[tid];
+        if (!t || t._streakDone) return;
+        const won = m.winner === tid;
+        if (t.streak === 0) { t.streak = won ? 1 : -1; t._streakSet = true; }
+        else if (t.streak > 0 && won) t.streak++;
+        else if (t.streak < 0 && !won) t.streak--;
+        else t._streakDone = true;
+      });
+    });
+  });
+  STATE.teams.forEach(t => { delete t._streakDone; delete t._streakSet; });
+}
+
+async function persistState() {
+  if (!db) { saveLocal(); return; }
+  await fbSet('leagues/main/settings', {
+    leagueId: STATE.leagueId, leagueName: STATE.leagueName,
+    season: STATE.season, totalWeeks: STATE.totalWeeks,
+    playoffStartWeek: STATE.playoffStartWeek, currentWeek: STATE.currentWeek,
+    sport: STATE.sport || null,
+  });
+  await fbSet('leagues/main/teams', { data: STATE.teams });
+  await fbSet('leagues/main/matchups', { data: STATE.matchups });
+  await fbSet('leagues/main/weeklyScores', { data: STATE.weeklyScores });
+  await fbSet('leagues/main/lineupSnapshots', { data: STATE.lineupSnapshots });
+  await fbSet('leagues/main/draftPicks', { data: STATE.draftPicks });
+  await fbSet('leagues/main/playoffs', { matchups: STATE.playoffMatchups });
+  saveLocal();
+}
+
+async function loadFromDB() {
+  if (!db) { loadLocal(); return; }
+  const settings = await fbGet('leagues/main/settings');
+  if (settings) Object.assign(STATE, settings);
+  const teams = await fbGet('leagues/main/teams');
+  if (teams?.data) STATE.teams = teams.data;
+  const matchups = await fbGet('leagues/main/matchups');
+  if (matchups?.data) STATE.matchups = matchups.data;
+  const scores = await fbGet('leagues/main/weeklyScores');
+  if (scores?.data) STATE.weeklyScores = scores.data;
+  const snaps = await fbGet('leagues/main/lineupSnapshots');
+  if (snaps?.data) STATE.lineupSnapshots = snaps.data;
+  const picks = await fbGet('leagues/main/draftPicks');
+  if (picks?.data) STATE.draftPicks = picks.data;
+  const playoffs = await fbGet('leagues/main/playoffs');
+  if (playoffs?.matchups) STATE.playoffMatchups = playoffs.matchups;
+  const tradesSnap = await fbGet('leagues/main/trades');
+  if (tradesSnap) STATE.trades = Object.values(tradesSnap);
+}
+
+/* ══════════════════════════════════════
+   RENDER ENGINE
+══════════════════════════════════════ */
+function renderAll() {
+  renderHome();
+  renderStandings();
+  renderMatchups();
+  renderTeams();
+  renderPlayoffs();
+  renderDraftPicks();
+  renderDraftTrades();
+  updateAdminFields();
+}
+
+function renderHome() {
+  document.getElementById('home-league-name').textContent = STATE.leagueName || 'Best Game League';
+  document.getElementById('home-season').textContent = STATE.season;
+  document.getElementById('home-week').textContent = STATE.currentWeek;
+  document.getElementById('home-teams').textContent = STATE.teams.length || '—';
+  document.getElementById('home-league-id').textContent = STATE.leagueId;
+  document.getElementById('nav-week').textContent = STATE.currentWeek;
+  document.getElementById('home-week-label').textContent = 'Week ' + STATE.currentWeek;
+
+  // Scoring period info
+  const lockDate = getLineupLockDate(STATE.currentWeek);
+  const locked = isLineupLocked(STATE.currentWeek);
+  const lockStr = lockDate.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'})
+    + ' at ' + lockDate.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+
+  // Replace lock info in hero band meta if element exists
+  const lockEl = document.getElementById('home-lock-info');
+  if (lockEl) {
+    lockEl.innerHTML = locked
+      ? `Lineup <strong style="color:var(--bad)">LOCKED</strong>`
+      : `Lock <strong>${lockStr}</strong>`;
+  }
+
+  // Countdown timer
+  const countdownEl = document.getElementById('home-countdown');
+  if (countdownEl) {
+    if (locked) {
+      countdownEl.textContent = 'Lineup is locked for this week';
+      countdownEl.style.color = 'var(--bad)';
+    } else {
+      const updateCountdown = () => {
+        const now = new Date();
+        const diff = lockDate - now;
+        if (diff <= 0) { countdownEl.textContent = 'Lineup locked'; return; }
+        const d = Math.floor(diff / 86400000);
+        const h = Math.floor((diff % 86400000) / 3600000);
+        const m = Math.floor((diff % 3600000) / 60000);
+        const s = Math.floor((diff % 60000) / 1000);
+        countdownEl.textContent = `${d}d ${h}h ${m}m ${s}s until lineup locks`;
+      };
+      updateCountdown();
+      clearInterval(window._countdownTimer);
+      window._countdownTimer = setInterval(updateCountdown, 1000);
+    }
+  }
+
+  // Stats chips
+  const sorted = [...STATE.teams].sort((a,b) => b.wins - a.wins || b.pf - a.pf);
+  if (sorted.length) {
+    document.getElementById('home-leader').textContent = sorted[0].abbrev || sorted[0].name.split(' ').pop();
+    document.getElementById('home-leader-record').textContent = sorted[0].wins + 'W – ' + sorted[0].losses + 'L';
+  }
+
+  let highScore = 0, highTeam = '—';
+  Object.entries(STATE.weeklyScores).forEach(([w, teams]) => {
+    Object.entries(teams).forEach(([tid, d]) => {
+      if (d.score > highScore) {
+        highScore = d.score;
+        const t = STATE.teams.find(t => String(t.id) === tid);
+        highTeam = t ? (t.abbrev || t.name.split(' ').pop()) : tid;
+      }
+    });
+  });
+  document.getElementById('home-high-score').textContent = highScore.toFixed(1);
+  document.getElementById('home-high-score-team').textContent = highTeam;
+
+  const weeksPlayed = Object.keys(STATE.matchups).filter(w =>
+    (STATE.matchups[w] || []).some(m => m.winner)
+  ).length;
+  document.getElementById('home-weeks-played').textContent = weeksPlayed;
+  document.getElementById('home-total-weeks').textContent = STATE.totalWeeks || '—';
+
+  // Scoring period explanation
+  const periodEl = document.getElementById('home-scoring-period');
+  if (periodEl) {
+    const snap = STATE.lineupSnapshots[STATE.currentWeek];
+    const snapTeam = snap ? Object.values(snap)[0] : null;
+    const snapTime = snapTeam?.lockedAt
+      ? new Date(snapTeam.lockedAt).toLocaleDateString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})
+      : null;
+    periodEl.innerHTML = `
+      <div style="font-family:var(--mono);font-size:.72rem;color:var(--muted);margin-bottom:.4rem;text-transform:uppercase;letter-spacing:1px">Scoring Period — Week ${STATE.currentWeek}</div>
+      <div style="font-size:.82rem;color:var(--text);line-height:1.6">
+        Each starter's <strong style="color:var(--accent)">best single-game score</strong> counts.
+        Bench players never score. Lineup locked ${locked ? 'on' : 'at'} <strong>${lockStr}</strong>.
+        ${snapTime ? `<span style="color:var(--muted)">Snapshot captured ${snapTime}.</span>` : ''}
+      </div>`;
+  }
+
+  // Current week matchup grid
+  const grid = document.getElementById('home-matchups-grid');
+  const week = STATE.currentWeek;
+  const weekMatchups = STATE.matchups[week] || [];
+  if (!weekMatchups.length) {
+    grid.innerHTML = '<div class="empty-state" style="grid-column:1/-1"><div class="empty-icon">📋</div>No matchups for week ' + week + '.<br>Import from ESPN to populate.</div>';
+    return;
+  }
+  grid.innerHTML = weekMatchups.map(m => matchupCardHTML(m, week, true)).join('');
+}
+
+function teamById(id) {
+  return STATE.teams.find(t => String(t.id) === String(id)) || { name: 'Team ' + id, abbrev: '?', owner: '' };
+}
+
+function matchupCardHTML(m, week, mini=false) {
+  const home = teamById(m.home.teamId);
+  const away = teamById(m.away.teamId);
+  const homeWins = m.winner === m.home.teamId;
+  const awayWins = m.winner === m.away.teamId;
+  const hasResult = !!m.winner;
+
+  return `<div class="matchup-card">
+    <div class="matchup-header">
+      <span>Week ${week}</span>
+      <span>${hasResult ? (homeWins ? home.abbrev + ' wins' : away.abbrev + ' wins') : 'In progress'}</span>
+    </div>
+    <div class="matchup-body">
+      <div class="matchup-team">
+        <div class="matchup-team-name">${esc(home.name)}</div>
+        <div class="matchup-owner">${esc(home.owner)}</div>
+        <div class="matchup-score ${hasResult?(homeWins?'winner':'loser'):''}">${(m.home.score||0).toFixed(1)}</div>
+      </div>
+      <div class="matchup-vs">VS</div>
+      <div class="matchup-team right">
+        <div class="matchup-team-name">${esc(away.name)}</div>
+        <div class="matchup-owner">${esc(away.owner)}</div>
+        <div class="matchup-score ${hasResult?(awayWins?'winner':'loser'):''}">${(m.away.score||0).toFixed(1)}</div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderStandings() {
+  const sorted = [...STATE.teams].sort((a,b) => b.wins - a.wins || b.pf - a.pf);
+  const tbody = document.getElementById('standings-tbody');
+  if (!sorted.length) {
+    tbody.innerHTML = '<tr><td colspan="8" class="loading-text">No standings data. Import from ESPN.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = sorted.map((t, i) => {
+    const diff = t.pf - t.pa;
+    const diffStr = diff >= 0 ? '+' + diff.toFixed(1) : diff.toFixed(1);
+    const streakStr = t.streak > 0 ? '<span class="good">W' + t.streak + '</span>'
+                    : t.streak < 0 ? '<span class="bad">L' + Math.abs(t.streak) + '</span>'
+                    : '—';
+    const rankClass = i===0?'r1':i===1?'r2':i===2?'r3':'';
+    return `<tr>
+      <td><div class="rank-badge ${rankClass}">${i+1}</div></td>
+      <td>
+        <div style="font-weight:600">${esc(t.name)}</div>
+        <div style="font-size:.72rem;color:var(--muted)">${esc(t.owner)}</div>
+      </td>
+      <td class="td-center mono good">${t.wins}</td>
+      <td class="td-center mono bad">${t.losses}</td>
+      <td class="td-right accent-val">${(t.pf||0).toFixed(1)}</td>
+      <td class="td-right mono">${(t.pa||0).toFixed(1)}</td>
+      <td class="td-right mono ${diff>=0?'good':'bad'}">${diffStr}</td>
+      <td class="td-right">${streakStr}</td>
+    </tr>`;
+  }).join('');
+}
+
+function renderMatchups() {
+  const weeks = Object.keys(STATE.matchups).map(Number).sort((a,b)=>a-b);
+
+  // Default to current week if selectedWeek isn't in available weeks
+  if (!weeks.includes(STATE.selectedWeek)) {
+    STATE.selectedWeek = weeks.includes(STATE.currentWeek) ? STATE.currentWeek : (weeks[weeks.length-1] || 1);
+  }
+
+  const sel = document.getElementById('matchup-week-selector');
+  if (weeks.length) {
+    sel.innerHTML = weeks.map(w =>
+      `<button class="week-btn ${w===STATE.selectedWeek?'active':''}" onclick="selectWeek(${w})">
+        ${w}${w===STATE.currentWeek?' ●':''}
+      </button>`
+    ).join('');
+  } else {
+    sel.innerHTML = '';
+  }
+
+  const content = document.getElementById('matchups-content');
+  const weekMatchups = STATE.matchups[STATE.selectedWeek] || [];
+  if (!weekMatchups.length) {
+    content.innerHTML = `<div class="empty-state"><div class="empty-icon">📋</div>No matchups for week ${STATE.selectedWeek}.</div>`;
+    return;
+  }
+  content.innerHTML = `<div class="grid-2">${weekMatchups.map(m => matchupCardHTML(m, STATE.selectedWeek)).join('')}</div>`;
+
+  // Detailed roster breakdown
+  const details = weekMatchups.map(m => {
+    const home = teamById(m.home.teamId);
+    const away = teamById(m.away.teamId);
+    const homeBreakdown = STATE.weeklyScores[STATE.selectedWeek]?.[m.home.teamId]?.breakdown || [];
+    const awayBreakdown = STATE.weeklyScores[STATE.selectedWeek]?.[m.away.teamId]?.breakdown || [];
+    return `<div class="grid-2" style="margin-top:1.25rem;gap:1rem">
+      ${rosterBreakdownCard(home, homeBreakdown, STATE.selectedWeek)}
+      ${rosterBreakdownCard(away, awayBreakdown, STATE.selectedWeek)}
+    </div>`;
+  }).join('<hr style="border:none;border-top:1px solid var(--border);margin:1.5rem 0">');
+  content.innerHTML += details;
+}
+
+function rosterBreakdownCard(team, breakdown, week) {
+  // Use lineup snapshot if available (locked starters are authoritative)
+  const snap = STATE.lineupSnapshots[week || STATE.selectedWeek]?.[team.id];
+  const lockedStarterIds = snap?.starters?.map(s => String(s.id)) || null;
+
+  const starters = lockedStarterIds
+    ? breakdown.filter(p => lockedStarterIds.includes(String(p.playerId)))
+    : breakdown.filter(p => p.isStarter);
+
+  const bench = breakdown.filter(p => !starters.includes(p));
+  const total = starters.reduce((s,p) => s + (p.bestGame||0), 0);
+
+  const snapNote = snap
+    ? `<div style="font-size:.65rem;font-family:var(--mono);color:var(--muted);margin-bottom:.75rem">
+        Locked ${new Date(snap.lockedAt).toLocaleDateString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}
+      </div>`
+    : '';
+
+  const starterRows = starters.map(p => {
+    const gamesHtml = p.games?.length
+      ? p.games.map(g => {
+          const isBest = g === p.bestGame && p.bestGame > 0;
+          return `<span class="score-game-pill ${isBest?'best':''}">${g.toFixed(1)}</span>`;
+        }).join('')
+      : '<span style="color:var(--muted);font-size:.72rem;font-family:var(--mono)">no games</span>';
+    const manualBadge = p.manual
+      ? '<span style="font-size:.6rem;color:var(--muted);font-family:var(--mono);margin-left:.3rem">manual</span>' : '';
+    return `<div class="player-row">
+      <div class="player-pos">${esc(p.pos)}</div>
+      <div style="flex:1;min-width:0">
+        <div class="player-name">${esc(p.name)}${manualBadge}</div>
+        <div class="score-games" style="margin-top:.2rem">${gamesHtml}</div>
+      </div>
+      <div class="player-best">${(p.bestGame||0).toFixed(1)}</div>
+    </div>`;
+  }).join('');
+
+  const benchRows = bench.slice(0,5).map(p =>
+    `<div class="player-row player-bench">
+      <div class="player-pos" style="opacity:.35">${esc(p.pos)}</div>
+      <div class="player-name" style="flex:1">${esc(p.name)}</div>
+      <div class="player-best">—</div>
+    </div>`
+  ).join('');
+
+  return `<div class="card">
+    <div class="card-title">${esc(team.name)}</div>
+    ${snapNote}
+    <div style="font-family:var(--display);font-size:2.2rem;color:var(--accent);letter-spacing:1px;margin-bottom:.75rem;line-height:1">${total.toFixed(1)}</div>
+    ${starterRows || '<div class="muted" style="font-size:.8rem">No starter data.</div>'}
+    ${bench.length ? `<div class="bench-divider">Bench (not scored)</div>${benchRows}` : ''}
+  </div>`;
+}
+
+function renderTeams() {
+  const grid = document.getElementById('teams-grid');
+  if (!STATE.teams.length) {
+    grid.innerHTML = '<div class="empty-state"><div class="empty-icon">👥</div>No teams loaded.</div>';
+    return;
+  }
+  grid.innerHTML = STATE.teams.map(t => {
+    const weekScores = Object.entries(STATE.weeklyScores).map(([w, teams]) => ({
+      w: Number(w), score: teams[t.id]?.score || 0
+    })).filter(x => x.score > 0);
+    const avgScore = weekScores.length ? weekScores.reduce((s,x)=>s+x.score,0)/weekScores.length : 0;
+
+    return `<div class="card" style="cursor:pointer" onclick="openTeamModal(${t.id})">
+      <div class="card-title">${esc(t.abbrev)}</div>
+      <div style="font-size:1.1rem;font-weight:600;margin-bottom:.2rem">${esc(t.name)}</div>
+      <div style="font-size:.8rem;color:var(--muted);margin-bottom:.75rem">${esc(t.owner)}</div>
+      <div style="display:flex;gap:1rem;flex-wrap:wrap">
+        <div class="stat-chip" style="flex:1">
+          <div class="label">Record</div>
+          <div class="value" style="font-size:1.2rem">${t.wins}–${t.losses}</div>
+        </div>
+        <div class="stat-chip" style="flex:1">
+          <div class="label">Avg Score</div>
+          <div class="value" style="font-size:1.2rem">${avgScore.toFixed(1)}</div>
+        </div>
+        <div class="stat-chip" style="flex:1">
+          <div class="label">PF</div>
+          <div class="value" style="font-size:1.2rem">${(t.pf||0).toFixed(1)}</div>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function openTeamModal(teamId) {
+  const t = teamById(teamId);
+  const weekBreakdowns = Object.entries(STATE.weeklyScores)
+    .sort(([a],[b]) => Number(b)-Number(a))
+    .map(([w, teams]) => ({ w: Number(w), data: teams[teamId] }))
+    .filter(x => x.data);
+
+  const weekRows = weekBreakdowns.map(({w, data}) => `
+    <div style="margin-bottom:1.25rem">
+      <div style="font-family:var(--mono);font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:.5rem">
+        Week ${w} — <span style="color:var(--accent)">${(data.score||0).toFixed(1)} pts</span>
+      </div>
+      ${(data.breakdown||[]).filter(p=>p.isStarter).map(p =>
+        `<div class="player-row">
+          <div class="player-pos">${esc(p.pos)}</div>
+          <div class="player-name">${esc(p.name)}</div>
+          <div class="player-best">${(p.bestGame||0).toFixed(1)}</div>
+        </div>`
+      ).join('')}
+    </div>`
+  ).join('');
+
+  document.getElementById('modal-body').innerHTML = `
+    <div class="modal-title">${esc(t.name)}</div>
+    <div style="color:var(--muted);font-size:.8rem;margin-bottom:1.25rem">${esc(t.owner)}</div>
+    <div class="grid-3" style="margin-bottom:1.25rem">
+      <div class="stat-chip"><div class="label">W</div><div class="value">${t.wins}</div></div>
+      <div class="stat-chip"><div class="label">L</div><div class="value">${t.losses}</div></div>
+      <div class="stat-chip"><div class="label">PF</div><div class="value" style="font-size:1.2rem">${(t.pf||0).toFixed(1)}</div></div>
+    </div>
+    ${weekRows || '<div class="empty-state">No weekly data yet.</div>'}
+    <div class="modal-footer"><button class="btn btn-ghost" onclick="closeModal()">Close</button></div>
+  `;
+  document.getElementById('modal-overlay').classList.add('open');
+}
+
+function renderPlayoffs() {
+  const content = document.getElementById('playoffs-content');
+  if (!STATE.playoffMatchups.length) {
+    content.innerHTML = '<div class="empty-state"><div class="empty-icon">🏆</div>No playoff bracket configured yet.<br><br><button class="btn btn-ghost btn-sm" onclick="openAdmin()">Configure in Admin</button></div>';
+    return;
+  }
+
+  const rounds = {};
+  STATE.playoffMatchups.forEach(m => {
+    if (!rounds[m.round]) rounds[m.round] = [];
+    rounds[m.round].push(m);
+  });
+
+  const roundNums = Object.keys(rounds).map(Number).sort((a,b)=>a-b);
+  const lastRound = roundNums[roundNums.length - 1];
+  const finalMatchups = rounds[lastRound] || [];
+
+  // Determine champion — winner of last round with a single matchup
+  let champion = null;
+  if (finalMatchups.length === 1 && finalMatchups[0].winner) {
+    champion = teamById(finalMatchups[0].winner);
+  }
+
+  const ROUND_LABELS = {1:'First Round', 2:'Semifinals', 3:'Championship', 4:'Championship'};
+
+  let html = '';
+
+  // Champion banner
+  if (champion) {
+    html += `<div style="background:linear-gradient(135deg,rgba(240,165,0,.18) 0%,rgba(240,165,0,.05) 100%);
+      border:1px solid rgba(240,165,0,.4);border-radius:10px;padding:2rem;text-align:center;margin-bottom:2rem">
+      <div style="font-family:var(--mono);font-size:.72rem;letter-spacing:2px;text-transform:uppercase;color:var(--muted);margin-bottom:.4rem">
+        ${STATE.season} Champion
+      </div>
+      <div style="font-family:var(--display);font-size:3.5rem;letter-spacing:3px;color:var(--accent);line-height:1">
+        ${esc(champion.name)}
+      </div>
+      <div style="font-size:.85rem;color:var(--muted);margin-top:.4rem">${esc(champion.owner)}</div>
+    </div>`;
+  }
+
+  // Bracket rounds
+  html += roundNums.map(r => {
+    const mups = rounds[r];
+    const label = r === lastRound && mups.length === 1
+      ? 'Championship'
+      : r === lastRound - 1 && rounds[lastRound]?.length === 1
+        ? 'Semifinals'
+        : ROUND_LABELS[r] || `Round ${r}`;
+
+    return `<div style="margin-bottom:2rem">
+      <div style="display:flex;align-items:center;gap:1rem;margin-bottom:1rem">
+        <div class="section-title" style="font-size:1.4rem">${label}</div>
+        <div style="font-family:var(--mono);font-size:.72rem;color:var(--muted)">
+          Week ${mups[0]?.week || (STATE.playoffStartWeek + r - 1)}
+        </div>
+      </div>
+      <div class="grid-2">${mups.map(m => playoffMatchupCardHTML(m)).join('')}</div>
+    </div>`;
+  }).join('');
+
+  content.innerHTML = html;
+}
+
+function playoffMatchupCardHTML(m) {
+  const home = teamById(m.home?.teamId);
+  const away = teamById(m.away?.teamId);
+  const homeWins = m.winner === m.home?.teamId;
+  const awayWins = m.winner === m.away?.teamId;
+  const hasResult = !!m.winner;
+
+  return `<div class="matchup-card">
+    <div class="matchup-header">
+      <span>Playoff</span>
+      <span>${hasResult ? (homeWins ? esc(home.abbrev)+' advances' : esc(away.abbrev)+' advances') : 'Pending'}</span>
+    </div>
+    <div class="matchup-body">
+      <div class="matchup-team">
+        <div class="matchup-team-name" style="${homeWins?'color:var(--accent)':''}">${esc(home.name)}</div>
+        <div class="matchup-owner">${esc(home.owner)}</div>
+        <div class="matchup-score ${hasResult?(homeWins?'winner':'loser'):''}">${(m.home?.score||0).toFixed(1)}</div>
+        ${homeWins ? '<div style="font-size:.68rem;font-family:var(--mono);color:var(--good);margin-top:.2rem">ADVANCES ▶</div>' : ''}
+      </div>
+      <div class="matchup-vs">VS</div>
+      <div class="matchup-team right">
+        <div class="matchup-team-name" style="${awayWins?'color:var(--accent)':''}">${esc(away.name)}</div>
+        <div class="matchup-owner">${esc(away.owner)}</div>
+        <div class="matchup-score ${hasResult?(awayWins?'winner':'loser'):''}">${(m.away?.score||0).toFixed(1)}</div>
+        ${awayWins ? '<div style="font-size:.68rem;font-family:var(--mono);color:var(--good);margin-top:.2rem">ADVANCES ▶</div>' : ''}
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderDraftPicks() {
+  const content = document.getElementById('draft-picks-content');
+  if (!STATE.draftPicks.length) {
+    content.innerHTML = '<div class="empty-state"><div class="empty-icon">📋</div>No draft picks configured. Add picks in Admin.</div>';
+    return;
+  }
+
+  // Group by season, then round
+  const bySeason = {};
+  STATE.draftPicks.forEach(p => {
+    const key = p.season + '';
+    if (!bySeason[key]) bySeason[key] = {};
+    if (!bySeason[key][p.round]) bySeason[key][p.round] = [];
+    bySeason[key][p.round].push(p);
+  });
+
+  let html = '';
+  Object.entries(bySeason).sort(([a],[b])=>Number(b)-Number(a)).forEach(([season, rounds]) => {
+    html += `<div style="margin-bottom:1.5rem">
+      <div class="section-header"><div class="section-title" style="font-size:1.6rem">${season} Draft</div></div>
+      <div class="card">
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr>
+              <th>Rd</th><th>Pick</th><th>Original Owner</th><th>Current Owner</th><th>Status</th>
+            </tr></thead>
+            <tbody>`;
+    Object.entries(rounds).sort(([a],[b])=>Number(a)-Number(b)).forEach(([round, picks]) => {
+      picks.sort((a,b)=>a.pick-b.pick).forEach(p => {
+        const owner = teamById(p.currentOwner);
+        const orig = teamById(p.originalOwner);
+        html += `<tr>
+          <td class="mono">${round}</td>
+          <td class="mono accent-val">${p.pick}</td>
+          <td>${esc(orig.name)}</td>
+          <td><strong>${esc(owner.name)}</strong></td>
+          <td>${p.traded ? '<span class="good" style="font-size:.72rem;font-family:var(--mono)">TRADED</span>' : '<span class="muted" style="font-size:.72rem;font-family:var(--mono)">ORIGINAL</span>'}</td>
+        </tr>`;
+      });
+    });
+    html += `</tbody></table></div></div></div>`;
+  });
+  content.innerHTML = html;
+}
+
+function renderDraftTrades() {
+  const content = document.getElementById('draft-trades-content');
+  if (!STATE.trades.length) {
+    content.innerHTML = '<div class="empty-state"><div class="empty-icon">🔄</div>No trades recorded yet.</div>';
+    return;
+  }
+  const sorted = [...STATE.trades].sort((a,b) => new Date(b.date) - new Date(a.date));
+  content.innerHTML = `<div class="card"><div class="tbl-wrap"><table>
+    <thead><tr><th>Date</th><th>From</th><th>To</th><th>Picks</th><th>Note</th></tr></thead>
+    <tbody>${sorted.map(t => {
+      const from = teamById(t.fromTeam);
+      const to = teamById(t.toTeam);
+      const picksHtml = (t.picks||[]).map(p =>
+        `<span class="pick-chip">${p.season} <span class="pick-rd">R${p.round}</span> #${p.pick}</span>`
+      ).join(' ');
+      return `<tr>
+        <td class="mono" style="font-size:.72rem">${new Date(t.date).toLocaleDateString()}</td>
+        <td>${esc(from.name)}</td>
+        <td>${esc(to.name)}</td>
+        <td>${picksHtml}</td>
+        <td class="muted" style="font-size:.8rem">${esc(t.note||'')}</td>
+      </tr>`;
+    }).join('')}</tbody>
+  </table></div></div>`;
+}
+
+/* ══════════════════════════════════════
+   ADMIN
+══════════════════════════════════════ */
+function updateAdminFields() {
+  document.getElementById('admin-league-id').value = STATE.leagueId || '';
+  document.getElementById('admin-league-name').value = STATE.leagueName || '';
+  document.getElementById('admin-season').value = STATE.season || '';
+  document.getElementById('admin-total-weeks').value = STATE.totalWeeks || '';
+  document.getElementById('admin-playoff-week').value = STATE.playoffStartWeek || '';
+  document.getElementById('admin-import-week').value = STATE.currentWeek || '';
+  renderDraftOrderEditor();
+  renderTradeTeamSelects();
+  renderPlayoffBuilder();
+  renderOverrideTeamSelect();
+  renderPlayoffScoreEditor();
+}
+
+window.saveLeagueSettings = async function() {
+  STATE.leagueId = document.getElementById('admin-league-id').value.trim();
+  STATE.leagueName = document.getElementById('admin-league-name').value.trim();
+  STATE.season = Number(document.getElementById('admin-season').value) || STATE.season;
+  STATE.totalWeeks = Number(document.getElementById('admin-total-weeks').value) || STATE.totalWeeks;
+  STATE.playoffStartWeek = Number(document.getElementById('admin-playoff-week').value) || STATE.playoffStartWeek;
+  await persistState();
+  toast('Settings saved');
+  renderAll();
+}
+
+window.adminImport = async function() {
+  const week = Number(document.getElementById('admin-import-week').value) || STATE.currentWeek;
+  await importFromESPN(week);
+}
+
+function logImport(msg, status='pending') {
+  const log = document.getElementById('admin-import-log');
+  if (!log) return;
+  const icon = status==='done'?'✓':status==='err'?'✗':status==='running'?'…':'·';
+  const color = status==='done'?'var(--good)':status==='err'?'var(--bad)':status==='running'?'var(--accent)':'var(--muted)';
+  const div = document.createElement('div');
+  div.className = 'import-step ' + status;
+  div.innerHTML = `<span class="import-step-icon" style="color:${color}">${icon}</span><span>${esc(msg)}</span>`;
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+}
+
+// Playoff builder
+let playoffBuilderData = [];
+
+function renderPlayoffBuilder() {
+  playoffBuilderData = [...STATE.playoffMatchups];
+  updatePlayoffBuilderUI();
+}
+
+function renderPlayoffScoreEditor() {
+  const el = document.getElementById('playoff-score-editor');
+  if (!el) return;
+  if (!STATE.playoffMatchups.length) {
+    el.innerHTML = '<div class="muted" style="font-size:.78rem">No playoff matchups. Build the bracket first.</div>';
+    return;
+  }
+  el.innerHTML = STATE.playoffMatchups.map((m, i) => {
+    const home = teamById(m.home?.teamId);
+    const away = teamById(m.away?.teamId);
+    return `<div style="margin-bottom:.75rem;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:.75rem">
+      <div style="font-family:var(--mono);font-size:.68rem;color:var(--muted);margin-bottom:.5rem">
+        Round ${m.round} — ${esc(home.name)} vs ${esc(away.name)}
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem">
+        <div>
+          <div class="form-label" style="font-size:.65rem">${esc(home.abbrev)} Score</div>
+          <input class="form-input" style="padding:.35rem" type="number" step="0.1"
+            value="${m.home?.score||0}" onchange="updatePlayoffScore(${i},'home',this.value)">
+        </div>
+        <div>
+          <div class="form-label" style="font-size:.65rem">${esc(away.abbrev)} Score</div>
+          <input class="form-input" style="padding:.35rem" type="number" step="0.1"
+            value="${m.away?.score||0}" onchange="updatePlayoffScore(${i},'away',this.value)">
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+window.updatePlayoffScore = function(i, side, val) {
+  if (!STATE.playoffMatchups[i]) return;
+  STATE.playoffMatchups[i][side].score = parseFloat(val) || 0;
+  // Auto-set winner
+  const m = STATE.playoffMatchups[i];
+  if (m.home.score > 0 || m.away.score > 0) {
+    m.winner = m.home.score >= m.away.score ? m.home.teamId : m.away.teamId;
+  }
+}
+
+window.savePlayoffScores = async function() {
+  await persistState();
+  toast('Playoff scores saved');
+  renderPlayoffs();
+}
+
+window.forceRecalculate = async function() {
+  recomputeStandings();
+  await persistState();
+  renderStandings();
+  const log = document.getElementById('maintenance-log');
+  if (log) log.textContent = '✓ Standings recalculated — ' + new Date().toLocaleTimeString();
+  toast('Standings recalculated');
+}
+
+window.clearWeekData = function() {
+  const week = prompt('Enter week number to clear data for:');
+  if (!week || isNaN(Number(week))) return;
+  const w = Number(week);
+  if (!confirm(`Delete all score data for Week ${w}? This cannot be undone.`)) return;
+  delete STATE.weeklyScores[w];
+  if (STATE.matchups[w]) {
+    STATE.matchups[w].forEach(m => {
+      m.home.score = 0; m.away.score = 0; m.winner = null;
+    });
+  }
+  recomputeStandings();
+  persistState();
+  toast('Week ' + w + ' data cleared');
+  renderAll();
+}
+
+
+function updatePlayoffBuilderUI() {
+  const el = document.getElementById('playoff-matchup-builder');
+  if (!playoffBuilderData.length) { el.innerHTML = '<div class="muted" style="font-size:.8rem">No matchups yet.</div>'; return; }
+  el.innerHTML = playoffBuilderData.map((m, i) => {
+    const home = teamById(m.home?.teamId);
+    const away = teamById(m.away?.teamId);
+    return `<div style="display:flex;align-items:center;gap:.5rem;margin-bottom:.5rem;font-size:.82rem">
+      <span class="muted">R${m.round}</span>
+      <select class="form-select" style="flex:1;padding:.3rem" onchange="updatePMTeam(${i},'home',this.value)">
+        ${STATE.teams.map(t => `<option value="${t.id}" ${String(t.id)===String(m.home?.teamId)?'selected':''}>${esc(t.name)}</option>`).join('')}
+      </select>
+      <span class="muted">vs</span>
+      <select class="form-select" style="flex:1;padding:.3rem" onchange="updatePMTeam(${i},'away',this.value)">
+        ${STATE.teams.map(t => `<option value="${t.id}" ${String(t.id)===String(m.away?.teamId)?'selected':''}>${esc(t.name)}</option>`).join('')}
+      </select>
+      <button class="btn btn-danger btn-sm" onclick="removePM(${i})">✕</button>
+    </div>`;
+  }).join('');
+}
+
+window.updatePMTeam = function(i, side, val) {
+  if (!playoffBuilderData[i][side]) playoffBuilderData[i][side] = {};
+  playoffBuilderData[i][side].teamId = Number(val);
+  playoffBuilderData[i][side].score = playoffBuilderData[i][side].score || 0;
+}
+
+window.removePM = function(i) { playoffBuilderData.splice(i,1); updatePlayoffBuilderUI(); }
+
+window.addPlayoffMatchup = function() {
+  const round = playoffBuilderData.length > 0 ? playoffBuilderData[playoffBuilderData.length-1].round : 1;
+  const t1 = STATE.teams[0], t2 = STATE.teams[1];
+  playoffBuilderData.push({
+    round, week: STATE.playoffStartWeek + round - 1,
+    home: { teamId: t1?.id||1, score: 0 },
+    away: { teamId: t2?.id||2, score: 0 },
+    winner: null,
+  });
+  updatePlayoffBuilderUI();
+}
+
+window.savePlayoffMatchups = async function() {
+  STATE.playoffMatchups = playoffBuilderData;
+  await persistState();
+  toast('Playoff bracket saved');
+  renderPlayoffs();
+}
+
+// Draft order editor
+function renderDraftOrderEditor() {
+  const el = document.getElementById('draft-order-editor');
+  if (!el) return;
+  if (!STATE.draftPicks.length) {
+    el.innerHTML = `<div class="muted" style="font-size:.8rem;margin-bottom:.75rem">No picks loaded.</div>
+      <button class="btn btn-ghost btn-sm" onclick="generateDefaultDraftOrder()">Generate Default (4 rounds)</button>`;
+    return;
+  }
+  const picks = [...STATE.draftPicks].sort((a,b)=>a.round-b.round||a.pick-b.pick);
+  el.innerHTML = `<div class="tbl-wrap" style="max-height:260px;overflow-y:auto"><table>
+    <thead><tr><th>Season</th><th>Rd</th><th>Pick</th><th>Owner</th></tr></thead>
+    <tbody>${picks.map((p,i) => {
+      const owner = teamById(p.currentOwner);
+      return `<tr>
+        <td class="mono">${p.season}</td>
+        <td class="mono">${p.round}</td>
+        <td class="mono accent-val">${p.pick}</td>
+        <td>
+          <select class="form-select" style="padding:.2rem;font-size:.78rem" onchange="updatePickOwner('${p.id}',this.value)">
+            ${STATE.teams.map(t=>`<option value="${t.id}" ${String(t.id)===String(p.currentOwner)?'selected':''}>${esc(t.abbrev||t.name)}</option>`).join('')}
+          </select>
+        </td>
+      </tr>`;
+    }).join('')}</tbody>
+  </table></div>`;
+}
+
+window.generateDefaultDraftOrder = function() {
+  const season = STATE.season + 1;
+  const rounds = 4;
+  const teams = STATE.teams;
+  STATE.draftPicks = [];
+  for (let r = 1; r <= rounds; r++) {
+    const order = r % 2 === 0 ? [...teams].reverse() : [...teams];
+    order.forEach((t, i) => {
+      STATE.draftPicks.push({
+        id: `${season}-${r}-${i+1}`,
+        season, round: r, pick: i+1,
+        originalOwner: t.id, currentOwner: t.id, traded: false,
+      });
+    });
+  }
+  toast('Draft order generated for ' + season);
+  renderDraftOrderEditor();
+}
+
+window.updatePickOwner = function(pickId, newOwner) {
+  const p = STATE.draftPicks.find(x => x.id === pickId);
+  if (p) { p.currentOwner = Number(newOwner); p.traded = String(p.originalOwner) !== String(newOwner); }
+}
+
+window.saveDraftOrder = async function() {
+  await persistState();
+  toast('Draft order saved');
+  renderDraftPicks();
+}
+
+/* ══════════════════════════════════════
+   MANUAL SCORE OVERRIDE
+══════════════════════════════════════ */
+function renderOverrideTeamSelect() {
+  const sel = document.getElementById('override-team');
+  if (!sel) return;
+  sel.innerHTML = STATE.teams.map(t =>
+    `<option value="${t.id}">${esc(t.name)}</option>`
+  ).join('');
+  renderOverridePlayerList();
+}
+
+window.renderOverridePlayerList = function() {
+  const teamId = Number(document.getElementById('override-team')?.value);
+  const week = Number(document.getElementById('override-week')?.value) || STATE.currentWeek;
+  const sel = document.getElementById('override-player');
+  if (!sel) return;
+  const weekData = STATE.weeklyScores[week]?.[teamId];
+  if (weekData?.breakdown?.length) {
+    sel.innerHTML = weekData.breakdown.filter(p => p.isStarter).map(p =>
+      `<option value="${p.playerId}">${esc(p.name)} (${esc(p.pos)}) — current: ${p.bestGame.toFixed(1)}</option>`
+    ).join('');
+  } else {
+    const team = STATE.teams.find(t => t.id === teamId);
+    sel.innerHTML = (team?.roster || []).filter(p => p.isStarter).map(p =>
+      `<option value="${p.id}">${esc(p.name)} (${esc(p.pos)})</option>`
+    ).join('');
+  }
+}
+
+window.applyScoreOverride = async function() {
+  const week = Number(document.getElementById('override-week').value);
+  const teamId = Number(document.getElementById('override-team').value);
+  const playerId = Number(document.getElementById('override-player').value);
+  const score = parseFloat(document.getElementById('override-score').value);
+
+  if (!week || isNaN(score)) { toast('Fill in week and score', true); return; }
+  if (!STATE.weeklyScores[week]) STATE.weeklyScores[week] = {};
+  if (!STATE.weeklyScores[week][teamId]) {
+    STATE.weeklyScores[week][teamId] = { score: 0, breakdown: [] };
+  }
+  const breakdown = STATE.weeklyScores[week][teamId].breakdown;
+  let entry = breakdown.find(p => String(p.playerId) === String(playerId));
+  if (!entry) {
+    const team = STATE.teams.find(t => t.id === teamId);
+    const rosterPlayer = team?.roster?.find(p => String(p.id) === String(playerId));
+    entry = {
+      playerId, name: rosterPlayer?.name || 'Player ' + playerId,
+      pos: rosterPlayer?.pos || '?', isStarter: true, games: [], bestGame: 0,
+    };
+    breakdown.push(entry);
+  }
+  entry.bestGame = Math.round(score * 100) / 100;
+  if (!entry.games.includes(entry.bestGame)) entry.games.push(entry.bestGame);
+  entry.manual = true;
+
+  // Recompute team score
+  STATE.weeklyScores[week][teamId].score = breakdown
+    .filter(p => p.isStarter)
+    .reduce((s, p) => s + (p.bestGame || 0), 0);
+  STATE.weeklyScores[week][teamId].score = Math.round(STATE.weeklyScores[week][teamId].score * 100) / 100;
+
+  updateMatchupWinners(week);
+  recomputeStandings();
+  await persistState();
+  toast(`Override applied: ${score.toFixed(1)} pts`);
+  renderAll();
+}
+
+// Trade builder
+function renderTradeTeamSelects() {
+  const fromSel = document.getElementById('trade-from-team');
+  const toSel = document.getElementById('trade-to-team');
+  if (!fromSel || !toSel) return;
+  const opts = STATE.teams.map(t => `<option value="${t.id}">${esc(t.name)}</option>`).join('');
+  fromSel.innerHTML = opts;
+  toSel.innerHTML = opts;
+  if (STATE.teams.length > 1) toSel.selectedIndex = 1;
+  renderTradePickList('from');
+  renderTradePickList('to');
+}
+
+window.renderTradePickList = function(side) {
+  const sel = document.getElementById(`trade-${side}-team`);
+  if (!sel) return;
+  const teamId = Number(sel.value);
+  const el = document.getElementById(`trade-${side}-picks`);
+  if (!el) return;
+  const picks = STATE.draftPicks.filter(p => String(p.currentOwner) === String(teamId));
+  if (!picks.length) { el.innerHTML = '<div class="muted" style="font-size:.78rem">No picks.</div>'; return; }
+  el.innerHTML = picks.map(p =>
+    `<div class="trade-pick-item" id="tpick-${side}-${p.id}" onclick="toggleTradePick('${side}','${p.id}')">
+      <span>${p.season} Rd ${p.round} #${p.pick}</span>
+      <span class="pick-chip"><span class="pick-rd">${p.traded?'TRADED':'ORIG'}</span></span>
+    </div>`
+  ).join('');
+}
+
+const tradeSelected = { from: new Set(), to: new Set() };
+
+window.toggleTradePick = function(side, pickId) {
+  if (tradeSelected[side].has(pickId)) tradeSelected[side].delete(pickId);
+  else tradeSelected[side].add(pickId);
+  document.querySelectorAll(`[id^="tpick-${side}-"]`).forEach(el => {
+    const id = el.id.replace(`tpick-${side}-`,'');
+    el.classList.toggle('selected', tradeSelected[side].has(id));
+  });
+}
+
+window.executeTrade = async function() {
+  const fromId = Number(document.getElementById('trade-from-team').value);
+  const toId = Number(document.getElementById('trade-to-team').value);
+  const note = document.getElementById('trade-note').value.trim();
+
+  if (fromId === toId) { toast('Cannot trade with yourself', true); return; }
+  const picksFromTo = [...tradeSelected.from].map(id => STATE.draftPicks.find(p=>p.id===id)).filter(Boolean);
+  const picksToFrom = [...tradeSelected.to].map(id => STATE.draftPicks.find(p=>p.id===id)).filter(Boolean);
+
+  if (!picksFromTo.length && !picksToFrom.length) { toast('Select picks to trade', true); return; }
+
+  // Transfer ownership
+  picksFromTo.forEach(p => { p.currentOwner = toId; p.traded = true; });
+  picksToFrom.forEach(p => { p.currentOwner = fromId; p.traded = true; });
+
+  const trade = {
+    date: new Date().toISOString(),
+    fromTeam: fromId, toTeam: toId,
+    picks: [...picksFromTo.map(p=>({...p})), ...picksToFrom.map(p=>({...p}))],
+    note,
+  };
+  STATE.trades.push(trade);
+  if (db) await fbAdd('leagues/main/trades', trade);
+
+  tradeSelected.from.clear(); tradeSelected.to.clear();
+  document.getElementById('trade-note').value = '';
+
+  await persistState();
+  toast('Trade recorded');
+  renderDraftPicks();
+  renderDraftTrades();
+  renderTradePickList('from');
+  renderTradePickList('to');
+}
+
+/* ══════════════════════════════════════
+   NAV / ROUTING
+══════════════════════════════════════ */
+const PAGES = ['home','standings','matchups','teams','playoffs','draft','admin'];
+
+window.goto = function(page) {
+  PAGES.forEach(p => {
+    document.getElementById('page-' + p)?.classList.remove('active');
+    document.getElementById('nav-' + p)?.classList.remove('active');
+  });
+  document.getElementById('page-' + page)?.classList.add('active');
+  document.getElementById('nav-' + page)?.classList.add('active');
+  if (page === 'matchups') renderMatchups();
+  if (page === 'teams') renderTeams();
+  if (page === 'draft') { renderDraftPicks(); renderDraftTrades(); }
+}
+
+window.selectWeek = function(w) {
+  STATE.selectedWeek = w;
+  renderMatchups();
+}
+
+window.showDraftTab = function(tab) {
+  STATE.draftTab = tab;
+  document.getElementById('draft-picks-content').style.display = tab==='picks'?'':'none';
+  document.getElementById('draft-trades-content').style.display = tab==='trades'?'':'none';
+  document.getElementById('tab-picks').classList.toggle('active', tab==='picks');
+  document.getElementById('tab-trades').classList.toggle('active', tab==='trades');
+}
+
+/* ══════════════════════════════════════
+   ADMIN PIN
+══════════════════════════════════════ */
+const CORRECT_PIN = '2325';
+let pinBuffer = '';
+
+window.openAdmin = function() {
+  pinBuffer = '';
+  updatePinDots();
+  document.getElementById('pin-error').textContent = '';
+  document.getElementById('pin-overlay').classList.add('open');
+}
+
+window.closePinOverlay = function() {
+  document.getElementById('pin-overlay').classList.remove('open');
+}
+
+window.pinKey = function(key) {
+  if (key === 'clr') { pinBuffer = ''; updatePinDots(); return; }
+  if (key === 'del') { pinBuffer = pinBuffer.slice(0,-1); updatePinDots(); return; }
+  if (pinBuffer.length >= 4) return;
+  pinBuffer += key;
+  updatePinDots();
+  if (pinBuffer.length === 4) {
+    if (pinBuffer === CORRECT_PIN) {
+      closePinOverlay();
+      goto('admin');
+      updateAdminFields();
+    } else {
+      document.getElementById('pin-error').textContent = 'Incorrect PIN';
+      pinBuffer = '';
+      setTimeout(() => updatePinDots(), 600);
+    }
+  }
+}
+
+function updatePinDots() {
+  const dots = document.querySelectorAll('.pin-dot');
+  dots.forEach((d,i) => d.classList.toggle('filled', i < pinBuffer.length));
+}
+
+/* ══════════════════════════════════════
+   MODAL
+══════════════════════════════════════ */
+window.closeModal = function() {
+  document.getElementById('modal-overlay').classList.remove('open');
+}
+document.getElementById('modal-overlay').addEventListener('click', e => {
+  if (e.target === document.getElementById('modal-overlay')) closeModal();
+});
+
+/* ══════════════════════════════════════
+   TOAST
+══════════════════════════════════════ */
+window.toast = function(msg, isError=false) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'show' + (isError ? ' error' : '');
+  clearTimeout(window._toastTimer);
+  window._toastTimer = setTimeout(() => t.className = '', 3200);
+}
+
+/* ══════════════════════════════════════
+   UTILS
+══════════════════════════════════════ */
+function esc(s) {
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+/* ══════════════════════════════════════
+   INIT
+══════════════════════════════════════ */
+async function init() {
+  loadLocal();
+  await loadFromDB();
+  if (!STATE.selectedWeek) STATE.selectedWeek = STATE.currentWeek;
+  document.getElementById('nav-week').textContent = STATE.currentWeek;
+
+  // Hide Firebase setup card if connected
+  if (db) {
+    const el = document.getElementById('firebase-setup-card');
+    if (el) el.style.display = 'none';
+  }
+
+  renderAll();
+
+  // Auto-import if no data
+  if (!STATE.teams.length) {
+    setTimeout(() => importFromESPN(), 800);
+  }
+}
+
+init();
+</script>
+</body>
+</html>
