@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Best Game League v1.3</title>
+<title>Best Game League v1.4</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500;600&display=swap');
 
@@ -654,7 +654,7 @@
 
 <!-- NAV -->
 <nav>
-  <div class="nav-brand" onclick="goto('home')">BGL<span style="font-size:.6rem;color:var(--muted);letter-spacing:1px;vertical-align:super;margin-left:.2rem">v1.3</span></div>
+  <div class="nav-brand" onclick="goto('home')">BGL<span style="font-size:.6rem;color:var(--muted);letter-spacing:1px;vertical-align:super;margin-left:.2rem">v1.4</span></div>
   <div class="nav-links">
     <button onclick="goto('home')" id="nav-home" class="active">Home</button>
     <button onclick="goto('standings')" id="nav-standings">Standings</button>
@@ -1115,8 +1115,26 @@
         Force recalculate standings from all stored weekly scores. Use if standings appear incorrect.
       </p>
       <button class="btn btn-ghost" onclick="forceRecalculate()" style="margin-bottom:.75rem;display:block;width:100%">↻ Recalculate Standings</button>
-      <button class="btn btn-ghost" onclick="clearWeekData()" style="display:block;width:100%">🗑 Clear Week Data…</button>
+      <button class="btn btn-ghost" onclick="clearWeekData()" style="display:block;width:100%;margin-bottom:.75rem">🗑 Clear Week Data…</button>
+      <button class="btn btn-ghost" onclick="runDiagnostic()" style="display:block;width:100%">🔬 ESPN API Diagnostic</button>
       <div id="maintenance-log" style="margin-top:.75rem;font-size:.78rem;font-family:var(--mono);color:var(--muted)"></div>
+    </div>
+
+    <!-- ESPN API Diagnostic Inspector -->
+    <div class="card" style="grid-column:1/-1">
+      <div class="card-title">ESPN API Inspector</div>
+      <p style="font-size:.82rem;color:var(--muted);margin-bottom:1rem">
+        Fetches raw ESPN data for a specific week and shows exactly what score fields are present. Use this to debug missing scores.
+      </p>
+      <div style="display:flex;gap:.75rem;flex-wrap:wrap;margin-bottom:1rem;align-items:flex-end">
+        <div class="form-group" style="margin:0;flex:1;min-width:120px">
+          <div class="form-label">Week</div>
+          <input class="form-input" id="diag-week" type="number" placeholder="e.g. 1" style="padding:.4rem">
+        </div>
+        <button class="btn" onclick="runDiagnostic()">Inspect</button>
+        <button class="btn btn-ghost" onclick="document.getElementById('diag-output').innerHTML=''">Clear</button>
+      </div>
+      <div id="diag-output" style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:1rem;font-family:var(--mono);font-size:.72rem;color:var(--text);max-height:500px;overflow-y:auto;white-space:pre-wrap;word-break:break-all"></div>
     </div>
   </div>
 </div>
@@ -1575,91 +1593,128 @@ function captureLineupSnapshot(week, sport) {
 
 
 async function processPlayerScores(scoringData, week, sport) {
-  // ESPN's mMatchupScore view includes appliedStatTotal per player per matchup period
-  // For per-GAME breakdown we use the view=mBoxscore or per-scoring-period filter
   const leagueId = STATE.leagueId;
-  const season = STATE.season;
-  const teams = scoringData.teams || [];
+  const season   = STATE.season;
+  const teams    = scoringData.teams || [];
   if (!STATE.weeklyScores[week]) STATE.weeklyScores[week] = {};
 
-  // Determine scoring period range for this matchup week
-  // ESPN uses scoringPeriodId = calendar day index; matchup weeks span 7 days
-  // We'll try to get per-period scores via the extended roster view
+  // ── Attempt richer per-scoring-period fetch ──────────────────────────────
+  // Try multiple ESPN views to maximize chance of getting per-game data.
+  // mBoxscore and mMatchupScore are the two most reliable for daily breakdowns.
   let perDayData = null;
-  try {
-    // Request with per-scoring-period breakdown via X-Fantasy-Filter
-    const filter = JSON.stringify({
-      players: {
-        filterSlotIds: { value: [] },
-        filterStatsForCurrentSeasonScoringPeriodId: { value: [week] },
-        sortAppliedStatTotal: { sortAscending: false, sortPriority: 1, value: `${week}_${week}` },
+  const fetchViews = [
+    `view=mBoxscore&view=mMatchupScore&view=mRoster&scoringPeriodId=${week}`,
+    `view=mMatchupScore&view=mRoster&scoringPeriodId=${week}`,
+  ];
+  for (const viewParam of fetchViews) {
+    try {
+      const url = espnAPIUrl(sport, leagueId, season, viewParam);
+      const res = await fetch(url, { headers: { 'X-Fantasy-Filter': '{}' } });
+      if (res.ok) {
+        const d = await res.json();
+        // Use this data if it has more stat detail than what we already have
+        const sampleEntry = d.teams?.[0]?.roster?.entries?.[0]?.playerPoolEntry;
+        if (sampleEntry?.stats?.length > 0 || sampleEntry?.appliedStatTotal > 0) {
+          perDayData = d;
+          break;
+        }
       }
-    });
-    const url = espnAPIUrl(sport, leagueId, season,
-      `view=mRoster&view=mMatchupScore&scoringPeriodId=${week}`);
-    const res = await fetch(url, {
-      headers: {
-        'X-Fantasy-Filter': filter,
-        'X-Fantasy-Platform': 'kona-PROD-1dc6f1a3705b2958b1a1e8e7a6d7b9e6b5d3e2c1',
-      }
-    });
-    if (res.ok) perDayData = await res.json();
-  } catch(e) { /* fallback to scoringData */ }
+    } catch(e) { /* try next */ }
+  }
 
-  const sourceTeams = (perDayData?.teams || teams);
+  const sourceTeams = perDayData?.teams || teams;
+
+  // ── Figure out which scoringPeriodIds belong to this matchup week ─────────
+  // ESPN schedule tells us each matchup's matchupPeriodId.
+  // For daily sports, each matchupPeriodId covers ~7 scoringPeriodIds.
+  // We derive the range from the schedule data if available.
+  let weekScoringPeriods = null; // null = accept all
+  const schedule = scoringData.schedule || perDayData?.schedule || [];
+  if (schedule.length) {
+    // Find any matchup in this week to get its scoringPeriodRange
+    const sample = schedule.find(m => m.matchupPeriodId === week);
+    if (sample?.home?.cumulativeScore?.scoringPeriodRange) {
+      const range = sample.home.cumulativeScore.scoringPeriodRange;
+      weekScoringPeriods = new Set();
+      for (let i = range[0]; i <= range[1]; i++) weekScoringPeriods.add(i);
+    }
+  }
 
   for (const espnTeam of sourceTeams) {
-    const roster = espnTeam.roster?.entries || [];
+    const entries = espnTeam.roster?.entries || [];
     const breakdown = [];
 
-    for (const entry of roster) {
-      const playerPool = entry.playerPoolEntry || {};
-      const player = playerPool.player || {};
-      const pid = player.id || entry.playerId;
-      const pname = player.fullName || player.lastName || 'Player ' + pid;
+    for (const entry of entries) {
+      const ppe    = entry.playerPoolEntry || {};
+      const player = ppe.player || {};
+      const pid    = player.id || entry.playerId;
+      const pname  = player.fullName || player.lastName || ('Player ' + pid);
       const slotId = entry.lineupSlotId;
       const isStarter = isStarterSlot(slotId, sport);
 
-      // ESPN provides playerStats array with per-scoring-period totals
-      const playerStats = playerPool.playerStats || playerPool.stats || [];
+      const eligiblePositions = resolveEligiblePositions(player, sport);
+      const defaultPos = ESPN_DEFAULT_POS[player.defaultPositionId] || eligiblePositions[0] || '?';
+
       let games = [];
-      let best = 0;
+      let best  = 0;
 
-      if (Array.isArray(playerStats) && playerStats.length > 0) {
-        // Filter to stats that fall within this matchup week
-        // ESPN scoringPeriodId for weekly leagues: each matchup covers period IDs
-        // We pick any stat whose scoringPeriodId is tagged to this week
-        const weekStats = playerStats.filter(s => {
-          // Some ESPN responses tag with matchupPeriodId, others with scoringPeriodId
-          if (s.scoringPeriodId !== undefined) {
-            // Daily sport: each scoringPeriodId = one game
-            // Check if within this week's range (ESPN uses sequential day IDs)
-            return true; // Include all; we'll trust the view=mMatchupScore filter
-          }
-          return false;
-        });
+      // ── PATH 1: ppe.stats[] — each element is one scoring period ───────────
+      // This is the most reliable path for per-game breakdown.
+      // Filter: statSourceId=0 (actual), scoringPeriodId within this week's range.
+      const statEntries = ppe.stats || [];
+      const weekStats = statEntries.filter(s => {
+        if (s.statSourceId !== undefined && s.statSourceId !== 0) return false; // skip projected
+        if (weekScoringPeriods) return weekScoringPeriods.has(s.scoringPeriodId);
+        return s.scoringPeriodId !== undefined; // accept anything with a period ID
+      });
 
-        if (weekStats.length > 0) {
-          games = weekStats.map(s => {
-            // Use appliedTotal (fantasy-scored) rather than raw stats
-            const v = parseFloat(s.appliedTotal ?? s.appliedStatTotal ?? 0);
-            return Math.max(0, v);
-          }).filter((_, i, arr) => arr.indexOf(_) >= 0); // keep all including zeros
+      if (weekStats.length > 0) {
+        games = weekStats
+          .map(s => Math.max(0, parseFloat(s.appliedTotal ?? s.appliedStatTotal ?? 0)))
+          .filter(v => !isNaN(v));
+        // Remove trailing zeros from games not yet played
+        while (games.length > 1 && games[games.length - 1] === 0) games.pop();
+        best = games.length ? Math.max(...games) : 0;
+      }
 
-          // Remove trailing zeros (games not yet played show as 0)
-          while (games.length > 1 && games[games.length - 1] === 0) games.pop();
-          best = games.length ? Math.max(...games) : 0;
+      // ── PATH 2: ppe.appliedStatTotal — single weekly total ──────────────────
+      // Use when per-game breakdown is unavailable (e.g. weekly-scoring leagues).
+      if (!games.length || (games.length === 1 && games[0] === 0)) {
+        const weekly = parseFloat(ppe.appliedStatTotal ?? entry.appliedStatTotal ?? 0);
+        if (weekly > 0) {
+          games = [weekly];
+          best  = weekly;
         }
       }
 
-      // Fallback: use the single weekly appliedStatTotal if no per-game breakdown
+      // ── PATH 3: entry.playerPoolEntry.playerStats (alternative field name) ──
       if (!games.length) {
-        const weekly = parseFloat(playerPool.appliedStatTotal ?? entry.appliedStatTotal ?? 0);
-        if (weekly > 0) { games = [weekly]; best = weekly; }
+        const ps = ppe.playerStats || [];
+        const filtered = ps.filter(s => {
+          if (weekScoringPeriods) return weekScoringPeriods.has(s.scoringPeriodId);
+          return true;
+        });
+        if (filtered.length) {
+          games = filtered.map(s => Math.max(0, parseFloat(s.appliedTotal ?? s.appliedStatTotal ?? 0)));
+          while (games.length > 1 && games[games.length - 1] === 0) games.pop();
+          best = Math.max(...games);
+        }
       }
 
-      const eligiblePositions = resolveEligiblePositions(player, sport);
-      const defaultPos = ESPN_DEFAULT_POS[player.defaultPositionId] || eligiblePositions[0] || '?';
+      // ── PATH 4: top-level scoringData matchup scores ─────────────────────
+      // Some ESPN responses put totalPoints on the matchup home/away object.
+      if (!games.length) {
+        const matchup = schedule.find(m =>
+          m.matchupPeriodId === week &&
+          (m.home?.teamId === espnTeam.id || m.away?.teamId === espnTeam.id)
+        );
+        if (matchup) {
+          const side = matchup.home?.teamId === espnTeam.id ? matchup.home : matchup.away;
+          const pts  = parseFloat(side?.totalPoints ?? side?.cumulativeScore?.totalPoints ?? 0);
+          // This is a team total — store as a single value for the team's best approximation
+          // (only used as last resort; won't give per-player data)
+        }
+      }
 
       breakdown.push({
         playerId: pid,
@@ -1682,6 +1737,25 @@ async function processPlayerScores(scoringData, week, sport) {
       score: Math.round(teamScore * 100) / 100,
       breakdown,
     };
+  }
+
+  // ── DIAGNOSTIC: log structure of first player so we can debug ────────────
+  const firstTeam = sourceTeams[0];
+  const firstEntry = firstTeam?.roster?.entries?.[0];
+  if (firstEntry) {
+    const ppe = firstEntry.playerPoolEntry || {};
+    const diagnostics = {
+      ppe_keys: Object.keys(ppe),
+      has_stats: Array.isArray(ppe.stats),
+      stats_count: (ppe.stats || []).length,
+      stats_sample: (ppe.stats || []).slice(0,2),
+      has_playerStats: Array.isArray(ppe.playerStats),
+      appliedStatTotal: ppe.appliedStatTotal,
+      player_name: ppe.player?.fullName,
+    };
+    console.log('[BGL] ESPN score structure diagnostic:', JSON.stringify(diagnostics, null, 2));
+    // Store in STATE for the API inspector
+    STATE._lastDiagnostic = diagnostics;
   }
 }
 
@@ -2369,6 +2443,116 @@ window.clearWeekData = function() {
   persistState();
   toast('Week ' + w + ' data cleared');
   renderAll();
+}
+
+window.runDiagnostic = async function() {
+  const weekInput = document.getElementById('diag-week');
+  const week = Number(weekInput?.value) || STATE.currentWeek;
+  const out = document.getElementById('diag-output');
+  if (!out) return;
+
+  const sport = STATE.sport;
+  const leagueId = STATE.leagueId;
+  const season = STATE.season;
+
+  if (!sport || !leagueId) {
+    out.textContent = 'ERROR: No sport/leagueId detected. Run an import first.';
+    return;
+  }
+
+  out.textContent = `Fetching ESPN data for Week ${week} (${sport.toUpperCase()})...\n`;
+
+  try {
+    // Fetch the full scoring response
+    const url = espnAPIUrl(sport, leagueId, season,
+      `view=mRoster&view=mMatchupScore&view=mScoreboard&scoringPeriodId=${week}`);
+    const res = await fetch(url, { headers: { 'X-Fantasy-Filter': '{}' } });
+    const data = await res.json();
+
+    const teams = data.teams || [];
+    const schedule = data.schedule || [];
+
+    let report = `=== ESPN API Diagnostic — Week ${week} ===\n`;
+    report += `Sport: ${sport} | League: ${leagueId} | Season: ${season}\n`;
+    report += `Teams in response: ${teams.length}\n`;
+    report += `Schedule entries: ${schedule.length}\n\n`;
+
+    // Inspect schedule for scoring period range
+    const sampleMatchup = schedule.find(m => m.matchupPeriodId === week);
+    if (sampleMatchup) {
+      const spRange = sampleMatchup.home?.cumulativeScore?.scoringPeriodRange;
+      report += `Matchup week ${week} scoringPeriodRange: ${JSON.stringify(spRange)}\n`;
+      report += `Home teamId: ${sampleMatchup.home?.teamId}, totalPoints: ${sampleMatchup.home?.totalPoints ?? sampleMatchup.home?.cumulativeScore?.totalPoints}\n`;
+      report += `Away teamId: ${sampleMatchup.away?.teamId}, totalPoints: ${sampleMatchup.away?.totalPoints ?? sampleMatchup.away?.cumulativeScore?.totalPoints}\n\n`;
+    } else {
+      report += `No schedule entry found for matchupPeriodId=${week}\n\n`;
+    }
+
+    // Deep inspect first 2 players from each team
+    for (const t of teams.slice(0, 3)) {
+      report += `\n── Team ${t.id} ──\n`;
+      const entries = t.roster?.entries || [];
+      report += `  Roster entries: ${entries.length}\n`;
+
+      for (const entry of entries.slice(0, 3)) {
+        const ppe    = entry.playerPoolEntry || {};
+        const player = ppe.player || {};
+        const slotId = entry.lineupSlotId;
+        const name   = player.fullName || player.lastName || 'Unknown';
+
+        report += `\n  Player: ${name} | slotId: ${slotId} | isStarter: ${isStarterSlot(slotId, sport)}\n`;
+        report += `    ppe keys: ${Object.keys(ppe).join(', ')}\n`;
+        report += `    player keys: ${Object.keys(player).slice(0,12).join(', ')}\n`;
+        report += `    player.defaultPositionId: ${player.defaultPositionId}\n`;
+        report += `    player.eligibleSlots: ${JSON.stringify(player.eligibleSlots?.slice(0,8))}\n`;
+        report += `    ppe.appliedStatTotal: ${ppe.appliedStatTotal}\n`;
+
+        // Check stats array (primary path)
+        const stats = ppe.stats || [];
+        report += `    ppe.stats count: ${stats.length}\n`;
+        if (stats.length > 0) {
+          stats.slice(0, 5).forEach((s, i) => {
+            report += `      stats[${i}]: scoringPeriodId=${s.scoringPeriodId}, statSourceId=${s.statSourceId}, appliedTotal=${s.appliedTotal}, appliedStatTotal=${s.appliedStatTotal}\n`;
+          });
+        }
+
+        // Check playerStats (secondary path)
+        const pstats = ppe.playerStats || [];
+        report += `    ppe.playerStats count: ${pstats.length}\n`;
+        if (pstats.length > 0) {
+          pstats.slice(0, 3).forEach((s, i) => {
+            report += `      playerStats[${i}]: ${JSON.stringify(s).slice(0, 120)}\n`;
+          });
+        }
+
+        // Check onTeamId / acquisitionType
+        report += `    acquisitionType: ${ppe.acquisitionType}\n`;
+        report += `    entry keys: ${Object.keys(entry).join(', ')}\n`;
+      }
+    }
+
+    // Also run our actual score extraction on this data and show what we got
+    report += `\n=== Score Extraction Results ===\n`;
+    if (!STATE.weeklyScores[week]) {
+      report += `No weeklyScores[${week}] — import hasn't run yet for this week.\n`;
+    } else {
+      for (const [teamId, teamData] of Object.entries(STATE.weeklyScores[week])) {
+        const t = teamById(teamId);
+        report += `\nTeam: ${t.name} (${teamId}) — score: ${teamData.score}\n`;
+        const starters = (teamData.breakdown || []).filter(p => p.isStarter);
+        starters.slice(0, 5).forEach(p => {
+          report += `  ${p.pos} ${p.name}: games=${JSON.stringify(p.games)}, best=${p.bestGame}\n`;
+        });
+      }
+    }
+
+    out.textContent = report;
+    toast('Diagnostic complete — check inspector');
+
+  } catch(e) {
+    out.textContent = 'ERROR: ' + e.message + '\n\n' + e.stack;
+    toast('Diagnostic failed: ' + e.message, true);
+  }
 }
 
 
