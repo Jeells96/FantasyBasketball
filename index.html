@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Best Game League v1.4</title>
+<title>Best Game League v1.5</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500;600&display=swap');
 
@@ -583,11 +583,74 @@
     letter-spacing: 1px; color: var(--muted);
   }
 
-  /* ── POSITION COMPAT COLORS ── */
-  .pos-ok { color: var(--good); }
-  .pos-warn { color: var(--bad); }
+  /* ── PLAYER HISTORY MODAL ── */
+  .player-modal-header {
+    display: flex; align-items: flex-start; gap: 1rem;
+    margin-bottom: 1.25rem;
+  }
+  .player-modal-pos {
+    font-family: var(--display); font-size: 1.6rem; letter-spacing: 1px;
+    color: var(--accent); background: rgba(240,165,0,.1);
+    border: 1px solid rgba(240,165,0,.3); border-radius: 6px;
+    padding: .3rem .75rem; line-height: 1.2; flex-shrink: 0;
+  }
+  .player-modal-name {
+    font-family: var(--display); font-size: 1.8rem; letter-spacing: 1px;
+    line-height: 1.1;
+  }
+  .player-modal-meta { font-size: .75rem; color: var(--muted); margin-top: .2rem; }
+  .player-stat-row {
+    display: grid; grid-template-columns: repeat(3,1fr); gap: .75rem;
+    margin-bottom: 1.25rem;
+  }
+  .player-week-row {
+    display: flex; flex-direction: column; gap: 0;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 6px; overflow: hidden; margin-bottom: .75rem;
+  }
+  .player-week-header {
+    display: flex; align-items: center; padding: .6rem 1rem;
+    cursor: pointer; gap: .75rem; transition: background .15s;
+  }
+  .player-week-header:hover { background: rgba(255,255,255,.03); }
+  .player-week-num {
+    font-family: var(--mono); font-size: .72rem; color: var(--muted);
+    min-width: 48px;
+  }
+  .player-week-best {
+    font-family: var(--display); font-size: 1.4rem;
+    color: var(--accent); letter-spacing: 1px; min-width: 52px;
+  }
+  .player-week-best.zero { color: var(--border); font-size: 1rem; }
+  .player-week-avg { font-family: var(--mono); font-size: .72rem; color: var(--muted); flex: 1; }
+  .player-week-games {
+    display: flex; gap: .3rem; flex-wrap: wrap; padding: .4rem 1rem .75rem 1rem;
+    border-top: 1px solid var(--border);
+  }
+  .player-day-chip {
+    font-family: var(--mono); font-size: .72rem;
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 4px; padding: .25rem .6rem;
+    display: flex; flex-direction: column; align-items: center; gap: .1rem;
+    min-width: 44px;
+  }
+  .player-day-chip .day-label { font-size: .55rem; color: var(--muted); text-transform: uppercase; }
+  .player-day-chip .day-score { color: var(--text); }
+  .player-day-chip.best-day {
+    border-color: var(--accent); background: rgba(240,165,0,.1);
+  }
+  .player-day-chip.best-day .day-score { color: var(--accent); font-weight: 600; }
+  .player-day-chip.zero-day .day-score { color: var(--border); }
 
-  /* ── RESPONSIVE ── */
+  /* make player names in tables look clickable */
+  .player-link {
+    cursor: pointer; text-decoration: none; color: inherit;
+    border-bottom: 1px dashed rgba(255,255,255,.2);
+    transition: color .15s, border-color .15s;
+    display: inline;
+  }
+  .player-link:hover { color: var(--accent); border-bottom-color: var(--accent); }
+
   @media (max-width: 700px) {
     .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
     .nav-brand { font-size: 1.3rem; margin-right: 1rem; }
@@ -654,7 +717,7 @@
 
 <!-- NAV -->
 <nav>
-  <div class="nav-brand" onclick="goto('home')">BGL<span style="font-size:.6rem;color:var(--muted);letter-spacing:1px;vertical-align:super;margin-left:.2rem">v1.4</span></div>
+  <div class="nav-brand" onclick="goto('home')">BGL<span style="font-size:.6rem;color:var(--muted);letter-spacing:1px;vertical-align:super;margin-left:.2rem">v1.5</span></div>
   <div class="nav-links">
     <button onclick="goto('home')" id="nav-home" class="active">Home</button>
     <button onclick="goto('standings')" id="nav-standings">Standings</button>
@@ -3138,7 +3201,7 @@ function renderLineupEditor() {
       <div class="slot-pos-badge ${isEligible?'eligible':''}">${esc(slot.slotPos)}</div>
       ${player
         ? `<div class="slot-player">
-            <div class="slot-player-name">${esc(player.name)}</div>
+            <div class="slot-player-name"><span class="player-link" onclick="event.stopPropagation();openPlayerModal('${player.id}','${lineupEditorState.teamId}')">${esc(player.name)}</span></div>
             <div style="display:flex;align-items:center;gap:.4rem;margin-top:.2rem;flex-wrap:wrap">
               <span class="slot-player-positions">${esc(player.eligiblePositions?.join(', ') || player.defaultPos || player.pos || '')}</span>
               <div class="score-games">${gamesHtml}</div>
@@ -3175,7 +3238,7 @@ function renderLineupEditor() {
         onclick="${editable ? `handleSlotClick('bench',${i})` : ''}">
       <div class="slot-pos-badge" style="opacity:.4">BE</div>
       <div class="slot-player">
-        <div class="slot-player-name" style="color:var(--muted)">${esc(player.name)}</div>
+        <div class="slot-player-name" style="color:var(--muted)"><span class="player-link" onclick="event.stopPropagation();openPlayerModal('${player.id}','${lineupEditorState.teamId}')" style="color:var(--muted)">${esc(player.name)}</span></div>
         <div style="display:flex;align-items:center;gap:.4rem;margin-top:.2rem;flex-wrap:wrap">
           <span class="slot-player-positions">${esc(player.eligiblePositions?.join(', ') || player.defaultPos || player.pos || '')}</span>
           <div class="score-games">${gamesHtml}</div>
@@ -3415,9 +3478,10 @@ function renderMyTeamScoresTab() {
   starters.forEach(({slot, player, scores}) => {
     const games = scores?.games || [];
     const best = scores?.bestGame || 0;
+    const pid = player?.id || scores?.playerId || '';
     html += `<tr>
       <td class="pos-cell">${esc(slot)}</td>
-      <td class="name-cell">${esc(player?.name || '—')}</td>`;
+      <td class="name-cell"><span class="player-link" onclick="openPlayerModal('${pid}','${teamId}')">${esc(player?.name || '—')}</span></td>`;
     for (let d = 0; d < gameCols; d++) {
       const g = games[d];
       const isBest = g !== undefined && g > 0 && g === best;
@@ -3541,9 +3605,10 @@ function rosterBreakdownCard(team, breakdown, week) {
   starters.forEach(({slot, player, scores}) => {
     const games = scores?.games || [];
     const best = scores?.bestGame || 0;
+    const pid = player?.id || scores?.playerId || '';
     tableHtml += `<tr>
       <td class="pos-cell">${esc(slot)}</td>
-      <td class="name-cell">${esc(player?.name || '—')}</td>`;
+      <td class="name-cell"><span class="player-link" onclick="openPlayerModal('${pid}','${team.id}')">${esc(player?.name || '—')}</span></td>`;
     for (let d = 0; d < gameCols; d++) {
       const g = games[d];
       const isBest = g !== undefined && g > 0 && g === best;
@@ -3560,7 +3625,7 @@ function rosterBreakdownCard(team, breakdown, week) {
     ? `<div class="bench-divider" style="margin-top:.5rem">Bench — not scored</div>
        ${bench.slice(0,4).map(p =>
          `<div style="display:flex;justify-content:space-between;padding:.2rem 0;font-size:.75rem;color:var(--muted)">
-           <span>${esc(p.name)}</span>
+           <span class="player-link" onclick="openPlayerModal('${p.playerId}','${team.id}')">${esc(p.name)}</span>
            <span style="font-family:var(--mono)">${p.games?.length ? Math.max(...p.games).toFixed(1) : '—'}</span>
          </div>`
        ).join('')}` : '';
@@ -3572,6 +3637,151 @@ function rosterBreakdownCard(team, breakdown, week) {
     <div class="tbl-wrap">${tableHtml}</div>
     ${benchHtml}
   </div>`;
+}
+
+/* ══════════════════════════════════════
+   PLAYER HISTORY MODAL
+══════════════════════════════════════ */
+window.openPlayerModal = function(playerId, teamId) {
+  playerId = String(playerId);
+  teamId   = String(teamId);
+
+  // Find player across all teams if teamId unknown
+  let playerObj = null;
+  let resolvedTeamId = teamId;
+  if (teamId && teamId !== 'null') {
+    playerObj = rosterPlayerById(teamId, playerId);
+  }
+  if (!playerObj) {
+    for (const t of STATE.teams) {
+      playerObj = rosterPlayerById(t.id, playerId);
+      if (playerObj) { resolvedTeamId = String(t.id); break; }
+    }
+  }
+  // Also check breakdown data across all weeks
+  if (!playerObj) {
+    for (const [w, wTeams] of Object.entries(STATE.weeklyScores)) {
+      for (const [tid, tData] of Object.entries(wTeams)) {
+        const found = tData.breakdown?.find(p => String(p.playerId) === playerId);
+        if (found) {
+          playerObj = { id: playerId, name: found.name, defaultPos: found.defaultPos || found.pos,
+                        eligiblePositions: found.eligiblePositions || [] };
+          resolvedTeamId = tid;
+          break;
+        }
+      }
+      if (playerObj) break;
+    }
+  }
+
+  const name      = playerObj?.name || 'Player ' + playerId;
+  const pos       = playerObj?.defaultPos || playerObj?.pos || '?';
+  const eligStr   = playerObj?.eligiblePositions?.join(', ') || pos;
+
+  const DAYS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+
+  // Collect all weekly data for this player across all weeks
+  const weekHistory = [];
+  const allWeeks = Object.keys(STATE.weeklyScores).map(Number).sort((a,b)=>a-b);
+
+  for (const w of allWeeks) {
+    const wTeams = STATE.weeklyScores[w] || {};
+    // Search all teams (player may have been traded)
+    for (const [tid, tData] of Object.entries(wTeams)) {
+      const pd = tData.breakdown?.find(p => String(p.playerId) === playerId);
+      if (pd) {
+        weekHistory.push({
+          week: w,
+          teamId: tid,
+          games: pd.games || [],
+          bestGame: pd.bestGame || 0,
+          isStarter: pd.isStarter,
+        });
+        break;
+      }
+    }
+  }
+
+  // Compute career stats
+  const allGames = weekHistory.flatMap(wh => wh.games.filter(g => g > 0));
+  const careerAvg = allGames.length ? (allGames.reduce((s,g)=>s+g,0)/allGames.length) : 0;
+  const careerBest = allGames.length ? Math.max(...allGames) : 0;
+  const starterWeeks = weekHistory.filter(wh => wh.isStarter && wh.bestGame > 0);
+  const avgBest = starterWeeks.length
+    ? starterWeeks.reduce((s,wh)=>s+wh.bestGame,0)/starterWeeks.length : 0;
+
+  // Build week rows HTML
+  const weekRowsHtml = weekHistory.length ? weekHistory.slice().reverse().map(wh => {
+    const games  = wh.games;
+    const best   = wh.bestGame;
+    const played = games.filter(g => g > 0);
+    const avg    = played.length ? played.reduce((s,g)=>s+g,0)/played.length : 0;
+    const total  = games.reduce((s,g)=>s+g,0);
+
+    const daysHtml = games.map((g, d) => {
+      const isBest = g > 0 && g === best;
+      const isZero = g === 0 || g === undefined;
+      return `<div class="player-day-chip ${isBest?'best-day':''} ${isZero?'zero-day':''}">
+        <span class="day-label">${DAYS[d]||('G'+(d+1))}</span>
+        <span class="day-score">${g > 0 ? g.toFixed(1) : '—'}</span>
+      </div>`;
+    }).join('');
+
+    const notStarterNote = !wh.isStarter
+      ? '<span style="font-size:.62rem;font-family:var(--mono);color:var(--muted);margin-left:.5rem">(bench)</span>' : '';
+
+    return `<div class="player-week-row">
+      <div class="player-week-header" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'':'none'">
+        <div class="player-week-num">WK ${wh.week}</div>
+        <div class="player-week-best ${best===0?'zero':''}">${best>0?best.toFixed(1):'—'}</div>
+        <div class="player-week-avg">
+          ${played.length} game${played.length!==1?'s':''} · avg ${avg>0?avg.toFixed(1):'—'} · total ${total>0?total.toFixed(1):'—'}
+          ${notStarterNote}
+        </div>
+        <div style="color:var(--muted);font-size:.72rem">▼</div>
+      </div>
+      <div class="player-week-games" style="display:none">
+        ${daysHtml || '<span style="color:var(--muted);font-size:.75rem">No game data</span>'}
+      </div>
+    </div>`;
+  }).join('') : '<div class="empty-state" style="padding:1.5rem 0">No score history found for this player.</div>';
+
+  document.getElementById('modal-body').innerHTML = `
+    <div class="player-modal-header">
+      <div class="player-modal-pos">${esc(pos)}</div>
+      <div>
+        <div class="player-modal-name">${esc(name)}</div>
+        <div class="player-modal-meta">Eligible: ${esc(eligStr)}</div>
+      </div>
+    </div>
+    <div class="player-stat-row">
+      <div class="stat-chip">
+        <div class="label">Best Week</div>
+        <div class="value">${careerBest > 0 ? careerBest.toFixed(1) : '—'}</div>
+        <div class="sub">single game</div>
+      </div>
+      <div class="stat-chip">
+        <div class="label">Avg Best/Wk</div>
+        <div class="value">${avgBest > 0 ? avgBest.toFixed(1) : '—'}</div>
+        <div class="sub">as starter</div>
+      </div>
+      <div class="stat-chip">
+        <div class="label">Game Avg</div>
+        <div class="value">${careerAvg > 0 ? careerAvg.toFixed(1) : '—'}</div>
+        <div class="sub">${allGames.length} game${allGames.length!==1?'s':''}</div>
+      </div>
+    </div>
+    <div style="font-family:var(--mono);font-size:.7rem;text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin-bottom:.75rem">
+      Week History — tap a week to expand
+    </div>
+    <div style="max-height:55vh;overflow-y:auto;padding-right:.25rem">
+      ${weekRowsHtml}
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal()">Close</button>
+    </div>
+  `;
+  document.getElementById('modal-overlay').classList.add('open');
 }
 
 /* ══════════════════════════════════════
