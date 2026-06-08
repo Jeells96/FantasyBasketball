@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Best Game League v1.5</title>
+<title>Best Game League v1.6</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500;600&display=swap');
 
@@ -717,7 +717,7 @@
 
 <!-- NAV -->
 <nav>
-  <div class="nav-brand" onclick="goto('home')">BGL<span style="font-size:.6rem;color:var(--muted);letter-spacing:1px;vertical-align:super;margin-left:.2rem">v1.5</span></div>
+  <div class="nav-brand" onclick="goto('home')">BGL<span style="font-size:.6rem;color:var(--muted);letter-spacing:1px;vertical-align:super;margin-left:.2rem">v1.6</span></div>
   <div class="nav-links">
     <button onclick="goto('home')" id="nav-home" class="active">Home</button>
     <button onclick="goto('standings')" id="nav-standings">Standings</button>
@@ -1423,21 +1423,34 @@ function isStarterSlot(slotId, sport) {
   return ![20,21].includes(slotId); // NFL
 }
 
-// ── ESPN defaultPositionId → canonical abbreviation (used for player eligibility)
-const ESPN_DEFAULT_POS = {
-  // Basketball
+// ── ESPN defaultPositionId → canonical abbreviation
+// These IDs are SPORT-SPECIFIC — basketball and baseball reuse the same numbers
+// for different positions, so we must key by sport.
+const ESPN_DEFAULT_POS_FBA = {
+  // NBA Fantasy: defaultPositionId values
   1:'PG', 2:'SG', 3:'SF', 4:'PF', 5:'C',
-  // Baseball
-  0:'P', 6:'C', 7:'1B', 8:'2B', 9:'3B', 10:'SS',
-  11:'OF', 12:'DH', 13:'SP', 14:'RP',
-  // Football
-  15:'QB', 16:'RB', 17:'WR', 18:'TE', 19:'K', 21:'DEF',
+};
+const ESPN_DEFAULT_POS_FLB = {
+  // MLB Fantasy: defaultPositionId values (verified from ESPN API)
+  1:'SP', 2:'C', 3:'1B', 4:'2B', 5:'3B', 6:'SS',
+  7:'LF', 8:'CF', 9:'RF', 10:'DH', 11:'RP', 12:'OF', 13:'SP',
+};
+const ESPN_DEFAULT_POS_FFL = {
+  1:'QB', 2:'RB', 3:'WR', 4:'TE', 5:'K', 16:'DEF',
 };
 
+function getDefaultPos(player, sport) {
+  const id = player.defaultPositionId;
+  if (id === undefined) return null;
+  if (sport === 'fba') return ESPN_DEFAULT_POS_FBA[id] || null;
+  if (sport === 'flb') return ESPN_DEFAULT_POS_FLB[id] || null;
+  if (sport === 'ffl') return ESPN_DEFAULT_POS_FFL[id] || null;
+  return null;
+}
+
 // ── Resolve which POSITIONS a player can fill (their eligibility)
-// ESPN provides player.eligibleSlots (array of slotIds player can occupy)
+// ESPN provides player.eligibleSlots (array of lineupSlotIds the player can occupy)
 function resolveEligiblePositions(player, sport) {
-  // Use eligibleSlots → map to position abbreviations, skipping bench slots
   const eligSlots = player.eligibleSlots || [];
 
   if (sport === 'fba') {
@@ -1449,13 +1462,24 @@ function resolveEligiblePositions(player, sport) {
 
   if (sport === 'flb') {
     const benches = new Set([15,16,17,19,21]);
-    const slotToPos = {0:'C',1:'1B',2:'2B',3:'3B',4:'SS',5:'OF',6:'2B/SS',7:'1B/3B',8:'OF',9:'OF',10:'DH',11:'UTIL',12:'SP',13:'RP',14:'P'};
+    const slotToPos = {
+      0:'C', 1:'1B', 2:'2B', 3:'3B', 4:'SS',
+      5:'OF', 6:'2B/SS', 7:'1B/3B', 8:'OF', 9:'OF',
+      10:'DH', 11:'UTIL', 12:'SP', 13:'RP', 14:'P'
+    };
     const positions = [...new Set(eligSlots.filter(s=>!benches.has(s)).map(s=>slotToPos[s]).filter(Boolean))];
     if (positions.length) return positions;
   }
 
-  // Fallback to defaultPositionId
-  const dp = ESPN_DEFAULT_POS[player.defaultPositionId];
+  if (sport === 'ffl') {
+    const benches = new Set([20,21]);
+    const slotToPos = {0:'QB',2:'RB',4:'WR',6:'TE',16:'K',23:'FLEX'};
+    const positions = [...new Set(eligSlots.filter(s=>!benches.has(s)).map(s=>slotToPos[s]).filter(Boolean))];
+    if (positions.length) return positions;
+  }
+
+  // Fallback to defaultPositionId (sport-aware)
+  const dp = getDefaultPos(player, sport);
   return dp ? [dp] : ['?'];
 }
 
@@ -1593,7 +1617,7 @@ function parseRoster(roster, week, sport) {
     const player = e.playerPoolEntry?.player || {};
     const lineupSlot = e.lineupSlotId;
     const eligiblePositions = resolveEligiblePositions(player, sport);
-    const defaultPos = ESPN_DEFAULT_POS[player.defaultPositionId] || eligiblePositions[0] || '?';
+    const defaultPos = getDefaultPos(player, sport) || eligiblePositions[0] || '?';
     return {
       id: player.id || e.playerId,
       name: player.fullName || player.lastName || 'Unknown',
@@ -1716,7 +1740,7 @@ async function processPlayerScores(scoringData, week, sport) {
       const isStarter = isStarterSlot(slotId, sport);
 
       const eligiblePositions = resolveEligiblePositions(player, sport);
-      const defaultPos = ESPN_DEFAULT_POS[player.defaultPositionId] || eligiblePositions[0] || '?';
+      const defaultPos = getDefaultPos(player, sport) || eligiblePositions[0] || '?';
 
       let games = [];
       let best  = 0;
@@ -3664,8 +3688,12 @@ window.openPlayerModal = function(playerId, teamId) {
       for (const [tid, tData] of Object.entries(wTeams)) {
         const found = tData.breakdown?.find(p => String(p.playerId) === playerId);
         if (found) {
-          playerObj = { id: playerId, name: found.name, defaultPos: found.defaultPos || found.pos,
-                        eligiblePositions: found.eligiblePositions || [] };
+          playerObj = {
+            id: playerId, name: found.name,
+            defaultPos: found.defaultPos || found.pos || '?',
+            eligiblePositions: found.eligiblePositions || [],
+            pos: found.pos,
+          };
           resolvedTeamId = tid;
           break;
         }
@@ -3675,8 +3703,12 @@ window.openPlayerModal = function(playerId, teamId) {
   }
 
   const name      = playerObj?.name || 'Player ' + playerId;
-  const pos       = playerObj?.defaultPos || playerObj?.pos || '?';
-  const eligStr   = playerObj?.eligiblePositions?.join(', ') || pos;
+  // Use defaultPos (their actual position) for the badge, not the slot they were placed in
+  const primaryPos = playerObj?.defaultPos || playerObj?.eligiblePositions?.[0] || playerObj?.pos || '?';
+  // Show full eligible list as subtitle
+  const eligStr   = playerObj?.eligiblePositions?.length
+    ? playerObj.eligiblePositions.join(', ')
+    : primaryPos;
 
   const DAYS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
 
@@ -3748,7 +3780,7 @@ window.openPlayerModal = function(playerId, teamId) {
 
   document.getElementById('modal-body').innerHTML = `
     <div class="player-modal-header">
-      <div class="player-modal-pos">${esc(pos)}</div>
+      <div class="player-modal-pos">${esc(primaryPos)}</div>
       <div>
         <div class="player-modal-name">${esc(name)}</div>
         <div class="player-modal-meta">Eligible: ${esc(eligStr)}</div>
