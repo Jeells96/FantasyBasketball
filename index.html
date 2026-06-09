@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Best Game League v1.8</title>
+<title>Best Game League v1.9</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500;600&display=swap');
 
@@ -717,7 +717,7 @@
 
 <!-- NAV -->
 <nav>
-  <div class="nav-brand" onclick="goto('home')">BGL<span style="font-size:.6rem;color:var(--muted);letter-spacing:1px;vertical-align:super;margin-left:.2rem">v1.8</span></div>
+  <div class="nav-brand" onclick="goto('home')">BGL<span style="font-size:.6rem;color:var(--muted);letter-spacing:1px;vertical-align:super;margin-left:.2rem">v1.9</span></div>
   <div class="nav-links">
     <button onclick="goto('home')" id="nav-home" class="active">Home</button>
     <button onclick="goto('standings')" id="nav-standings">Standings</button>
@@ -836,7 +836,8 @@
   </div>
 
   <div style="margin-top:2rem;display:flex;gap:1rem;flex-wrap:wrap">
-    <button class="btn" onclick="importFromESPN()">↻ Import from ESPN</button>
+    <button class="btn" onclick="importFromESPN()">↻ Import Current Week</button>
+    <button class="btn btn-ghost" onclick="openAdmin();setTimeout(()=>importAllWeeks(),400)" style="border-color:var(--accent);color:var(--accent)">↻ Import All Weeks</button>
     <button class="btn btn-ghost" onclick="goto('standings')">View Standings</button>
   </div>
 
@@ -1086,6 +1087,7 @@
       <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:.75rem">
         <button class="btn" onclick="adminImport()">↻ Import Week</button>
         <button class="btn btn-ghost" onclick="importFromESPN()">↻ Import Current Week</button>
+        <button class="btn btn-ghost" onclick="importAllWeeks()" style="border-color:var(--accent);color:var(--accent)">↻ Import All Weeks</button>
       </div>
       <div id="admin-import-log" style="margin-top:.75rem;max-height:180px;overflow-y:auto;font-size:.78rem"></div>
       <button class="btn btn-ghost btn-sm" onclick="document.getElementById('admin-import-log').innerHTML=''" style="margin-top:.5rem">Clear Log</button>
@@ -1500,122 +1502,120 @@ function resolveEligiblePositions(player, sport) {
 /* ══════════════════════════════════════
    MAIN IMPORT
 ══════════════════════════════════════ */
-window.importFromESPN = async function(weekOverride) {
+window.importFromESPN = async function(weekOverride, sportOverride) {
   const leagueId = STATE.leagueId;
-  const season = STATE.season;
-  const week = weekOverride || STATE.currentWeek;
+  const season   = STATE.season;
+  const week     = weekOverride || STATE.currentWeek;
 
   logImport('Detecting sport…', 'running');
-  let sport;
-  try { sport = await detectSport(leagueId, season); }
-  catch(e) { logImport(e.message, 'err'); toast(e.message, true); return; }
+  let sport = sportOverride || STATE.sport;
+  if (!sport) {
+    try { sport = await detectSport(leagueId, season); }
+    catch(e) { logImport(e.message, 'err'); toast(e.message, true); return; }
+  }
   STATE.sport = sport;
   logImport(`Sport: ${sport === 'fba' ? 'Basketball' : sport === 'flb' ? 'Baseball' : 'Football'}`, 'done');
 
-  // 1. Fetch settings + teams + scores all in one call
-  // The diagnostic confirmed appliedStatTotal lives on ppe when mMatchupScore is included
-  logImport('Fetching league data + scores…', 'running');
-  let settingsData;
+  // Fetch all data in one call — mMatchupScore gives appliedStatTotal (confirmed working)
+  // mRoster gives lineup slots and player eligibility
+  // scoringPeriodId scopes appliedStatTotal to this matchup week
+  logImport(`Fetching week ${week} data…`, 'running');
+  let data;
   try {
-    settingsData = await espnFetch(espnAPIUrl(sport, leagueId, season,
+    data = await espnFetch(espnAPIUrl(sport, leagueId, season,
       `view=mSettings&view=mTeam&view=mRoster&view=mMatchup&view=mMatchupScore&scoringPeriodId=${week}`));
   } catch(e) {
-    logImport('Failed to fetch league data: ' + e.message, 'err');
+    logImport('Fetch failed: ' + e.message, 'err');
     toast('ESPN import failed: ' + e.message, true); return;
   }
-  logImport('League data received', 'done');
+  logImport('Data received', 'done');
 
-  // Parse settings
-  const settings = settingsData.settings || {};
+  // Parse league settings (only on first import or current week)
+  const settings = data.settings || {};
   STATE.leagueName = settings.name || STATE.leagueName;
-  if (settings.scheduleSettings) {
-    STATE.totalWeeks = settings.scheduleSettings.matchupPeriodCount || STATE.totalWeeks;
+  if (settings.scheduleSettings?.matchupPeriodCount) {
+    STATE.totalWeeks = settings.scheduleSettings.matchupPeriodCount;
   }
-  // Detect current scoring period
-  const status = settingsData.status || {};
+  const status = data.status || {};
   STATE.currentWeek = status.currentMatchupPeriod || week;
   document.getElementById('nav-week').textContent = STATE.currentWeek;
 
-  // Parse teams
+  // Parse teams + rosters
   logImport('Parsing teams & rosters…', 'running');
-  const rawTeams = settingsData.teams || [];
-  const members = settingsData.members || [];
+  const rawTeams = data.teams || [];
+  const members  = data.members || [];
   const memberMap = {};
-  members.forEach(m => memberMap[m.id] = (m.firstName||'') + ' ' + (m.lastName||''));
+  members.forEach(m => memberMap[m.id] = ((m.firstName||'') + ' ' + (m.lastName||'')).trim());
 
   const existingTeamMap = {};
   STATE.teams.forEach(t => existingTeamMap[t.id] = t);
 
   STATE.teams = rawTeams.map(rt => {
     const existing = existingTeamMap[rt.id] || {};
-    const ownerIds = (rt.owners || []);
-    const owner = ownerIds.map(id => memberMap[id] || id).join(', ') || 'Unknown';
-    const roster = parseRoster(rt.roster, week, sport);
+    const owner    = (rt.owners || []).map(id => memberMap[id] || id).join(', ') || 'Unknown';
+    const roster   = parseRoster(rt.roster, week, sport);
     return {
-      id: rt.id,
-      name: ((rt.location || '') + ' ' + (rt.nickname || '')).trim() || ('Team ' + rt.id),
+      id:     rt.id,
+      name:   ((rt.location||'') + ' ' + (rt.nickname||'')).trim() || ('Team ' + rt.id),
       abbrev: rt.abbrev || String(rt.id),
       owner,
-      wins: existing.wins || 0,
+      wins:   existing.wins   || 0,
       losses: existing.losses || 0,
-      pf: existing.pf || 0,
-      pa: existing.pa || 0,
+      pf:     existing.pf     || 0,
+      pa:     existing.pa     || 0,
       streak: existing.streak || 0,
       roster,
     };
   });
   logImport(`${STATE.teams.length} teams parsed`, 'done');
 
-  // Capture lineup snapshot for this week (locked starters)
-  logImport('Capturing lineup snapshot…', 'running');
-  captureLineupSnapshot(week, sport);
-  logImport('Lineup snapshot saved', 'done');
+  // Capture lineup snapshot ONLY if not already captured for this week
+  // This preserves who was actually starting when the week locked
+  const wKey = String(week);
+  if (!STATE.lineupSnapshots[wKey] || !Object.keys(STATE.lineupSnapshots[wKey]).length) {
+    logImport('Capturing lineup snapshot…', 'running');
+    captureLineupSnapshot(week, sport);
+    logImport('Lineup snapshot saved', 'done');
+  } else {
+    logImport('Lineup snapshot already exists — not overriding', 'done');
+  }
 
-  // Parse matchup schedule
-  logImport('Parsing matchups…', 'running');
-  const schedule = settingsData.schedule || [];
+  // Parse full season matchup schedule
+  logImport('Parsing schedule…', 'running');
+  const schedule = data.schedule || [];
   schedule.forEach(m => {
     const w = m.matchupPeriodId;
     if (!STATE.matchups[w]) STATE.matchups[w] = [];
     const homeId = m.home?.teamId;
     const awayId = m.away?.teamId;
     if (!homeId || !awayId) return;
-    const existing = STATE.matchups[w].find(x =>
+    const exists = STATE.matchups[w].find(x =>
       (x.home.teamId === homeId && x.away.teamId === awayId) ||
       (x.home.teamId === awayId && x.away.teamId === homeId)
     );
-    if (!existing) {
+    if (!exists) {
       STATE.matchups[w].push({
         home: { teamId: homeId, score: 0 },
         away: { teamId: awayId, score: 0 },
-        winner: null,
-        locked: false,
+        winner: null, locked: false,
       });
     }
   });
-  logImport('Matchups parsed', 'done');
+  logImport('Schedule parsed', 'done');
 
-  // Extract scores directly from settingsData — appliedStatTotal is already there
-  // from the mMatchupScore view we included above
+  // Extract scores — appliedStatTotal confirmed as correct field
+  // Also attempt per-game breakdown from player.stats
   logImport(`Extracting scores for week ${week}…`, 'running');
-  processPlayerScores(settingsData, week, sport);
-  logImport('Player scores processed', 'done');
+  await processPlayerScores(data, week, sport);
+  logImport('Scores extracted', 'done');
 
-  // Compute BGL scores
-  logImport('Computing Best-Game scores…', 'running');
+  // Compute BGL best-game scores and update matchup/standings
   computeBGLScores(week);
-  logImport('Scores computed', 'done');
-
-  // Update matchup winners
   updateMatchupWinners(week);
-
-  // Recompute standings from all weeks
   recomputeStandings();
 
-  // Save
   await persistState();
-  logImport('Saved to Firebase', 'done');
-
+  logImport(`✓ Week ${week} import complete`, 'done');
   toast('Import complete — Week ' + week);
   renderAll();
 }
@@ -1688,22 +1688,65 @@ function captureLineupSnapshot(week, sport) {
 
 
 
-// ── Score extraction — confirmed correct from ESPN API diagnostic
-// ppe.appliedStatTotal = weekly fantasy points for this matchup period (THE field to use)
-// ppe.stats[] is always empty in this league's API response — do not attempt to read it
-// For BGL: each player's weekly total = their score for the week
-function processPlayerScores(sourceData, week, sport) {
+// ── Score extraction
+// Primary: ppe.appliedStatTotal = confirmed weekly total (from diagnostic)
+// Per-game: player.stats[] — ESPN returns individual game entries here when
+//           the view includes scoringPeriodId and the player has game-level data.
+//           Each entry: {appliedTotal, scoringPeriodId, statSourceId, statSplitTypeId}
+//           statSourceId=0 = actual, statSplitTypeId=5 = game-level split
+async function processPlayerScores(sourceData, week, sport) {
   const teams = sourceData.teams || [];
   if (!STATE.weeklyScores[week]) STATE.weeklyScores[week] = {};
 
+  // Attempt a second fetch with view=mRosterStats to get player.stats[] per-game data
+  // ESPN returns per-game splits when statSplitTypeId=5 entries exist on player.stats
+  let perGameData = null;
+  try {
+    const url = espnAPIUrl(sport, STATE.leagueId, STATE.season,
+      `view=mRoster&view=mMatchupScore&view=mMatchup&scoringPeriodId=${week}&forceRefresh=true`);
+    const res = await fetch(url, {
+      headers: {
+        'X-Fantasy-Filter': JSON.stringify({
+          players: { filterStatsForCurrentSeasonScoringPeriodId: { value: [week] } }
+        })
+      }
+    });
+    if (res.ok) perGameData = await res.json();
+  } catch(e) { /* fall through to appliedStatTotal */ }
+
+  // Build a map of playerId → per-game scores from player.stats[]
+  // player.stats entries with statSplitTypeId=5 are game-level splits
+  const perGameMap = {};
+  const pgTeams = perGameData?.teams || [];
+  for (const t of pgTeams) {
+    for (const entry of t.roster?.entries || []) {
+      const ppe    = entry.playerPoolEntry || {};
+      const player = ppe.player || {};
+      const pid    = String(player.id || entry.playerId);
+      const stats  = player.stats || [];
+
+      // Filter to actual game-level stats for this week
+      const gameStats = stats.filter(s =>
+        s.statSourceId === 0 &&          // actual (not projected)
+        s.statSplitTypeId === 5          // game-level split (not season/weekly totals)
+      );
+
+      if (gameStats.length > 0) {
+        perGameMap[pid] = gameStats
+          .map(s => Math.round((parseFloat(s.appliedTotal ?? 0)) * 100) / 100)
+          .filter(v => !isNaN(v));
+      }
+    }
+  }
+
   for (const espnTeam of teams) {
-    const entries  = espnTeam.roster?.entries || [];
+    const entries   = espnTeam.roster?.entries || [];
     const breakdown = [];
 
     for (const entry of entries) {
       const ppe    = entry.playerPoolEntry || {};
       const player = ppe.player || {};
-      const pid    = player.id || entry.playerId;
+      const pid    = String(player.id || entry.playerId);
       const pname  = player.fullName || player.lastName || ('Player ' + pid);
       const slotId = entry.lineupSlotId;
       const starter = isStarterSlot(slotId, sport);
@@ -1711,14 +1754,28 @@ function processPlayerScores(sourceData, week, sport) {
       const eligiblePositions = resolveEligiblePositions(player, sport);
       const defaultPos = getDefaultPos(player, sport) || eligiblePositions[0] || '?';
 
-      // appliedStatTotal is the confirmed score field from diagnostic output
-      const rawScore = parseFloat(ppe.appliedStatTotal ?? 0);
-      const score    = isNaN(rawScore) ? 0 : Math.round(rawScore * 100) / 100;
+      // Weekly total — confirmed correct from diagnostic
+      const weeklyTotal = Math.round((parseFloat(ppe.appliedStatTotal ?? 0)) * 100) / 100;
 
-      // games array holds the weekly total as one entry
-      // In future: if ESPN ever returns per-game data, slot it here
-      const games    = [score]; // always one entry per week per player
-      const bestGame = starter ? score : 0;
+      // Per-game breakdown if available, otherwise use weekly total as single entry
+      let games;
+      if (perGameMap[pid] && perGameMap[pid].length > 0) {
+        games = perGameMap[pid];
+      } else {
+        // Also check player.stats on the main data for game-level splits
+        const mainStats = (player.stats || []).filter(s =>
+          s.statSourceId === 0 && s.statSplitTypeId === 5
+        );
+        if (mainStats.length > 0) {
+          games = mainStats.map(s => Math.round((parseFloat(s.appliedTotal ?? 0)) * 100) / 100);
+        } else {
+          // Fallback: weekly total as single "game"
+          games = [weeklyTotal];
+        }
+      }
+
+      // BGL best game = highest single game score (or weekly total if no per-game data)
+      const bestGame = starter ? Math.max(...games) : 0;
 
       breakdown.push({
         playerId: pid,
@@ -1728,8 +1785,9 @@ function processPlayerScores(sourceData, week, sport) {
         defaultPos,
         lineupSlotId: slotId,
         isStarter: starter,
-        games,
-        bestGame,
+        weeklyTotal,  // always the ESPN cumulative for this week
+        games,        // per-game array if available, else [weeklyTotal]
+        bestGame,     // max of games (BGL scoring)
       });
     }
 
@@ -2336,6 +2394,38 @@ window.saveLeagueSettings = async function() {
 window.adminImport = async function() {
   const week = Number(document.getElementById('admin-import-week').value) || STATE.currentWeek;
   await importFromESPN(week);
+}
+
+window.importAllWeeks = async function() {
+  // Detect sport once, then loop all completed weeks
+  const leagueId = STATE.leagueId;
+  const season   = STATE.season;
+
+  logImport('Starting full season import…', 'running');
+
+  let sport = STATE.sport;
+  if (!sport) {
+    try { sport = await detectSport(leagueId, season); STATE.sport = sport; }
+    catch(e) { logImport('Sport detect failed: ' + e.message, 'err'); return; }
+  }
+
+  const currentWeek = STATE.currentWeek || 1;
+  logImport(`Importing weeks 1–${currentWeek} (sport: ${sport})`, 'running');
+
+  for (let w = 1; w <= currentWeek; w++) {
+    logImport(`Week ${w}…`, 'running');
+    try {
+      await importFromESPN(w, sport);
+      // Small delay to avoid hammering ESPN API
+      await new Promise(r => setTimeout(r, 600));
+    } catch(e) {
+      logImport(`Week ${w} failed: ${e.message}`, 'err');
+    }
+  }
+
+  logImport(`✓ All ${currentWeek} weeks imported`, 'done');
+  toast('All weeks imported!');
+  renderAll();
 }
 
 function logImport(msg, status='pending') {
