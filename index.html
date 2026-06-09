@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Best Game League v1.9</title>
+<title>Best Game League v2.0</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500;600&display=swap');
 
@@ -717,7 +717,7 @@
 
 <!-- NAV -->
 <nav>
-  <div class="nav-brand" onclick="goto('home')">BGL<span style="font-size:.6rem;color:var(--muted);letter-spacing:1px;vertical-align:super;margin-left:.2rem">v1.9</span></div>
+  <div class="nav-brand" onclick="goto('home')">BGL<span style="font-size:.6rem;color:var(--muted);letter-spacing:1px;vertical-align:super;margin-left:.2rem">v2.0</span></div>
   <div class="nav-links">
     <button onclick="goto('home')" id="nav-home" class="active">Home</button>
     <button onclick="goto('standings')" id="nav-standings">Standings</button>
@@ -835,11 +835,12 @@
     </div>
   </div>
 
-  <div style="margin-top:2rem;display:flex;gap:1rem;flex-wrap:wrap">
+  <div style="margin-top:2rem;display:flex;gap:1rem;flex-wrap:wrap;align-items:center">
     <button class="btn" onclick="importFromESPN()">↻ Import Current Week</button>
     <button class="btn btn-ghost" onclick="openAdmin();setTimeout(()=>importAllWeeks(),400)" style="border-color:var(--accent);color:var(--accent)">↻ Import All Weeks</button>
     <button class="btn btn-ghost" onclick="goto('standings')">View Standings</button>
   </div>
+  <div id="home-import-log" style="margin-top:.75rem;max-height:140px;overflow-y:auto;font-size:.78rem;font-family:var(--mono);background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:.5rem .75rem;display:none"></div>
 
   <div style="margin-top:2rem">
     <div class="section-header"><div class="section-title" style="font-size:1.6rem">How BGL Scoring Works</div></div>
@@ -1507,115 +1508,130 @@ window.importFromESPN = async function(weekOverride, sportOverride) {
   const season   = STATE.season;
   const week     = weekOverride || STATE.currentWeek;
 
-  logImport('Detecting sport…', 'running');
+  // Show the home import log
+  const homeLog = document.getElementById('home-import-log');
+  if (homeLog) { homeLog.innerHTML = ''; homeLog.style.display = ''; }
+
+  logImport(`Starting import — League ${leagueId} Season ${season} Week ${week}`, 'running');
+
+  // Detect sport
   let sport = sportOverride || STATE.sport;
   if (!sport) {
-    try { sport = await detectSport(leagueId, season); }
-    catch(e) { logImport(e.message, 'err'); toast(e.message, true); return; }
+    logImport('Detecting sport…', 'running');
+    try {
+      sport = await detectSport(leagueId, season);
+      logImport(`Sport: ${sport}`, 'done');
+    } catch(e) {
+      logImport('Sport detect failed: ' + e.message, 'err');
+      toast('Sport detect failed: ' + e.message, true); return;
+    }
+  } else {
+    logImport(`Sport: ${sport} (cached)`, 'done');
   }
   STATE.sport = sport;
-  logImport(`Sport: ${sport === 'fba' ? 'Basketball' : sport === 'flb' ? 'Baseball' : 'Football'}`, 'done');
 
-  // Fetch all data in one call — mMatchupScore gives appliedStatTotal (confirmed working)
-  // mRoster gives lineup slots and player eligibility
-  // scoringPeriodId scopes appliedStatTotal to this matchup week
-  logImport(`Fetching week ${week} data…`, 'running');
+  // Fetch all data
+  logImport(`Fetching ESPN data (week ${week})…`, 'running');
   let data;
   try {
-    data = await espnFetch(espnAPIUrl(sport, leagueId, season,
-      `view=mSettings&view=mTeam&view=mRoster&view=mMatchup&view=mMatchupScore&scoringPeriodId=${week}`));
+    const url = espnAPIUrl(sport, leagueId, season,
+      `view=mSettings&view=mTeam&view=mRoster&view=mMatchup&view=mMatchupScore&scoringPeriodId=${week}`);
+    logImport('URL: ' + url.replace(/.*leagues\//,'…/'), 'pending');
+    data = await espnFetch(url);
+    logImport(`Data OK — ${(data.teams||[]).length} teams, ${(data.schedule||[]).length} schedule entries`, 'done');
   } catch(e) {
     logImport('Fetch failed: ' + e.message, 'err');
-    toast('ESPN import failed: ' + e.message, true); return;
-  }
-  logImport('Data received', 'done');
-
-  // Parse league settings (only on first import or current week)
-  const settings = data.settings || {};
-  STATE.leagueName = settings.name || STATE.leagueName;
-  if (settings.scheduleSettings?.matchupPeriodCount) {
-    STATE.totalWeeks = settings.scheduleSettings.matchupPeriodCount;
-  }
-  const status = data.status || {};
-  STATE.currentWeek = status.currentMatchupPeriod || week;
-  document.getElementById('nav-week').textContent = STATE.currentWeek;
-
-  // Parse teams + rosters
-  logImport('Parsing teams & rosters…', 'running');
-  const rawTeams = data.teams || [];
-  const members  = data.members || [];
-  const memberMap = {};
-  members.forEach(m => memberMap[m.id] = ((m.firstName||'') + ' ' + (m.lastName||'')).trim());
-
-  const existingTeamMap = {};
-  STATE.teams.forEach(t => existingTeamMap[t.id] = t);
-
-  STATE.teams = rawTeams.map(rt => {
-    const existing = existingTeamMap[rt.id] || {};
-    const owner    = (rt.owners || []).map(id => memberMap[id] || id).join(', ') || 'Unknown';
-    const roster   = parseRoster(rt.roster, week, sport);
-    return {
-      id:     rt.id,
-      name:   ((rt.location||'') + ' ' + (rt.nickname||'')).trim() || ('Team ' + rt.id),
-      abbrev: rt.abbrev || String(rt.id),
-      owner,
-      wins:   existing.wins   || 0,
-      losses: existing.losses || 0,
-      pf:     existing.pf     || 0,
-      pa:     existing.pa     || 0,
-      streak: existing.streak || 0,
-      roster,
-    };
-  });
-  logImport(`${STATE.teams.length} teams parsed`, 'done');
-
-  // Capture lineup snapshot ONLY if not already captured for this week
-  // This preserves who was actually starting when the week locked
-  const wKey = String(week);
-  if (!STATE.lineupSnapshots[wKey] || !Object.keys(STATE.lineupSnapshots[wKey]).length) {
-    logImport('Capturing lineup snapshot…', 'running');
-    captureLineupSnapshot(week, sport);
-    logImport('Lineup snapshot saved', 'done');
-  } else {
-    logImport('Lineup snapshot already exists — not overriding', 'done');
+    toast('ESPN fetch failed: ' + e.message, true); return;
   }
 
-  // Parse full season matchup schedule
-  logImport('Parsing schedule…', 'running');
-  const schedule = data.schedule || [];
-  schedule.forEach(m => {
-    const w = m.matchupPeriodId;
-    if (!STATE.matchups[w]) STATE.matchups[w] = [];
-    const homeId = m.home?.teamId;
-    const awayId = m.away?.teamId;
-    if (!homeId || !awayId) return;
-    const exists = STATE.matchups[w].find(x =>
-      (x.home.teamId === homeId && x.away.teamId === awayId) ||
-      (x.home.teamId === awayId && x.away.teamId === homeId)
-    );
-    if (!exists) {
-      STATE.matchups[w].push({
-        home: { teamId: homeId, score: 0 },
-        away: { teamId: awayId, score: 0 },
-        winner: null, locked: false,
-      });
+  // Parse settings
+  try {
+    const settings = data.settings || {};
+    if (settings.name) STATE.leagueName = settings.name;
+    if (settings.scheduleSettings?.matchupPeriodCount) STATE.totalWeeks = settings.scheduleSettings.matchupPeriodCount;
+    const status = data.status || {};
+    STATE.currentWeek = status.currentMatchupPeriod || week;
+    document.getElementById('nav-week').textContent = STATE.currentWeek;
+    logImport(`League: "${STATE.leagueName}" | Current week: ${STATE.currentWeek}`, 'done');
+  } catch(e) { logImport('Settings parse error: ' + e.message, 'err'); }
+
+  // Parse teams
+  try {
+    logImport('Parsing teams…', 'running');
+    const rawTeams  = data.teams  || [];
+    const members   = data.members || [];
+    const memberMap = {};
+    members.forEach(m => memberMap[m.id] = ((m.firstName||'') + ' ' + (m.lastName||'')).trim());
+    const existingTeamMap = {};
+    STATE.teams.forEach(t => existingTeamMap[t.id] = t);
+    STATE.teams = rawTeams.map(rt => {
+      const existing = existingTeamMap[rt.id] || {};
+      const owner    = (rt.owners||[]).map(id => memberMap[id]||id).join(', ') || 'Unknown';
+      const roster   = parseRoster(rt.roster, week, sport);
+      return {
+        id: rt.id,
+        name: ((rt.location||'') + ' ' + (rt.nickname||'')).trim() || ('Team ' + rt.id),
+        abbrev: rt.abbrev || String(rt.id),
+        owner, roster,
+        wins:   existing.wins   || 0,
+        losses: existing.losses || 0,
+        pf:     existing.pf     || 0,
+        pa:     existing.pa     || 0,
+        streak: existing.streak || 0,
+      };
+    });
+    logImport(`${STATE.teams.length} teams parsed`, 'done');
+  } catch(e) { logImport('Teams parse error: ' + e.message, 'err'); return; }
+
+  // Lineup snapshot (only if not already captured)
+  try {
+    const wKey = String(week);
+    if (!STATE.lineupSnapshots[wKey] || !Object.keys(STATE.lineupSnapshots[wKey]).length) {
+      captureLineupSnapshot(week, sport);
+      logImport(`Lineup snapshot captured for week ${week}`, 'done');
+    } else {
+      logImport(`Lineup snapshot exists for week ${week} — preserved`, 'done');
     }
-  });
-  logImport('Schedule parsed', 'done');
+  } catch(e) { logImport('Snapshot error: ' + e.message, 'err'); }
 
-  // Extract scores — appliedStatTotal confirmed as correct field
-  // Also attempt per-game breakdown from player.stats
-  logImport(`Extracting scores for week ${week}…`, 'running');
-  await processPlayerScores(data, week, sport);
-  logImport('Scores extracted', 'done');
+  // Schedule
+  try {
+    logImport('Parsing schedule…', 'running');
+    const schedule = data.schedule || [];
+    schedule.forEach(m => {
+      const w = m.matchupPeriodId;
+      if (!STATE.matchups[w]) STATE.matchups[w] = [];
+      const homeId = m.home?.teamId, awayId = m.away?.teamId;
+      if (!homeId || !awayId) return;
+      const exists = STATE.matchups[w].find(x =>
+        (x.home.teamId===homeId && x.away.teamId===awayId) ||
+        (x.home.teamId===awayId && x.away.teamId===homeId)
+      );
+      if (!exists) STATE.matchups[w].push({
+        home:{teamId:homeId,score:0}, away:{teamId:awayId,score:0}, winner:null, locked:false
+      });
+    });
+    logImport(`Schedule: ${Object.keys(STATE.matchups).length} weeks loaded`, 'done');
+  } catch(e) { logImport('Schedule parse error: ' + e.message, 'err'); }
 
-  // Compute BGL best-game scores and update matchup/standings
-  computeBGLScores(week);
-  updateMatchupWinners(week);
-  recomputeStandings();
+  // Scores
+  try {
+    logImport(`Extracting scores for week ${week}…`, 'running');
+    await processPlayerScores(data, week, sport);
+    const teamScores = Object.entries(STATE.weeklyScores[week]||{})
+      .map(([tid,d]) => `${teamById(tid).abbrev}:${d.score}`).join(' ');
+    logImport(`Scores: ${teamScores || 'none'}`, 'done');
+  } catch(e) { logImport('Score extraction error: ' + e.message, 'err'); }
 
-  await persistState();
-  logImport(`✓ Week ${week} import complete`, 'done');
+  // BGL compute + save
+  try {
+    computeBGLScores(week);
+    updateMatchupWinners(week);
+    recomputeStandings();
+    await persistState();
+    logImport(`✓ Week ${week} complete — saved`, 'done');
+  } catch(e) { logImport('Save error: ' + e.message, 'err'); }
+
   toast('Import complete — Week ' + week);
   renderAll();
 }
@@ -2429,15 +2445,15 @@ window.importAllWeeks = async function() {
 }
 
 function logImport(msg, status='pending') {
-  const log = document.getElementById('admin-import-log');
-  if (!log) return;
-  const icon = status==='done'?'✓':status==='err'?'✗':status==='running'?'…':'·';
+  console.log(`[BGL Import] [${status}] ${msg}`);
+  const icon  = status==='done'?'✓':status==='err'?'✗':status==='running'?'…':'·';
   const color = status==='done'?'var(--good)':status==='err'?'var(--bad)':status==='running'?'var(--accent)':'var(--muted)';
-  const div = document.createElement('div');
-  div.className = 'import-step ' + status;
-  div.innerHTML = `<span class="import-step-icon" style="color:${color}">${icon}</span><span>${esc(msg)}</span>`;
-  log.appendChild(div);
-  log.scrollTop = log.scrollHeight;
+  const html  = `<div class="import-step ${status}"><span class="import-step-icon" style="color:${color}">${icon}</span><span>${esc(msg)}</span></div>`;
+  // Write to any import log container visible on screen
+  for (const id of ['admin-import-log','home-import-log','global-import-log']) {
+    const el = document.getElementById(id);
+    if (el) { el.insertAdjacentHTML('beforeend', html); el.scrollTop = el.scrollHeight; }
+  }
 }
 
 // Playoff builder
