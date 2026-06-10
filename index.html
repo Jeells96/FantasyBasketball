@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Best Game League v2.1</title>
+<title>Best Game League v2.2</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500;600&display=swap');
 
@@ -717,7 +717,7 @@
 
 <!-- NAV -->
 <nav>
-  <div class="nav-brand" onclick="goto('home')">BGL<span style="font-size:.6rem;color:var(--muted);letter-spacing:1px;vertical-align:super;margin-left:.2rem">v2.1</span></div>
+  <div class="nav-brand" onclick="goto('home')">BGL<span style="font-size:.6rem;color:var(--muted);letter-spacing:1px;vertical-align:super;margin-left:.2rem">v2.2</span></div>
   <div class="nav-links">
     <button onclick="goto('home')" id="nav-home" class="active">Home</button>
     <button onclick="goto('standings')" id="nav-standings">Standings</button>
@@ -1620,7 +1620,8 @@ window.importFromESPN = async function(weekOverride, sportOverride) {
     await processPlayerScores(data, week, sport);
     const teamScores = Object.entries(STATE.weeklyScores[week]||{})
       .map(([tid,d]) => `${teamById(tid).abbrev}:${d.score}`).join(' ');
-    logImport(`Scores: ${teamScores || 'none'}`, 'done');
+    const range = STATE.weekPeriodRanges?.[week];
+    logImport(`Scores: ${teamScores || 'none'} | periods ${range ? range.min+'–'+range.max : 'unknown'}`, 'done');
   } catch(e) { logImport('Score extraction error: ' + e.message, 'err'); }
 
   // BGL compute + save
@@ -1714,7 +1715,6 @@ async function processPlayerScores(sourceData, week, sport) {
   if (!STATE.weeklyScores[week]) STATE.weeklyScores[week] = {};
 
   // ── Determine which scoringPeriodIds belong to this matchup week
-  // ESPN's schedule has the range on each matchup entry
   let minPeriod = null, maxPeriod = null;
   const matchupEntry = schedule.find(m => m.matchupPeriodId === week);
   if (matchupEntry) {
@@ -1725,30 +1725,37 @@ async function processPlayerScores(sourceData, week, sport) {
       [minPeriod, maxPeriod] = range;
     }
   }
-  // Fallback: use the scoringPeriodId from the response status
-  // ESPN's scoringPeriodId in status = current day's period number
-  const currentPeriod = sourceData.scoringPeriodId || null;
-  if (!minPeriod && currentPeriod) {
-    // For baseball: each matchup week = 7 consecutive days
-    // week 1 starts at period 1, week 2 at 8, etc.
-    // But ESPN period numbering isn't always 7*week, so we use a tighter window:
-    // accept any period that's within ±14 of the current period for this week
-    // This is imperfect — we'll refine with actual data once we see scoringPeriodIds
-    minPeriod = (week - 1) * 7 + 1;
-    maxPeriod = week * 7;
+
+  // Fallback: derive from the API's scoringPeriodId (current day's period number)
+  // and the current matchup week. For a week that just finished, the last period
+  // of the week = currentScoringPeriod of that week. For a week N periods back:
+  // we estimate based on the schedule. Each week is typically 7 periods but can vary.
+  if (!minPeriod) {
+    // Use the sourcData.scoringPeriodId = the period at time of this request
+    const currentPeriod = sourceData.scoringPeriodId;
+    const currentMatchupWeek = sourceData.status?.currentMatchupPeriod;
+
+    if (currentPeriod && currentMatchupWeek) {
+      // How many weeks back is the requested week?
+      const weeksBack = currentMatchupWeek - week;
+      // Assume 7 periods per week (baseball has ~7 games/week)
+      // Current week: periods from (currentPeriod - dayOfWeek) to currentPeriod
+      // Prior weeks: shift back by 7 * weeksBack
+      maxPeriod = currentPeriod - (weeksBack * 7);
+      minPeriod = maxPeriod - 6;
+    } else if (currentPeriod) {
+      // Requesting current week — use last 7 periods up to now
+      maxPeriod = currentPeriod;
+      minPeriod = currentPeriod - 6;
+    }
   }
 
-  // ── Per-game data: stored with scoringPeriodId on each entry
-  // We read player.stats from the main sourceData (it's already there)
-  // Filter: statSourceId=0 (actual), statSplitTypeId=5 (game-level)
-  // AND scoringPeriodId within this week's range
+  // Filter function: is this stat entry from this matchup week?
   const isThisWeek = (s) => {
-    if (s.statSourceId !== 0) return false;          // skip projected
-    if (s.statSplitTypeId !== 5) return false;        // game-level only
-    if (minPeriod !== null && maxPeriod !== null) {
-      return s.scoringPeriodId >= minPeriod && s.scoringPeriodId <= maxPeriod;
-    }
-    return true; // no range known — accept all (will over-fetch but better than nothing)
+    if (s.statSourceId !== 0) return false;    // skip projected (source=1)
+    if (s.statSplitTypeId !== 5) return false;  // game-level splits only
+    if (hasRange) return s.scoringPeriodId >= minPeriod && s.scoringPeriodId <= maxPeriod;
+    return true; // no range — accept all game-level stats
   };
 
   for (const espnTeam of teams) {
@@ -2627,10 +2634,13 @@ window.runDiagnostic = async function() {
 
     const matchup = schedule.find(m => m.matchupPeriodId === week);
     if (matchup) {
+      const spRange = matchup.home?.cumulativeScore?.scoringPeriodRange
+                   || matchup.away?.cumulativeScore?.scoringPeriodRange;
       report += `  schedule matchup week ${week}: home=${matchup.home?.teamId} pts=${matchup.home?.totalPoints ?? matchup.home?.cumulativeScore?.totalPoints} | away=${matchup.away?.teamId} pts=${matchup.away?.totalPoints ?? matchup.away?.cumulativeScore?.totalPoints}\n`;
+      report += `  scoringPeriodRange: ${JSON.stringify(spRange)} | data.scoringPeriodId: ${data.scoringPeriodId}\n`;
       report += `  cumulativeScore home: ${JSON.stringify(matchup.home?.cumulativeScore)}\n`;
     } else {
-      report += `  No schedule entry for week ${week}\n`;
+      report += `  No schedule entry for week ${week} | data.scoringPeriodId: ${data.scoringPeriodId}\n`;
     }
 
     if (teams.length > 0) {
@@ -2655,6 +2665,28 @@ window.runDiagnostic = async function() {
         if (!stats.length) report += `      ← EMPTY — scores not in this view\n`;
         report += `    ppe.playerStats (${ps.length} entries):\n`;
         ps.slice(0,3).forEach((s,i) => { report += `      [${i}] ${JSON.stringify(s)}\n`; });
+
+        // ★ THE KEY: dump player.stats[] — this is where per-game data lives
+        const playerStats = player.stats || [];
+        report += `    player.stats (${playerStats.length} entries):\n`;
+        if (playerStats.length === 0) {
+          report += `      ← EMPTY\n`;
+        } else {
+          playerStats.slice(0, 10).forEach((s,i) => {
+            report += `      [${i}] scoringPeriodId=${s.scoringPeriodId} statSourceId=${s.statSourceId} statSplitTypeId=${s.statSplitTypeId} appliedTotal=${s.appliedTotal} appliedStatTotal=${s.appliedStatTotal}\n`;
+          });
+          if (playerStats.length > 10) report += `      ... and ${playerStats.length - 10} more entries\n`;
+          // Show the range of scoringPeriodIds
+          const periods = playerStats.map(s=>s.scoringPeriodId).filter(Boolean);
+          if (periods.length) report += `      scoringPeriodId range: ${Math.min(...periods)} → ${Math.max(...periods)}\n`;
+          // Show game-level splits (statSplitTypeId=5)
+          const gameSplits = playerStats.filter(s => s.statSplitTypeId === 5 && s.statSourceId === 0);
+          report += `      game-level splits (splitType=5, source=0): ${gameSplits.length} entries\n`;
+          gameSplits.slice(0,5).forEach((s,i) => {
+            report += `        [${i}] period=${s.scoringPeriodId} appliedTotal=${s.appliedTotal}\n`;
+          });
+        }
+
         // Dump the full PPE minus bulky sub-objects
         const slim = {...ppe}; delete slim.player; delete slim.stats; delete slim.playerStats;
         report += `    PPE remainder: ${JSON.stringify(slim)}\n`;
