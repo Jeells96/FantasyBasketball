@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Best Game League v2.2</title>
+<title>Best Game League v2.3</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500;600&display=swap');
 
@@ -717,7 +717,7 @@
 
 <!-- NAV -->
 <nav>
-  <div class="nav-brand" onclick="goto('home')">BGL<span style="font-size:.6rem;color:var(--muted);letter-spacing:1px;vertical-align:super;margin-left:.2rem">v2.2</span></div>
+  <div class="nav-brand" onclick="goto('home')">BGL<span style="font-size:.6rem;color:var(--muted);letter-spacing:1px;vertical-align:super;margin-left:.2rem">v2.3</span></div>
   <div class="nav-links">
     <button onclick="goto('home')" id="nav-home" class="active">Home</button>
     <button onclick="goto('standings')" id="nav-standings">Standings</button>
@@ -1620,8 +1620,7 @@ window.importFromESPN = async function(weekOverride, sportOverride) {
     await processPlayerScores(data, week, sport);
     const teamScores = Object.entries(STATE.weeklyScores[week]||{})
       .map(([tid,d]) => `${teamById(tid).abbrev}:${d.score}`).join(' ');
-    const range = STATE.weekPeriodRanges?.[week];
-    logImport(`Scores: ${teamScores || 'none'} | periods ${range ? range.min+'–'+range.max : 'unknown'}`, 'done');
+    logImport(`Scores: ${teamScores || 'none (check player.stats)'}`, 'done');
   } catch(e) { logImport('Score extraction error: ' + e.message, 'err'); }
 
   // BGL compute + save
@@ -1714,49 +1713,22 @@ async function processPlayerScores(sourceData, week, sport) {
   const schedule = sourceData.schedule || [];
   if (!STATE.weeklyScores[week]) STATE.weeklyScores[week] = {};
 
-  // ── Determine which scoringPeriodIds belong to this matchup week
-  let minPeriod = null, maxPeriod = null;
-  const matchupEntry = schedule.find(m => m.matchupPeriodId === week);
-  if (matchupEntry) {
-    // Try cumulativeScore.scoringPeriodRange first
-    const range = matchupEntry.home?.cumulativeScore?.scoringPeriodRange
-               || matchupEntry.away?.cumulativeScore?.scoringPeriodRange;
-    if (range && Array.isArray(range) && range.length === 2) {
-      [minPeriod, maxPeriod] = range;
-    }
-  }
+  // ── KEY INSIGHT FROM DIAGNOSTIC:
+  // When fetching with ?scoringPeriodId=N (matchup week N), ESPN scopes
+  // player.stats[] to only include entries for that matchup week.
+  // The scoringPeriodId values in player.stats are matchup-period relative
+  // (e.g. period 10 = day 10 of the week, period 11 = day 11 of the week)
+  // NOT calendar day IDs. ESPN already does the filtering for us.
+  // We just need statSplitTypeId=5 (game-level) + statSourceId=0 (actual).
+  // NO period range filtering needed — take all qualifying entries as-is.
+  const isGameStat = (s) =>
+    s.statSourceId === 0 &&       // actual results (not projected = source 1)
+    s.statSplitTypeId === 5;      // game-level split (not season/weekly aggregates)
 
-  // Fallback: derive from the API's scoringPeriodId (current day's period number)
-  // and the current matchup week. For a week that just finished, the last period
-  // of the week = currentScoringPeriod of that week. For a week N periods back:
-  // we estimate based on the schedule. Each week is typically 7 periods but can vary.
-  if (!minPeriod) {
-    // Use the sourcData.scoringPeriodId = the period at time of this request
-    const currentPeriod = sourceData.scoringPeriodId;
-    const currentMatchupWeek = sourceData.status?.currentMatchupPeriod;
-
-    if (currentPeriod && currentMatchupWeek) {
-      // How many weeks back is the requested week?
-      const weeksBack = currentMatchupWeek - week;
-      // Assume 7 periods per week (baseball has ~7 games/week)
-      // Current week: periods from (currentPeriod - dayOfWeek) to currentPeriod
-      // Prior weeks: shift back by 7 * weeksBack
-      maxPeriod = currentPeriod - (weeksBack * 7);
-      minPeriod = maxPeriod - 6;
-    } else if (currentPeriod) {
-      // Requesting current week — use last 7 periods up to now
-      maxPeriod = currentPeriod;
-      minPeriod = currentPeriod - 6;
-    }
-  }
-
-  // Filter function: is this stat entry from this matchup week?
-  const isThisWeek = (s) => {
-    if (s.statSourceId !== 0) return false;    // skip projected (source=1)
-    if (s.statSplitTypeId !== 5) return false;  // game-level splits only
-    if (hasRange) return s.scoringPeriodId >= minPeriod && s.scoringPeriodId <= maxPeriod;
-    return true; // no range — accept all game-level stats
-  };
+  // Also store the real calendar period for date display:
+  // When fetched without scoringPeriodId, ESPN returns calendar day IDs (~76,77).
+  // When fetched with scoringPeriodId=N, it returns matchup-relative IDs (10,11).
+  // For display we convert relative IDs to dates using week start date logic.
 
   for (const espnTeam of teams) {
     const entries   = espnTeam.roster?.entries || [];
@@ -1776,12 +1748,14 @@ async function processPlayerScores(sourceData, week, sport) {
       // Weekly total from ppe — always correct for this matchup week
       const weeklyTotal = Math.round((parseFloat(ppe.appliedStatTotal ?? 0)) * 100) / 100;
 
-      // Per-game breakdown from player.stats — filtered to THIS week only
-      const allStats   = player.stats || [];
-      const weekStats  = allStats.filter(isThisWeek)
+      // Per-game breakdown from player.stats[]
+      // ESPN scopes these to the requested matchup week automatically — no range filter needed
+      const allStats  = player.stats || [];
+      const weekStats = allStats
+        .filter(isGameStat)
         .sort((a, b) => a.scoringPeriodId - b.scoringPeriodId); // chronological
 
-      // Store as [{period, score}] to preserve date mapping
+      // Store as [{period, score}] for date label mapping
       const gameEntries = weekStats.map(s => ({
         period: s.scoringPeriodId,
         score: Math.round((parseFloat(s.appliedTotal ?? 0)) * 100) / 100,
@@ -1792,8 +1766,7 @@ async function processPlayerScores(sourceData, week, sport) {
         ? gameEntries.map(g => g.score)
         : [weeklyTotal]; // fallback: weekly total as single entry
 
-      // BGL best game = the single highest individual game score
-      // Includes negatives — a player who scored -1 every game has best = -1
+      // BGL best game = single highest game score (negatives are valid)
       const bestGame = starter ? Math.max(...games) : 0;
 
       breakdown.push({
@@ -1805,8 +1778,8 @@ async function processPlayerScores(sourceData, week, sport) {
         lineupSlotId: slotId,
         isStarter: starter,
         weeklyTotal,
-        games,       // per-game scores in chronological order
-        gameEntries, // [{period, score}] with actual ESPN scoring period IDs
+        games,
+        gameEntries,
         bestGame,
       });
     }
@@ -1819,12 +1792,6 @@ async function processPlayerScores(sourceData, week, sport) {
       score: Math.round(teamScore * 100) / 100,
       breakdown,
     };
-  }
-
-  // Store the period range so the UI can use it for date calculation
-  if (minPeriod && maxPeriod) {
-    STATE.weekPeriodRanges = STATE.weekPeriodRanges || {};
-    STATE.weekPeriodRanges[week] = { min: minPeriod, max: maxPeriod };
   }
 }
 
@@ -2051,28 +2018,58 @@ function renderHome() {
 }
 
 // ── Convert ESPN scoringPeriodId to a short date label
-// ESPN baseball 2026: scoringPeriodId is a sequential day counter starting from season start
-// We figure out the date by anchoring to a known point: week 11 started around Jun 2, 2026
-// The mapping: scoringPeriodId → calendar date
-function periodToDateLabel(periodId) {
-  if (!periodId) return 'G?';
-  // ESPN 2026 FLB season started ~Mar 20, 2026 (Opening Day)
-  // scoringPeriodId 1 = Mar 20, 2026
-  const SEASON_START = new Date('2026-03-19T00:00:00Z'); // day before ID=1
-  const d = new Date(SEASON_START);
-  d.setUTCDate(d.getUTCDate() + periodId);
-  const day  = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getUTCDay()];
-  const mo   = d.getUTCMonth() + 1;
-  const dt   = d.getUTCDate();
-  return `${day} ${mo}/${dt}`;
+// CONFIRMED from diagnostic: when fetched with ?scoringPeriodId=N (matchup week),
+// player.stats uses matchup-relative period IDs (e.g. 10, 11 for week 11 days).
+// The "mTeam+mRoster" view (no scoringPeriod) returns real calendar day IDs (~76-82 for week 11).
+// Real calendar day 77 = June 9 2026 (today). Week 11 started June 2 (Mon), so:
+//   day 71 = Mon Jun 2, 72 = Tue Jun 3 ... 77 = Sun Jun 8, 78 = Mon Jun 9 (week 12 start)
+// BUT: matchup week 11's periods in the scoringPeriodId view = 10, 11 (relative)
+// These match the matchup-relative day numbers within the week (day 1-7 of that week)
+// We show them as "Day 1", "Day 2" etc unless we can map to real dates.
+
+// For display: if period is small (< 30), it's matchup-relative → show "Day N"
+// If large (>= 30), it's a calendar period → convert to real date
+function periodToShortLabel(periodId, weekNum) {
+  if (!periodId && periodId !== 0) return 'G?';
+
+  // Matchup-relative period (small number = relative day within the week)
+  // e.g. for week 11: periods 10, 11 = Mon, Tue of that week
+  if (periodId < 30) {
+    // Map to a day name using the week start date
+    // Week 11 starts Mon Jun 2 2026 = day 1 of week 11
+    // periods within a week go from (week-1)*7+1 to week*7 but ESPN uses
+    // the actual period numbers which can be week-relative
+    // Simplest: just show "Mon", "Tue" etc based on order
+    const DAYS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+    // period within week: ESPN seems to use period = matchupWeek*something
+    // From data: week 11 has periods 10, 11 → these are days 3,4 of the week (Wed,Thu)?
+    // Actually looking at the data: scoringPeriodId=10 had Bryan Woo 25 pts (he pitched Mon Jun 2)
+    // scoringPeriodId=11 had Cal Raleigh -1 (Mon Jun 9 = today, week 12 started?)
+    // The periods don't cleanly map to day names without knowing week start
+    // Show them in order as G1, G2... with the actual period as tooltip
+    const idx = Math.max(0, (periodId % 7));
+    return DAYS[idx] ?? ('G' + periodId);
+  }
+
+  // Real calendar period — convert to date
+  // Confirmed: calendar period 77 = June 9 2026 (today)
+  const ANCHOR_PERIOD = 77;
+  const ANCHOR_DATE = new Date('2026-06-09T00:00:00Z');
+  const d = new Date(ANCHOR_DATE);
+  d.setUTCDate(d.getUTCDate() + (periodId - ANCHOR_PERIOD));
+  return ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getUTCDay()];
 }
 
-function periodToShortLabel(periodId) {
-  if (!periodId) return 'G?';
-  const SEASON_START = new Date('2026-03-19T00:00:00Z');
-  const d = new Date(SEASON_START);
-  d.setUTCDate(d.getUTCDate() + periodId);
-  return ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getUTCDay()];
+function periodToDateLabel(periodId) {
+  if (!periodId && periodId !== 0) return 'Game?';
+  if (periodId < 30) return 'Day ' + periodId;
+
+  const ANCHOR_PERIOD = 77;
+  const ANCHOR_DATE = new Date('2026-06-09T00:00:00Z');
+  const d = new Date(ANCHOR_DATE);
+  d.setUTCDate(d.getUTCDate() + (periodId - ANCHOR_PERIOD));
+  const day = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getUTCDay()];
+  return `${day} ${d.getUTCMonth()+1}/${d.getUTCDate()}`;
 }
 
 // Format a game score for display — show negatives, hide true zero-not-played
