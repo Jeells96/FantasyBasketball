@@ -241,6 +241,14 @@
       </div>
     </section>
 
+    <!-- SUB-FOLDER / BUILDING SELECT -->
+    <section class="view" id="view-subfolder-select">
+      <div class="card">
+        <h2>Select Building</h2>
+        <div id="subfolder-list"></div>
+      </div>
+    </section>
+
     <!-- SETTINGS (PIN protected) -->
     <section class="view" id="view-settings">
       <div class="card">
@@ -277,7 +285,10 @@
         <button class="btn btn-primary" onclick="startNewInspection()">+ Start New Damper Inspection</button>
       </div>
       <div class="card">
-        <button id="switch-hospital-btn" class="btn btn-outline" onclick="requestSwitchHospital()">&larr; Switch Hospital</button>
+        <div class="btn-row">
+          <button id="switch-hospital-btn" class="btn btn-outline" onclick="requestSwitchHospital()">&larr; Switch Hospital</button>
+          <button id="change-building-btn" class="btn btn-outline" onclick="goToSubFolderSelect()">&#127970; Change Building</button>
+        </div>
       </div>
     </section>
 
@@ -343,7 +354,7 @@
    Storage: localStorage (key: fsd_records_v1)
    ========================================================= */
 
-const APP_VERSION = 'v1.7';
+const APP_VERSION = 'v1.8';
 
 const STORAGE_KEY = 'fsd_records_v1';
 const HOSPITALS_KEY = 'fsd_hospitals_v1';
@@ -384,6 +395,7 @@ const REQUIRED_FOR_COMPLETE = STEPS.filter(s=>s.key!=='damperId' && s.key!=='not
 let records = loadRecords();
 let hospitals = loadHospitals();
 let currentHospitalId = sessionStorage.getItem('fsd_current_hospital') || null;
+let currentSubFolder = sessionStorage.getItem('fsd_current_subfolder') || null;
 let wizard = null; // current in-progress record state
 
 // ---- Storage Helpers ----
@@ -424,16 +436,20 @@ function setCurrentHospital(id){
   currentHospitalId = id;
   sessionStorage.setItem('fsd_current_hospital', id || '');
 }
+function setCurrentSubFolder(sf){
+  currentSubFolder = sf; // null = all buildings
+  sessionStorage.setItem('fsd_current_subfolder', sf || '');
+}
 function slugify(str){
   return String(str).trim().toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'');
 }
 
-// Returns records belonging to the currently selected hospital only.
-// This is the isolation boundary: code working with the active hospital's
-// data should always go through this rather than the raw `records` array.
+// Returns records scoped to the current hospital, and sub-folder if one is selected.
 function recordsInScope(){
   if(!currentHospitalId) return [];
-  return records.filter(r=>r.hospitalId===currentHospitalId);
+  let r = records.filter(r=>r.hospitalId===currentHospitalId);
+  if(currentSubFolder) r = r.filter(r=>r.subFolder===currentSubFolder);
+  return r;
 }
 
 
@@ -447,7 +463,7 @@ function switchView(view){
 
   const mainTabs = document.getElementById('main-tabs');
   const xlsxBtn = document.getElementById('header-xlsx-btn');
-  if(view==='hospital-select' || view==='settings'){
+  if(view==='hospital-select' || view==='settings' || view==='subfolder-select'){
     mainTabs.style.display = 'none';
     xlsxBtn.style.display = 'none';
   } else {
@@ -456,6 +472,7 @@ function switchView(view){
   }
 
   if(view==='hospital-select') renderHospitalSelect();
+  if(view==='subfolder-select') renderSubFolderSelect();
   if(view==='settings') renderHospitalSettingsList();
   if(view==='dashboard') renderDashboard();
   if(view==='log') renderLog();
@@ -512,18 +529,89 @@ function selectHospital(id){
   const h = getHospital(id);
   if(!h) return;
   setCurrentHospital(id);
-  // Set the URL hash so this hospital's link is bookmarkable/shareable
-  // Use replaceState to avoid pushing to browser history (back button goes to hospital list)
-  history.replaceState(null,'',`${window.location.pathname}#${slugify(h.name)}`);
+  setCurrentSubFolder(null);
   updateHospitalHeader();
   updateSwitchHospitalVisibility();
+  // If hospital has sub-folders, show the building picker first
+  if(h.subFolders && h.subFolders.length > 0){
+    history.replaceState(null,'',`${window.location.pathname}#${slugify(h.name)}`);
+    switchView('subfolder-select');
+  } else {
+    history.replaceState(null,'',`${window.location.pathname}#${slugify(h.name)}`);
+    switchView('dashboard');
+  }
+}
+
+function goToSubFolderSelect(){
+  setCurrentSubFolder(null);
+  updateHospitalHeader();
+  switchView('subfolder-select');
+}
+
+function renderSubFolderSelect(){
+  const h = getHospital(currentHospitalId);
+  const list = document.getElementById('subfolder-list');
+  if(!h){ list.innerHTML=''; return; }
+
+  const subFolders = h.subFolders || [];
+  const allCount = records.filter(r=>r.hospitalId===currentHospitalId).length;
+
+  // "All Buildings" option + each sub-folder
+  const allBtn = `
+    <div style="margin-bottom:10px;">
+      <button class="opt-btn" onclick="selectSubFolder(null)">
+        <span>All Buildings</span>
+        <span class="chk" style="color:var(--text-dim);font-weight:400;">${allCount} damper${allCount===1?'':'s'}</span>
+      </button>
+    </div>`;
+
+  const sfBtns = subFolders.map(sf=>{
+    const count = records.filter(r=>r.hospitalId===currentHospitalId && r.subFolder===sf).length;
+    const sfSlug = `${slugify(h.name)}/${slugify(sf)}`;
+    return `
+      <div style="margin-bottom:10px;">
+        <button class="opt-btn" onclick="selectSubFolder('${escapeJs(sf)}')">
+          <span>${escapeHtml(sf)}</span>
+          <span class="chk" style="color:var(--text-dim);font-weight:400;">${count} damper${count===1?'':'s'}</span>
+        </button>
+        <button class="btn btn-outline" style="margin-top:4px;font-size:11px;padding:6px 10px;"
+          onclick="copySubFolderLink('${escapeJs(sf)}')">&#128279; Copy Shareable Link</button>
+      </div>`;
+  }).join('');
+
+  list.innerHTML = allBtn + sfBtns;
+}
+
+function selectSubFolder(sf){
+  const h = getHospital(currentHospitalId);
+  if(!h) return;
+  setCurrentSubFolder(sf);
+  updateHospitalHeader();
+  // Update URL to include subfolder slug
+  const hashPath = sf
+    ? `${slugify(h.name)}/${slugify(sf)}`
+    : slugify(h.name);
+  history.replaceState(null,'',`${window.location.pathname}#${hashPath}`);
   switchView('dashboard');
+}
+
+function copySubFolderLink(sf){
+  const h = getHospital(currentHospitalId);
+  if(!h) return;
+  const url = `${window.location.origin}${window.location.pathname}#${slugify(h.name)}/${slugify(sf)}`;
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(url).then(()=>showToast('Building link copied!'))
+      .catch(()=>showToast(url));
+  } else {
+    showToast(url);
+  }
 }
 
 function goToHospitalSelect(){
   setCurrentHospital(null);
+  setCurrentSubFolder(null);
   arrivedViaSharedLink = false;
-  history.replaceState(null,'',window.location.pathname); // clear hash cleanly without triggering hashchange
+  history.replaceState(null,'',window.location.pathname);
   updateHospitalHeader();
   switchView('hospital-select');
 }
@@ -531,7 +619,15 @@ function goToHospitalSelect(){
 function updateHospitalHeader(){
   const h = getHospital(currentHospitalId);
   document.getElementById('hospital-title').textContent = h ? h.name.toUpperCase() : 'FSD TESTING';
-  document.getElementById('hospital-subtitle').textContent = h ? 'DAMPER INSPECTION SYSTEM' : 'SELECT A HOSPITAL';
+  const subLabel = currentSubFolder ? currentSubFolder : (h ? 'ALL BUILDINGS' : 'SELECT A HOSPITAL');
+  document.getElementById('hospital-subtitle').textContent = h ? subLabel : 'SELECT A HOSPITAL';
+
+  // Only show Change Building button if hospital has sub-folders
+  const changeBuildingBtn = document.getElementById('change-building-btn');
+  if(changeBuildingBtn){
+    const subFolders = h ? (h.subFolders||[]) : [];
+    changeBuildingBtn.style.display = subFolders.length > 0 ? '' : 'none';
+  }
 }
 
 /* =========================================================
@@ -737,8 +833,13 @@ function beginWizard(){
     return;
   }
   wizard = {
-    data: { damperId: id, dateTested: todayStr(), hospitalId: currentHospitalId },
-    step: 1, // skip damperId step since already entered
+    data: {
+      damperId: id,
+      dateTested: todayStr(),
+      hospitalId: currentHospitalId,
+      subFolder: currentSubFolder || undefined // pre-fill if a building is already selected
+    },
+    step: 1,
     photos: [],
     editingId: null
   };
@@ -850,6 +951,7 @@ function prevStep(){
 }
 function shouldSkipStep(step){
   if(step.showIf && !step.showIf(wizard.data)) return true;
+  if(step.key==='subFolder' && currentSubFolder) return true; // already set by building selection
   if(step.dynamicOptions){
     const opts = step.dynamicOptions();
     if(!opts || opts.length===0) return true;
@@ -1266,25 +1368,51 @@ function handleHashRoute(){
 
   const segments = hash.split('/').filter(Boolean);
   const hospitalSlug = segments[0];
-
-  // Check if this looks like a report path (3 segments: hospital/subfolder/damper)
-  // or a damper directly under hospital (2 segments: hospital/damper)
-  // vs just a hospital home (1 segment: hospital)
   const matchedHospital = hospitals.find(h=>slugify(h.name)===hospitalSlug);
 
-  if(segments.length === 1 && matchedHospital){
-    // Hospital home link — lock into this hospital
+  if(!matchedHospital){
+    // Could be a report hash from old format — try report render
+    if(segments.length >= 2) renderReportView(hash);
+    else hideReportView();
+    return;
+  }
+
+  if(segments.length === 1){
+    // Hospital home: #st-marys — show subfolder picker (or dashboard if no subfolders)
     hideReportView();
     arrivedViaSharedLink = true;
     setCurrentHospital(matchedHospital.id);
+    setCurrentSubFolder(null);
     updateHospitalHeader();
     updateSwitchHospitalVisibility();
-    switchView('dashboard');
-  } else if(segments.length >= 2){
-    // Report link — render full-page report overlay
+    if(matchedHospital.subFolders && matchedHospital.subFolders.length > 0){
+      switchView('subfolder-select');
+    } else {
+      switchView('dashboard');
+    }
+
+  } else if(segments.length === 2){
+    // Could be #hospital/subfolder or #hospital/damper (no subfolder)
+    // Check if second segment matches a subfolder name
+    const sfSlug = segments[1];
+    const matchedSF = (matchedHospital.subFolders||[]).find(sf=>slugify(sf)===sfSlug);
+    if(matchedSF){
+      // It's a subfolder link: #hospital/subfolder — go to dashboard scoped to that subfolder
+      hideReportView();
+      arrivedViaSharedLink = true;
+      setCurrentHospital(matchedHospital.id);
+      setCurrentSubFolder(matchedSF);
+      updateHospitalHeader();
+      updateSwitchHospitalVisibility();
+      switchView('dashboard');
+    } else {
+      // It's a report link: #hospital/damperid
+      renderReportView(hash);
+    }
+
+  } else if(segments.length >= 3){
+    // Report link: #hospital/subfolder/damperid
     renderReportView(hash);
-  } else {
-    hideReportView();
   }
 }
 
