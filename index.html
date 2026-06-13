@@ -309,24 +309,28 @@ const ARCTIC_LOGO_B64 = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAyAAAACMC
 // Each step: {key, label, type: 'text'|'date'|'select', options?:[], optional?:bool}
 const STEPS = [
   { key:'damperId',      label:'Damper Name / ID',        type:'text' },
-  { key:'dateTested',    label:'Date Tested',             type:'date' },
-  { key:'damperSize',    label:'Damper Size',             type:'text' },
+  { key:'dateTested',    label:'Date Tested',             type:'date', optional:true },
+  { key:'damperSize',    label:'Damper Size',             type:'text', optional:true },
   { key:'damperAlias',   label:'Damper Alias',            type:'text', optional:true },
-  { key:'equipmentName', label:'Equipment Name',          type:'text' },
-  { key:'damperType',    label:'Damper Type',             type:'select', options:['Fire Smoke Damper','Fire Damper','Smoke Damper'] },
+  { key:'equipmentName', label:'Equipment Name',          type:'text', optional:true },
+  { key:'damperType',    label:'Damper Type',             type:'select', options:['Fire Smoke Damper','Fire Damper','Smoke Damper'], optional:true },
   { key:'angleRing',     label:'Angle Ring',              type:'select', options:['Yes','No','N/A'], optional:true },
-  { key:'actuatorType',  label:'Actuator Type',           type:'select', options:['Electric','Gravity','Pneumatic','Spring','Shop Built'] },
+  { key:'actuatorType',  label:'Actuator Type',           type:'select', options:['Electric','Gravity','Pneumatic','Spring','Shop Built'], optional:true },
   { key:'motorType',     label:'Type of Motor',           type:'text', optional:true, showIf:(d)=>d.actuatorType==='Electric' },
-  { key:'indicatorLight',label:'Indicator Light',         type:'select', options:['Yes','No','N/A'] },
-  { key:'roomName',      label:'Room Name',               type:'text' },
-  { key:'roomNumber',    label:'Room Number',             type:'text' },
-  { key:'floor',         label:'Floor',                   type:'text' },
-  { key:'installedIn',   label:'Installed In',            type:'select', options:['Supply','Return','Exhaust'] },
-  { key:'requiresShutdown', label:'Requires Shutdown',    type:'select', options:['Yes','No'] },
-  { key:'criticalArea',  label:'Critical Area',           type:'select', options:['Yes','No'] },
-  { key:'testResult',    label:'Test Result',             type:'select', options:['Pass','Fail','Decommissioned',"Can't Test"] },
+  { key:'indicatorLight',label:'Indicator Light',         type:'select', options:['Yes','No','N/A'], optional:true },
+  { key:'roomName',      label:'Room Name',               type:'text', optional:true },
+  { key:'roomNumber',    label:'Room Number',             type:'text', optional:true },
+  { key:'floor',         label:'Floor',                   type:'text', optional:true },
+  { key:'installedIn',   label:'Installed In',            type:'select', options:['Supply','Return','Exhaust'], optional:true },
+  { key:'requiresShutdown', label:'Requires Shutdown',    type:'select', options:['Yes','No'], optional:true },
+  { key:'criticalArea',  label:'Critical Area',           type:'select', options:['Yes','No'], optional:true },
+  { key:'testResult',    label:'Test Result',             type:'select', options:['Pass','Fail','Decommissioned',"Can't Test"], optional:true },
   { key:'notes',         label:'Notes',                   type:'textarea', optional:true },
 ];
+
+// fields considered when flagging a record as "incomplete" in the log
+// (damperId is always required and captured at entry, so excluded here)
+const REQUIRED_FOR_COMPLETE = STEPS.filter(s=>s.key!=='damperId' && s.key!=='notes' && s.key!=='damperAlias').map(s=>s.key);
 
 // ---- App State ----
 let records = loadRecords();
@@ -569,7 +573,7 @@ function renderPhotoStep(){
     </div>
     <div class="wizard-bar"><div class="wizard-bar-fill" style="width:100%"></div></div>
     <div class="step-question">Upload Inspection Photos</div>
-    <div style="font-size:12px;color:var(--text-dim);margin-bottom:12px;">Minimum 1, maximum 3. Can be added later from the Project Log.</div>
+    <div style="font-size:12px;color:var(--text-dim);margin-bottom:12px;">Up to 3 photos. Optional, and can be added later from the Project Log.</div>
     <div class="photo-grid">${slots}</div>
     <label class="upload-label">
       &#128247; Add Photo${photos.length>=3?' (max reached)':''}
@@ -621,10 +625,6 @@ function removePhoto(i){
 }
 
 function goToReview(){
-  if(!wizard.photos || wizard.photos.length<1){
-    showToast('At least 1 photo is required');
-    return;
-  }
   renderReview();
 }
 
@@ -672,21 +672,7 @@ function jumpToStep(idx){
    SUBMIT
    ========================================================= */
 function submitInspection(){
-  if(!wizard.photos || wizard.photos.length<1){
-    showToast('At least 1 photo is required');
-    return;
-  }
-  // validate required fields
-  for(const s of STEPS){
-    if(s.showIf && !s.showIf(wizard.data)) continue;
-    if(!s.optional && !wizard.data[s.key]){
-      showToast(`Missing: ${s.label}`);
-      jumpToStep(STEPS.indexOf(s));
-      return;
-    }
-  }
-
-  const record = { ...wizard.data, photos: wizard.photos };
+  const record = { ...wizard.data, photos: wizard.photos || [] };
 
   if(wizard.editingId){
     const idx = records.findIndex(r=>r._id===wizard.editingId);
@@ -888,7 +874,7 @@ function generatePDF(record){
   doc.text('Inspector Name: _____________________________', margin, pageH-16);
   doc.text('Signature: _____________________________', pageW/2 + 10, pageH-16);
 
-  const filename = `FSD_${sanitizeFilename(record.damperId)}.pdf`;
+  const filename = `${sanitizeFilename(record.damperId)}.pdf`;
   doc.save(filename);
   record.pdfName = filename;
 }
@@ -902,22 +888,34 @@ function sanitizeFilename(str){
    ========================================================= */
 const LOG_TABLE_COLUMNS = [
   ['Damper ID','damperId'],
-  ['Date','dateTested'],
-  ['Size','damperSize'],
-  ['Alias','damperAlias'],
-  ['Equipment','equipmentName'],
+  ['Result','testResult'],
   ['Type','damperType'],
-  ['Actuator','actuatorType'],
-  ['Indicator','indicatorLight'],
+  ['Size','damperSize'],
   ['Room Name','roomName'],
   ['Room #','roomNumber'],
   ['Floor','floor'],
+  ['Status','__status'],
+  ['Date','dateTested'],
+  ['Alias','damperAlias'],
+  ['Equipment','equipmentName'],
+  ['Angle Ring','angleRing'],
+  ['Actuator','actuatorType'],
+  ['Motor Type','motorType'],
+  ['Indicator','indicatorLight'],
   ['Installed In','installedIn'],
   ['Shutdown','requiresShutdown'],
   ['Critical','criticalArea'],
-  ['Result','testResult'],
   ['Photos','__photoCount'],
 ];
+
+// Returns list of human-readable labels for missing fields on a record
+function getMissingFields(r){
+  return STEPS.filter(s=>{
+    if(s.key==='damperId' || s.key==='notes' || s.key==='damperAlias') return false;
+    if(s.showIf && !s.showIf(r)) return false;
+    return !r[s.key];
+  }).map(s=>s.label);
+}
 
 function renderLog(){
   // populate floor filter options dynamically
@@ -964,9 +962,14 @@ function renderLog(){
   const badgeClass = {'Pass':'pass','Fail':'fail','Decommissioned':'decom',"Can't Test":'cant'};
 
   body.innerHTML = filtered.slice().reverse().map(r=>{
+    const missing = getMissingFields(r);
     const cells = LOG_TABLE_COLUMNS.map(([h,key])=>{
       if(key==='__photoCount') return `<td>${(r.photos||[]).length}/3</td>`;
-      if(key==='testResult') return `<td><span class="badge ${badgeClass[r.testResult]||''}">${r.testResult||'—'}</span></td>`;
+      if(key==='__status'){
+        if(missing.length===0) return `<td><span class="badge pass">Complete</span></td>`;
+        return `<td><span class="badge fail" title="Missing: ${missing.join(', ')}">${missing.length} missing</span></td>`;
+      }
+      if(key==='testResult') return `<td>${r.testResult?`<span class="badge ${badgeClass[r.testResult]||''}">${r.testResult}</span>`:'<span class="badge fail">—</span>'}</td>`;
       if(key==='damperId') return `<td class="did">${r.damperId||'—'}</td>`;
       return `<td>${r[key]||'—'}</td>`;
     }).join('');
@@ -1037,7 +1040,7 @@ function buildExportRows(){
     const row = {};
     EXPORT_COLUMNS.forEach(([header,key])=>{
       if(key==='__photoCount') row[header] = (r.photos||[]).length;
-      else if(key==='__pdfLink') row[header] = r.pdfName || `FSD_${sanitizeFilename(r.damperId)}.pdf`;
+      else if(key==='__pdfLink') row[header] = r.pdfName || `${sanitizeFilename(r.damperId)}.pdf`;
       else row[header] = r[key] || '';
     });
     return row;
