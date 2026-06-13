@@ -4,7 +4,6 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no">
 <title>FSD Testing &mdash; Damper Inspection System</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
   :root{
@@ -658,7 +657,7 @@ function renderReview(){
     <div class="photo-grid">${photoThumbs}${extraSlots}</div>
     <div class="btn-row" style="margin-top:14px;">
       <button class="btn" onclick="cancelWizard()">Cancel</button>
-      <button class="btn btn-gold" onclick="submitInspection()">Submit & Generate PDF</button>
+      <button class="btn btn-gold" onclick="submitInspection()">Submit & Download Report</button>
     </div>
   `;
 }
@@ -683,204 +682,173 @@ function submitInspection(){
     records.push(record);
   }
 
-  // generate PDF
-  generatePDF(record);
+  // generate standalone report (downloads as {damperId}.html — same name every
+  // time, so committing it to the repo overwrites the existing file at the
+  // same permanent URL: jeells96.github.io/{damperId}.html)
+  downloadReport(record);
 
   saveRecords();
-  showToast('Inspection saved & report generated');
+  showToast('Inspection saved & report downloaded');
   wizard = null;
   switchView('dashboard');
 }
 
-/* =========================================================
-   PDF GENERATION — ARCTIC Fire Damper Inspection layout
-   ========================================================= */
-
-// Helper: draw a lavender field box with underlined bold label above it
-function drawField(doc, label, value, x, y, w, h, opts={}){
-  // label
-  doc.setFont('helvetica','bold');
-  doc.setFontSize(opts.labelSize || 11);
-  doc.setTextColor(20,20,20);
-  doc.text(label, x, y);
-  const labelW = doc.getTextWidth(label);
-  doc.setDrawColor(20,20,20);
-  doc.setLineWidth(0.75);
-  doc.line(x, y+2, x+labelW, y+2);
-
-  // box
-  const boxY = y + (opts.boxGap!==undefined?opts.boxGap:6);
-  doc.setFillColor(238,241,253); // lavender
-  doc.setDrawColor(120,120,140);
-  doc.setLineWidth(0.75);
-  doc.rect(x, boxY, w, h, 'FD');
-
-  // value text
-  if(value){
-    doc.setFont('helvetica','normal');
-    doc.setFontSize(10);
-    doc.setTextColor(30,30,30);
-    doc.text(String(value), x+6, boxY + h/2 + 3, { maxWidth: w-12 });
-  }
-  return boxY + h; // bottom y of this field
-}
-
-// Draws the ARCTIC logo image centered at given x, with subtitle below
-const ARCTIC_LOGO_ASPECT = 800/140; // width/height of source image
-function drawArcticLogo(doc, centerX, topY){
-  const logoW = 220;
-  const logoH = logoW / ARCTIC_LOGO_ASPECT;
-  const logoX = centerX - logoW/2;
-  try{
-    doc.addImage(ARCTIC_LOGO_B64, 'PNG', logoX, topY, logoW, logoH);
-  }catch(e){}
-
-  // Subtitle
-  doc.setFont('helvetica','bold');
-  doc.setFontSize(13);
-  doc.setTextColor(10,10,10);
-  doc.text('Fire Damper Inspection', centerX, topY + logoH + 18, {align:'center'});
-}
-
-function generatePDF(record){
-  const { jsPDF } = window.jspdf;
-  const doc = new jsPDF({ unit:'pt', format:'letter' });
-  const pageW = doc.internal.pageSize.getWidth();
-  const pageH = doc.internal.pageSize.getHeight();
-  const margin = 40;
-
-  // ---- Logo / Header ----
-  drawArcticLogo(doc, pageW/2, 30);
-
-  let y = 130;
-
-  // ---- Three column layout ----
-  const colGap = 20;
-  const col1X = margin;
-  const col1W = 195;
-  const col2X = col1X + col1W + colGap;
-  const col2W = 180;
-  const col3X = col2X + col2W + colGap;
-  const col3W = pageW - margin - col3X;
-
-  const rowH = 22;
-
-  // -- Column 1 --
-  let y1 = y;
-  y1 = drawField(doc,'Date of Inspection:', record.dateTested, col1X, y1, col1W, rowH) + 16;
-  y1 = drawField(doc,'Damper Name:', record.damperId, col1X, y1, col1W, rowH) + 16;
-  y1 = drawField(doc,'Damper Alias:', record.damperAlias, col1X, y1, col1W, rowH) + 16;
-  y1 = drawField(doc,'Equipment Name:', record.equipmentName, col1X, y1, col1W, rowH) + 16;
-  y1 = drawField(doc,'Damper Type:', record.damperType, col1X, y1, col1W, rowH) + 18;
-  y1 = drawField(doc,'Angle Ring:', record.angleRing, col1X, y1, 110, rowH) + 12;
-  y1 = drawField(doc,'Notes:', '', col1X, y1, col1W, 34, {labelSize:9}) + 16;
-  y1 = drawField(doc,'Actuator Type:', record.actuatorType, col1X, y1, col1W, rowH) + 12;
-  y1 = drawField(doc,'Type of Motor:', record.motorType, col1X, y1, 130, rowH, {labelSize:9}) + 18;
-  y1 = drawField(doc,'Indicator Light:', record.indicatorLight, col1X, y1, 110, rowH) + 16;
-
-  // -- Column 2 --
-  let y2 = y;
-  // "Damper Location" header (label only, underline, no box)
-  doc.setFont('helvetica','bold');
-  doc.setFontSize(11);
-  doc.setTextColor(20,20,20);
-  doc.text('Damper Location', col2X, y2);
-  doc.setDrawColor(20,20,20);
-  doc.setLineWidth(0.75);
-  doc.line(col2X, y2+2, col2X + doc.getTextWidth('Damper Location'), y2+2);
-  y2 += 18;
-  y2 = drawField(doc,'Room Name:', record.roomName, col2X, y2, col2W, rowH) + 16;
-  y2 = drawField(doc,'Room Number:', record.roomNumber, col2X, y2, col2W, rowH) + 16;
-  y2 = drawField(doc,'Floor:', record.floor, col2X, y2, 110, rowH);
-
-  // -- Column 3 --
-  let y3 = y;
-  y3 = drawField(doc,'Damper Size:', record.damperSize, col3X, y3, col3W, rowH) + 16;
-  y3 = drawField(doc,'Installed In:', record.installedIn, col3X, y3, col3W, rowH) + 16;
-  y3 = drawField(doc,"Requires Shutdown?", record.requiresShutdown, col3X, y3, col3W, rowH, {labelSize:10}) + 16;
-  y3 = drawField(doc,'Critical Area?', record.criticalArea, col3X, y3, col3W, rowH) + 16;
-  y3 = drawField(doc,'Test:', record.testResult, col3X, y3, col3W, rowH) + 18;
-
-  // Result emphasis (color the Test box border based on result)
-  const resultColors = {
-    'Pass':[57,180,100], 'Fail':[200,60,50], 'Decommissioned':[180,140,40], "Can't Test":[140,100,180]
-  };
-  const rc = resultColors[record.testResult];
-  if(rc){
-    doc.setDrawColor(rc[0],rc[1],rc[2]);
-    doc.setLineWidth(1.5);
-    doc.rect(col3X, y3-18-rowH, col3W, rowH);
-    doc.setLineWidth(0.75);
-  }
-
-  // -- Photo boxes (column 3, below fields) --
-  const photos = record.photos || [];
-  const photoBoxH = 110;
-  let py3 = y3;
-  for(let i=0;i<2;i++){
-    doc.setDrawColor(20,20,20);
-    doc.setLineWidth(1);
-    doc.rect(col3X, py3, col3W, photoBoxH);
-    if(photos[i]){
-      try{
-        // fit image inside box with small padding
-        const pad = 4;
-        doc.addImage(photos[i], 'JPEG', col3X+pad, py3+pad, col3W-pad*2, photoBoxH-pad*2);
-      }catch(e){}
-    }
-    py3 += photoBoxH + 16;
-  }
-
-  // ---- Bottom Notes box (full width) ----
-  const maxColBottom = Math.max(y1, y2, py3);
-  let notesY = maxColBottom + 26;
-  doc.setFont('helvetica','bold');
-  doc.setFontSize(11);
-  doc.setTextColor(20,20,20);
-  doc.text('Notes:', margin, notesY);
-  doc.line(margin, notesY+2, margin + doc.getTextWidth('Notes:'), notesY+2);
-  notesY += 8;
-  const notesBoxH = Math.max(120, pageH - notesY - 30);
-  doc.setFillColor(238,241,253);
-  doc.setDrawColor(120,120,140);
-  doc.setLineWidth(0.75);
-  doc.rect(margin, notesY, pageW-margin*2, notesBoxH, 'FD');
-  if(record.notes){
-    doc.setFont('helvetica','normal');
-    doc.setFontSize(10);
-    doc.setTextColor(30,30,30);
-    const lines = doc.splitTextToSize(record.notes, pageW-margin*2-12);
-    doc.text(lines, margin+6, notesY+14);
-  }
-
-  // ---- 3rd photo (if exists) appended on a new page ----
-  if(photos[2]){
-    doc.addPage();
-    doc.setFont('helvetica','bold');
-    doc.setFontSize(12);
-    doc.setTextColor(20,20,20);
-    doc.text(`Additional Photo — ${record.damperId}`, margin, 40);
-    try{
-      const imgW = pageW - margin*2;
-      const imgH = imgW*0.75;
-      doc.addImage(photos[2], 'JPEG', margin, 60, imgW, imgH);
-    }catch(e){}
-  }
-
-  // ---- Inspector / Signature block (footer area) ----
-  doc.setFont('helvetica','bold');
-  doc.setFontSize(9);
-  doc.setTextColor(100,100,100);
-  doc.text('Inspector Name: _____________________________', margin, pageH-16);
-  doc.text('Signature: _____________________________', pageW/2 + 10, pageH-16);
-
-  const filename = `${sanitizeFilename(record.damperId)}.pdf`;
-  doc.save(filename);
-  record.pdfName = filename;
-}
-
 function sanitizeFilename(str){
   return String(str).replace(/[^a-z0-9_\-]/gi,'_');
+}
+
+/* =========================================================
+   STANDALONE HTML REPORT — for permanent jeells96.github.io/{damperId}.html links
+   This file is meant to be committed to the repo root. Re-downloading and
+   re-committing with the SAME filename (damperId.html) overwrites it in place,
+   so the URL never changes even after edits/regeneration.
+   ========================================================= */
+function generateReportHTML(record){
+  const photos = record.photos || [];
+  const resultColors = {
+    'Pass':'#39b464','Fail':'#c83c32','Decommissioned':'#b48c28',"Can't Test":'#8c64b4'
+  };
+  const resultColor = resultColors[record.testResult] || '#999';
+
+  const field = (label, value) => `
+    <div class="f">
+      <div class="flabel">${label}</div>
+      <div class="fbox">${value ? escapeHtml(value) : ''}</div>
+    </div>`;
+
+  const photoBox = (src) => `
+    <div class="photobox">${src ? `<img src="${src}" alt="Inspection photo">` : ''}</div>`;
+
+  const extraPhotoHtml = photos[2] ? `
+    <div class="extra-photo-section">
+      <h3>Additional Photo</h3>
+      <img src="${photos[2]}" alt="Additional inspection photo" style="max-width:100%;border:1px solid #333;">
+    </div>` : '';
+
+  const motorTypeField = record.actuatorType==='Electric'
+    ? `<div class="f"><div class="flabel small">Type of Motor:</div><div class="fbox" style="width:130px;">${escapeHtml(record.motorType||'')}</div></div>`
+    : '';
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>${escapeHtml(record.damperId)} — Fire Damper Inspection</title>
+<style>
+  *{box-sizing:border-box;}
+  body{margin:0;padding:24px;background:#fff;color:#111;
+    font-family:Arial,Helvetica,sans-serif;font-size:14px;}
+  .sheet{max-width:1000px;margin:0 auto;}
+  .logo-wrap{text-align:center;margin-bottom:6px;}
+  .logo-wrap img{max-width:280px;width:100%;height:auto;}
+  .subtitle{text-align:center;font-size:18px;font-weight:bold;margin:6px 0 28px;}
+  .columns{display:flex;gap:24px;flex-wrap:wrap;}
+  .col{flex:1;min-width:220px;}
+  .col-photos{flex:1;min-width:220px;display:flex;flex-direction:column;gap:14px;}
+  .f{margin-bottom:14px;}
+  .flabel{font-weight:bold;text-decoration:underline;margin-bottom:4px;font-size:13px;}
+  .flabel.small{font-size:11px;}
+  .fbox{background:#eef1fd;border:1px solid #888;border-radius:2px;
+    padding:8px 10px;min-height:20px;font-size:13px;}
+  .section-label{font-weight:bold;text-decoration:underline;margin-bottom:10px;font-size:13px;}
+  .test-box{border:2px solid ${resultColor};}
+  .photobox{border:1.5px solid #222;border-radius:2px;min-height:140px;
+    display:flex;align-items:center;justify-content:center;overflow:hidden;background:#fafafa;}
+  .photobox img{width:100%;height:100%;object-fit:cover;}
+  .notes-section{margin-top:24px;}
+  .notes-box{background:#eef1fd;border:1px solid #888;border-radius:2px;
+    min-height:140px;padding:10px;white-space:pre-wrap;font-size:13px;}
+  .signature-row{display:flex;gap:40px;margin-top:30px;font-size:12px;color:#555;flex-wrap:wrap;}
+  .signature-row span{border-bottom:1px solid #999;padding-bottom:4px;flex:1;min-width:200px;}
+  .extra-photo-section{margin-top:24px;}
+  .extra-photo-section h3{font-size:14px;text-decoration:underline;}
+  .meta-footer{margin-top:30px;font-size:11px;color:#999;text-align:center;}
+  @media (max-width:700px){
+    .columns{flex-direction:column;}
+  }
+</style>
+</head>
+<body>
+<div class="sheet">
+  <div class="logo-wrap"><img src="${ARCTIC_LOGO_B64}" alt="ARCTIC"></div>
+  <div class="subtitle">Fire Damper Inspection</div>
+
+  <div class="columns">
+    <div class="col">
+      ${field('Date of Inspection:', record.dateTested)}
+      ${field('Damper Name:', record.damperId)}
+      ${field('Damper Alias:', record.damperAlias)}
+      ${field('Equipment Name:', record.equipmentName)}
+      ${field('Damper Type:', record.damperType)}
+      ${field('Angle Ring:', record.angleRing)}
+      <div class="f"><div class="flabel small">Notes:</div><div class="fbox" style="min-height:34px;"></div></div>
+      ${field('Actuator Type:', record.actuatorType)}
+      ${motorTypeField}
+      ${field('Indicator Light:', record.indicatorLight)}
+    </div>
+
+    <div class="col">
+      <div class="section-label">Damper Location</div>
+      ${field('Room Name:', record.roomName)}
+      ${field('Room Number:', record.roomNumber)}
+      ${field('Floor:', record.floor)}
+    </div>
+
+    <div class="col-photos">
+      ${field('Damper Size:', record.damperSize)}
+      ${field('Installed In:', record.installedIn)}
+      ${field('Requires Shutdown?', record.requiresShutdown)}
+      ${field('Critical Area?', record.criticalArea)}
+      <div class="f"><div class="flabel">Test:</div><div class="fbox test-box">${escapeHtml(record.testResult||'')}</div></div>
+      ${photoBox(photos[0])}
+      ${photoBox(photos[1])}
+    </div>
+  </div>
+
+  ${extraPhotoHtml}
+
+  <div class="notes-section">
+    <div class="section-label">Notes:</div>
+    <div class="notes-box">${escapeHtml(record.notes||'')}</div>
+  </div>
+
+  <div class="signature-row">
+    <span>Inspector Name:</span>
+    <span>Signature:</span>
+  </div>
+
+  <div class="meta-footer">Report generated ${new Date().toLocaleString()} &middot; Damper ID: ${escapeHtml(record.damperId)}</div>
+</div>
+</body>
+</html>`;
+}
+
+function escapeHtml(str){
+  if(str===undefined || str===null) return '';
+  return String(str)
+    .replace(/&/g,'&amp;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;');
+}
+
+// Downloads the standalone report as {damperId}.html — same filename every time,
+// so re-downloading after an edit overwrites the same file when committed to the repo,
+// keeping https://jeells96.github.io/{damperId}.html permanent.
+function downloadReport(record){
+  const html = generateReportHTML(record);
+  const blob = new Blob([html], {type:'text/html'});
+  const url = URL.createObjectURL(blob);
+  const filename = `${sanitizeFilename(record.damperId)}.html`;
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  record.pdfName = filename;
 }
 
 /* =========================================================
@@ -978,7 +946,7 @@ function renderLog(){
       <td>
         <div class="actions-cell">
           <button class="btn btn-outline" onclick="editRecord('${r._id}')">Edit</button>
-          <button class="btn btn-outline" onclick="regeneratePDF('${r._id}')">PDF</button>
+          <button class="btn btn-outline" onclick="regenerateReport('${r._id}')">Report</button>
           <button class="btn btn-danger" onclick="deleteRecord('${r._id}')">Del</button>
         </div>
       </td>
@@ -994,11 +962,12 @@ function editRecord(id){
   switchView('inspect');
 }
 
-function regeneratePDF(id){
+function regenerateReport(id){
   const existing = records.find(r=>r._id===id);
   if(!existing) return;
-  generatePDF(existing);
+  downloadReport(existing);
   saveRecords();
+  showToast(`Re-downloaded ${sanitizeFilename(existing.damperId)}.html — recommit it to overwrite the existing file at the same URL`);
 }
 
 function deleteRecord(id){
@@ -1032,7 +1001,7 @@ const EXPORT_COLUMNS = [
   ['Test Result','testResult'],
   ['Notes','notes'],
   ['Photo Count','__photoCount'],
-  ['PDF Report Link','__pdfLink'],
+  ['Report URL','__pdfLink'],
 ];
 
 function buildExportRows(){
@@ -1040,7 +1009,7 @@ function buildExportRows(){
     const row = {};
     EXPORT_COLUMNS.forEach(([header,key])=>{
       if(key==='__photoCount') row[header] = (r.photos||[]).length;
-      else if(key==='__pdfLink') row[header] = r.pdfName || `${sanitizeFilename(r.damperId)}.pdf`;
+      else if(key==='__pdfLink') row[header] = `https://jeells96.github.io/${sanitizeFilename(r.damperId)}.html`;
       else row[header] = r[key] || '';
     });
     return row;
