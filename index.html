@@ -7,17 +7,17 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
   :root{
-    --bg:#0a0d0a;
-    --bg2:#10140f;
-    --panel:#141914;
-    --panel2:#1a201a;
-    --line:#2a332a;
-    --green:#39d97a;
-    --green-dim:#1f6b41;
-    --gold:#d9b257;
-    --red:#e0584f;
-    --text:#e8ece6;
-    --text-dim:#8a958a;
+    --bg:#f4f6fb;
+    --bg2:#ffffff;
+    --panel:#ffffff;
+    --panel2:#eef1fd;
+    --line:#c9cfe6;
+    --green:#1a237e;
+    --green-dim:#aab2e0;
+    --gold:#b48c28;
+    --red:#c0392b;
+    --text:#1a1a1a;
+    --text-dim:#6b7280;
     --mono:'SF Mono','Roboto Mono',monospace;
   }
   *{box-sizing:border-box;}
@@ -98,7 +98,7 @@
     margin-bottom:14px;font-family:inherit;
   }
   select{appearance:none;-webkit-appearance:none;
-    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%2339d97a' stroke-width='2' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%231a237e' stroke-width='2' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
     background-repeat:no-repeat;background-position:right 14px center;padding-right:36px;}
   input:focus,select:focus,textarea:focus{outline:none;border-color:var(--green);}
   .field-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
@@ -109,8 +109,8 @@
     padding:13px 18px;border-radius:8px;font-size:14px;font-weight:700;
     border:1px solid var(--line);background:var(--panel2);color:var(--text);
     cursor:pointer;letter-spacing:0.5px;width:100%;}
-  .btn-primary{background:var(--green);color:#06150c;border-color:var(--green);}
-  .btn-gold{background:var(--gold);color:#1a1505;border-color:var(--gold);}
+  .btn-primary{background:var(--green);color:#ffffff;border-color:var(--green);}
+  .btn-gold{background:var(--gold);color:#ffffff;border-color:var(--gold);}
   .btn-outline{background:none;border:1px solid var(--green);color:var(--green);}
   .btn-danger{background:none;border:1px solid var(--red);color:var(--red);}
   .btn-row{display:flex;gap:10px;margin-top:6px;}
@@ -130,7 +130,7 @@
     padding:16px;border-radius:8px;font-size:15px;font-weight:600;text-align:left;
     width:100%;display:flex;justify-content:space-between;align-items:center;
   }
-  .opt-btn.selected{border-color:var(--green);background:rgba(57,217,122,0.1);color:var(--green);}
+  .opt-btn.selected{border-color:var(--green);background:rgba(26,35,126,0.08);color:var(--green);}
   .opt-btn .chk{font-family:var(--mono);font-size:13px;}
 
   /* PHOTO UPLOAD */
@@ -159,7 +159,7 @@
   .filters{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;}
   .filters input,.filters select{margin-bottom:0;font-size:13px;padding:10px;}
   .badge{font-size:11px;font-weight:700;padding:3px 8px;border-radius:5px;letter-spacing:0.5px;display:inline-block;}
-  .badge.pass{background:rgba(57,217,122,0.15);color:var(--green);}
+  .badge.pass{background:rgba(26,35,126,0.10);color:var(--green);}
   .badge.fail{background:rgba(224,88,79,0.15);color:var(--red);}
   .badge.decom{background:rgba(217,178,87,0.15);color:var(--gold);}
   .badge.cant{background:rgba(176,143,217,0.15);color:#b08fd9;}
@@ -181,7 +181,7 @@
 
   .empty{text-align:center;color:var(--text-dim);padding:40px 20px;font-size:13px;}
   .toast{position:fixed;bottom:80px;left:50%;transform:translateX(-50%);
-    background:var(--green);color:#06150c;padding:10px 20px;border-radius:8px;
+    background:var(--green);color:#ffffff;padding:10px 20px;border-radius:8px;
     font-weight:700;font-size:13px;z-index:200;opacity:0;transition:opacity .3s;
     pointer-events:none;white-space:nowrap;}
   .toast.show{opacity:1;}
@@ -286,11 +286,6 @@
       <div class="empty" id="log-empty" style="display:none;"></div>
     </section>
 
-    <!-- REPORT VIEW (hash-routed: jeells96.github.io/#101) -->
-    <section class="view" id="view-report">
-      <div class="card" id="report-card"></div>
-    </section>
-
   </main>
 
   <footer class="signature" id="app-footer">FSD-SYS &middot; LOCAL STORAGE &middot; FIELD READY</footer>
@@ -304,7 +299,7 @@
    Storage: localStorage (key: fsd_records_v1)
    ========================================================= */
 
-const APP_VERSION = 'v1.4';
+const APP_VERSION = 'v1.5';
 
 const STORAGE_KEY = 'fsd_records_v1';
 
@@ -878,35 +873,41 @@ function copyReportLink(damperId){
 
 // Renders the full inspection report inline for the damper matching the URL hash.
 // Triggered on page load and on hashchange, so https://jeells96.github.io/#101
-// always shows the current data for damper 101.
+// always shows the current data for damper 101 as a standalone page —
+// nothing else from the app is visible. Use the browser back button to exit.
 function renderReportView(damperId){
   const record = records.find(r=>sanitizeFilename(r.damperId)===sanitizeFilename(damperId));
-  const card = document.getElementById('report-card');
-  if(!record){
-    card.innerHTML = `
-      <h2>Report Not Found</h2>
-      <p style="color:var(--text-dim);font-size:13px;">No inspection record found for "<strong>${escapeHtml(damperId)}</strong>" on this device.</p>
-      <button class="btn btn-outline" onclick="window.location.hash='';switchView('dashboard')">Back to Dashboard</button>
-    `;
-    switchView('report');
-    return;
+  const appEl = document.querySelector('.app');
+  let overlay = document.getElementById('report-overlay');
+  if(!overlay){
+    overlay = document.createElement('div');
+    overlay.id = 'report-overlay';
+    document.body.appendChild(overlay);
   }
-  // Embed the generated report HTML's inner content (strip outer html/head/body)
-  const reportHtml = generateReportHTML(record);
-  const bodyMatch = reportHtml.match(/<body>([\s\S]*)<\/body>/);
-  const styleMatch = reportHtml.match(/<style>([\s\S]*?)<\/style>/);
-  card.innerHTML = `
-    <div class="btn-row" style="margin-bottom:14px;">
-      <button class="btn btn-outline" onclick="window.location.hash='';switchView('dashboard')">&larr; Back</button>
-      <button class="btn btn-outline" onclick="copyReportLink('${escapeJs(record.damperId)}')">Copy Link</button>
-      <button class="btn btn-gold" onclick="downloadReport(records.find(r=>r._id==='${record._id}'))">Download</button>
-    </div>
-    <style>${styleMatch ? styleMatch[1] : ''}
-      #report-embed{background:#fff;border-radius:8px;overflow:hidden;padding:24px;color:#111;font-family:Arial,Helvetica,sans-serif;font-size:14px;}
-    </style>
-    <div id="report-embed">${bodyMatch ? bodyMatch[1] : ''}</div>
-  `;
-  switchView('report');
+
+  if(!record){
+    overlay.innerHTML = `
+      <div style="font-family:Arial,Helvetica,sans-serif;padding:40px;text-align:center;color:#333;">
+        <h2>Report Not Found</h2>
+        <p>No inspection record found for "<strong>${escapeHtml(damperId)}</strong>" on this device.</p>
+      </div>`;
+  } else {
+    // Embed the generated report's full HTML (including its own <style>) as-is
+    const reportHtml = generateReportHTML(record);
+    const bodyMatch = reportHtml.match(/<body>([\s\S]*)<\/body>/);
+    const styleMatch = reportHtml.match(/<style>([\s\S]*?)<\/style>/);
+    overlay.innerHTML = `<style>${styleMatch ? styleMatch[1] : ''}</style>${bodyMatch ? bodyMatch[1] : ''}`;
+  }
+
+  appEl.style.display = 'none';
+  overlay.style.display = 'block';
+}
+
+function hideReportView(){
+  const appEl = document.querySelector('.app');
+  const overlay = document.getElementById('report-overlay');
+  if(overlay) overlay.style.display = 'none';
+  appEl.style.display = '';
 }
 
 // Checks the current URL hash and shows the matching report, if any.
@@ -914,8 +915,8 @@ function handleHashRoute(){
   const hash = window.location.hash.replace(/^#/,'').trim();
   if(hash){
     renderReportView(hash);
-  } else if(document.getElementById('view-report').classList.contains('active')){
-    switchView('dashboard');
+  } else {
+    hideReportView();
   }
 }
 window.addEventListener('hashchange', handleHashRoute);
