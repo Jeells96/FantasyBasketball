@@ -277,7 +277,7 @@
         <button class="btn btn-primary" onclick="startNewInspection()">+ Start New Damper Inspection</button>
       </div>
       <div class="card">
-        <button class="btn btn-outline" onclick="goToHospitalSelect()">&larr; Switch Hospital</button>
+        <button id="switch-hospital-btn" class="btn btn-outline" onclick="requestSwitchHospital()">&larr; Switch Hospital</button>
       </div>
     </section>
 
@@ -343,7 +343,7 @@
    Storage: localStorage (key: fsd_records_v1)
    ========================================================= */
 
-const APP_VERSION = 'v1.6';
+const APP_VERSION = 'v1.7';
 
 const STORAGE_KEY = 'fsd_records_v1';
 const HOSPITALS_KEY = 'fsd_hospitals_v1';
@@ -483,21 +483,47 @@ function renderHospitalSelect(){
   empty.style.display = 'none';
   list.innerHTML = hospitals.map(h=>{
     const count = records.filter(r=>r.hospitalId===h.id).length;
-    return `<button class="opt-btn" style="margin-bottom:8px;" onclick="selectHospital('${escapeJs(h.id)}')">
-      <span>${escapeHtml(h.name)}</span>
-      <span class="chk" style="color:var(--text-dim);font-weight:400;">${count} damper${count===1?'':'s'}</span>
-    </button>`;
+    const link = `${window.location.origin}${window.location.pathname}#${slugify(h.name)}`;
+    return `
+      <div style="margin-bottom:10px;">
+        <button class="opt-btn" onclick="selectHospital('${escapeJs(h.id)}')">
+          <span>${escapeHtml(h.name)}</span>
+          <span class="chk" style="color:var(--text-dim);font-weight:400;">${count} damper${count===1?'':'s'}</span>
+        </button>
+        <button class="btn btn-outline" style="margin-top:4px;font-size:11px;padding:6px 10px;"
+          onclick="copyHospitalLink('${escapeJs(h.id)}')">&#128279; Copy Shareable Link</button>
+      </div>`;
   }).join('');
 }
 
+function copyHospitalLink(hospitalId){
+  const h = getHospital(hospitalId);
+  if(!h) return;
+  const url = `${window.location.origin}${window.location.pathname}#${slugify(h.name)}`;
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(url).then(()=>showToast('Hospital link copied!'))
+      .catch(()=>showToast(url));
+  } else {
+    showToast(url);
+  }
+}
+
 function selectHospital(id){
+  const h = getHospital(id);
+  if(!h) return;
   setCurrentHospital(id);
+  // Set the URL hash so this hospital's link is bookmarkable/shareable
+  // Use replaceState to avoid pushing to browser history (back button goes to hospital list)
+  history.replaceState(null,'',`${window.location.pathname}#${slugify(h.name)}`);
   updateHospitalHeader();
+  updateSwitchHospitalVisibility();
   switchView('dashboard');
 }
 
 function goToHospitalSelect(){
   setCurrentHospital(null);
+  arrivedViaSharedLink = false;
+  history.replaceState(null,'',window.location.pathname); // clear hash cleanly without triggering hashchange
   updateHospitalHeader();
   switchView('hospital-select');
 }
@@ -620,6 +646,7 @@ function renderHospitalSettingsList(){
         <div class="btn-row" style="justify-content:space-between;align-items:center;margin-bottom:10px;">
           <h2 style="margin:0;">${escapeHtml(h.name)}</h2>
           <div style="display:flex;gap:8px;">
+            <button class="btn btn-outline btn-sm" onclick="copyHospitalLink('${escapeJs(h.id)}')">&#128279; Link</button>
             <button class="btn btn-outline btn-sm" onclick="renameHospital('${escapeJs(h.id)}')">Rename</button>
             <button class="btn btn-danger btn-sm" onclick="deleteHospital('${escapeJs(h.id)}')">Delete</button>
           </div>
@@ -741,7 +768,7 @@ function renderStep(){
     return;
   }
 
-  const stepOptions = step.dynamicOptions ? step.dynamicOptions() : step.options;
+  const stepOptions = step.dynamicOptions ? step.dynamicOptions() : (step.options || []);
 
   const progressPct = Math.round((wizard.step/STEPS.length)*100);
   let body = '';
@@ -761,6 +788,13 @@ function renderStep(){
     body = `<input type="text" id="step-input" value="${wizard.data[step.key]||''}" placeholder="Enter ${step.label.toLowerCase()}" autocomplete="off">`;
   }
 
+  // For optional select steps (incl. dynamic ones like subFolder), show a Skip button
+  const skipBtn = (step.type==='select' && step.optional)
+    ? `<button class="btn" onclick="nextStep()">Skip</button>` : '';
+  const nextBtn = step.type!=='select'
+    ? `<button class="btn btn-primary" onclick="nextStepFromInput('${step.key}', ${step.optional?'true':'false'})">${step.optional?'Next (or skip)':'Next'}</button>`
+    : skipBtn;
+
   card.innerHTML = `
     <div class="wizard-progress">
       <span>STEP ${wizard.step+1} / ${STEPS.length}</span>
@@ -771,7 +805,7 @@ function renderStep(){
     ${body}
     <div class="btn-row" style="margin-top:14px;">
       ${wizard.step>0 ? '<button class="btn" onclick="prevStep()">Back</button>' : '<button class="btn" onclick="cancelWizard()">Cancel</button>'}
-      ${step.type!=='select' ? `<button class="btn btn-primary" onclick="nextStepFromInput('${step.key}', ${step.optional?'true':'false'})">${step.optional?'Next (or skip)':'Next'}</button>` : ''}
+      ${nextBtn}
     </div>
   `;
 
@@ -1210,15 +1244,71 @@ function hideReportView(){
   appEl.style.display = '';
 }
 
-// Checks the current URL hash and shows the matching report, if any.
+// Checks the current URL hash and routes appropriately:
+//
+// Format 1 — Hospital home link (shared with staff):
+//   #st-marys  →  enters that hospital's dashboard, hides hospital switcher
+//
+// Format 2 — Specific damper report:
+//   #st-marys/MOB%201/101  →  renders that report as a full-page overlay
+//
+// Staff who receive a hospital link (#st-marys) are scoped to that hospital.
+// The "Switch Hospital" button is hidden and "Change Hospital" requires PIN 5844,
+// so they cannot browse to other hospitals' data.
+let arrivedViaSharedLink = false; // true when loaded via a #hospital hash link
+
 function handleHashRoute(){
   const hash = window.location.hash.replace(/^#/,'').trim();
-  if(hash){
+  if(!hash){
+    hideReportView();
+    return;
+  }
+
+  const segments = hash.split('/').filter(Boolean);
+  const hospitalSlug = segments[0];
+
+  // Check if this looks like a report path (3 segments: hospital/subfolder/damper)
+  // or a damper directly under hospital (2 segments: hospital/damper)
+  // vs just a hospital home (1 segment: hospital)
+  const matchedHospital = hospitals.find(h=>slugify(h.name)===hospitalSlug);
+
+  if(segments.length === 1 && matchedHospital){
+    // Hospital home link — lock into this hospital
+    hideReportView();
+    arrivedViaSharedLink = true;
+    setCurrentHospital(matchedHospital.id);
+    updateHospitalHeader();
+    updateSwitchHospitalVisibility();
+    switchView('dashboard');
+  } else if(segments.length >= 2){
+    // Report link — render full-page report overlay
     renderReportView(hash);
   } else {
     hideReportView();
   }
 }
+
+// Shows/hides the "Switch Hospital" button based on whether user arrived via shared link
+function updateSwitchHospitalVisibility(){
+  const btn = document.getElementById('switch-hospital-btn');
+  if(btn) btn.style.display = arrivedViaSharedLink ? 'none' : '';
+}
+
+// PIN-gated version of goToHospitalSelect — used when user might be on a shared link
+function requestSwitchHospital(){
+  if(!arrivedViaSharedLink){
+    goToHospitalSelect();
+    return;
+  }
+  pinCallback = ()=>{
+    arrivedViaSharedLink = false;
+    goToHospitalSelect();
+  };
+  document.getElementById('pin-input').value = '';
+  document.getElementById('pin-overlay').style.display = 'flex';
+  setTimeout(()=>document.getElementById('pin-input').focus(), 50);
+}
+
 window.addEventListener('hashchange', handleHashRoute);
 
 /* =========================================================
