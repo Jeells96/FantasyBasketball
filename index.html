@@ -286,9 +286,14 @@
       <div class="empty" id="log-empty" style="display:none;"></div>
     </section>
 
+    <!-- REPORT VIEW (hash-routed: jeells96.github.io/#101) -->
+    <section class="view" id="view-report">
+      <div class="card" id="report-card"></div>
+    </section>
+
   </main>
 
-  <footer class="signature">FSD-SYS v1.0 &middot; LOCAL STORAGE &middot; FIELD READY</footer>
+  <footer class="signature" id="app-footer">FSD-SYS &middot; LOCAL STORAGE &middot; FIELD READY</footer>
 </div>
 
 <div class="toast" id="toast"></div>
@@ -298,6 +303,8 @@
    FSD TESTING APP — core logic
    Storage: localStorage (key: fsd_records_v1)
    ========================================================= */
+
+const APP_VERSION = 'v1.4';
 
 const STORAGE_KEY = 'fsd_records_v1';
 
@@ -354,7 +361,8 @@ function switchView(view){
   document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
   document.querySelectorAll('nav.tabs button').forEach(b=>b.classList.remove('active'));
   document.getElementById('view-'+view).classList.add('active');
-  document.querySelector(`nav.tabs button[data-view="${view}"]`).classList.add('active');
+  const tabBtn = document.querySelector(`nav.tabs button[data-view="${view}"]`);
+  if(tabBtn) tabBtn.classList.add('active');
   if(view==='dashboard') renderDashboard();
   if(view==='log') renderLog();
   if(view==='inspect' && !wizard) renderIdEntry();
@@ -818,7 +826,7 @@ function generateReportHTML(record){
     <span>Signature:</span>
   </div>
 
-  <div class="meta-footer">Report generated ${new Date().toLocaleString()} &middot; Damper ID: ${escapeHtml(record.damperId)}</div>
+  <div class="meta-footer">Report generated ${new Date().toLocaleString()} &middot; Damper ID: ${escapeHtml(record.damperId)} &middot; FSD-SYS ${APP_VERSION}</div>
 </div>
 </body>
 </html>`;
@@ -851,16 +859,66 @@ function downloadReport(record){
   record.pdfName = filename;
 }
 
-// Opens the report in a new browser tab for viewing (blob: URL, session-only —
-// not a permanent link, but lets you preview/print the report immediately)
+// Navigates to a stable, no-GUID, on-domain URL: https://jeells96.github.io/#101
+// This re-renders the report live from localStorage whenever that URL is opened.
 function openReport(record){
-  const html = generateReportHTML(record);
-  const blob = new Blob([html], {type:'text/html'});
-  const url = URL.createObjectURL(blob);
-  window.open(url, '_blank');
-  // revoke after a delay to give the new tab time to load it
-  setTimeout(()=>URL.revokeObjectURL(url), 30000);
+  window.location.hash = sanitizeFilename(record.damperId);
 }
+
+// Copies the permanent hash-based report URL to the clipboard for pasting into Bluebeam.
+function copyReportLink(damperId){
+  const url = `${window.location.origin}${window.location.pathname}#${sanitizeFilename(damperId)}`;
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(url).then(()=>showToast('Link copied: '+url))
+      .catch(()=>showToast(url));
+  } else {
+    showToast(url);
+  }
+}
+
+// Renders the full inspection report inline for the damper matching the URL hash.
+// Triggered on page load and on hashchange, so https://jeells96.github.io/#101
+// always shows the current data for damper 101.
+function renderReportView(damperId){
+  const record = records.find(r=>sanitizeFilename(r.damperId)===sanitizeFilename(damperId));
+  const card = document.getElementById('report-card');
+  if(!record){
+    card.innerHTML = `
+      <h2>Report Not Found</h2>
+      <p style="color:var(--text-dim);font-size:13px;">No inspection record found for "<strong>${escapeHtml(damperId)}</strong>" on this device.</p>
+      <button class="btn btn-outline" onclick="window.location.hash='';switchView('dashboard')">Back to Dashboard</button>
+    `;
+    switchView('report');
+    return;
+  }
+  // Embed the generated report HTML's inner content (strip outer html/head/body)
+  const reportHtml = generateReportHTML(record);
+  const bodyMatch = reportHtml.match(/<body>([\s\S]*)<\/body>/);
+  const styleMatch = reportHtml.match(/<style>([\s\S]*?)<\/style>/);
+  card.innerHTML = `
+    <div class="btn-row" style="margin-bottom:14px;">
+      <button class="btn btn-outline" onclick="window.location.hash='';switchView('dashboard')">&larr; Back</button>
+      <button class="btn btn-outline" onclick="copyReportLink('${escapeJs(record.damperId)}')">Copy Link</button>
+      <button class="btn btn-gold" onclick="downloadReport(records.find(r=>r._id==='${record._id}'))">Download</button>
+    </div>
+    <style>${styleMatch ? styleMatch[1] : ''}
+      #report-embed{background:#fff;border-radius:8px;overflow:hidden;padding:24px;color:#111;font-family:Arial,Helvetica,sans-serif;font-size:14px;}
+    </style>
+    <div id="report-embed">${bodyMatch ? bodyMatch[1] : ''}</div>
+  `;
+  switchView('report');
+}
+
+// Checks the current URL hash and shows the matching report, if any.
+function handleHashRoute(){
+  const hash = window.location.hash.replace(/^#/,'').trim();
+  if(hash){
+    renderReportView(hash);
+  } else if(document.getElementById('view-report').classList.contains('active')){
+    switchView('dashboard');
+  }
+}
+window.addEventListener('hashchange', handleHashRoute);
 
 /* =========================================================
    PROJECT LOG
@@ -958,6 +1016,7 @@ function renderLog(){
         <div class="actions-cell">
           <button class="btn btn-outline" onclick="editRecord('${r._id}')">Edit</button>
           <button class="btn btn-outline" onclick="openReport(records.find(rec=>rec._id==='${r._id}'))">Open</button>
+          <button class="btn btn-outline" onclick="copyReportLink('${escapeJs(r.damperId)}')">Copy Link</button>
           <button class="btn btn-outline" onclick="regenerateReport('${r._id}')">Download</button>
           <button class="btn btn-danger" onclick="deleteRecord('${r._id}')">Del</button>
         </div>
@@ -1021,7 +1080,7 @@ function buildExportRows(){
     const row = {};
     EXPORT_COLUMNS.forEach(([header,key])=>{
       if(key==='__photoCount') row[header] = (r.photos||[]).length;
-      else if(key==='__pdfLink') row[header] = `https://jeells96.github.io/${sanitizeFilename(r.damperId)}.html`;
+      else if(key==='__pdfLink') row[header] = `https://jeells96.github.io/#${sanitizeFilename(r.damperId)}`;
       else row[header] = r[key] || '';
     });
     return row;
@@ -1053,7 +1112,9 @@ function exportCSV(){
 /* =========================================================
    INIT
    ========================================================= */
+document.getElementById('app-footer').textContent = `FSD-SYS ${APP_VERSION} · LOCAL STORAGE · FIELD READY`;
 renderDashboard();
+handleHashRoute(); // if URL has #damperId, show that report immediately
 
 </script>
 </body>
