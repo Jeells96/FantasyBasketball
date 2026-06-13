@@ -281,6 +281,679 @@
 
 <div class="toast" id="toast"></div>
 
-<script src="app.js"></script>
+<script>
+/* =========================================================
+   FSD TESTING APP — core logic
+   Storage: localStorage (key: fsd_records_v1)
+   ========================================================= */
+
+const STORAGE_KEY = 'fsd_records_v1';
+
+// ---- Field / Step Definitions ----
+// Each step: {key, label, type: 'text'|'date'|'select', options?:[], optional?:bool}
+const STEPS = [
+  { key:'damperId',      label:'Damper Name / ID',        type:'text' },
+  { key:'dateTested',    label:'Date Tested',             type:'date' },
+  { key:'damperSize',    label:'Damper Size',             type:'text' },
+  { key:'damperAlias',   label:'Damper Alias',            type:'text', optional:true },
+  { key:'equipmentName', label:'Equipment Name',          type:'text' },
+  { key:'damperType',    label:'Damper Type',             type:'select', options:['Fire Smoke Damper','Fire Damper','Smoke Damper'] },
+  { key:'actuatorType',  label:'Actuator Type',           type:'select', options:['Electric','Gravity','Pneumatic','Spring','Shop Built'] },
+  { key:'indicatorLight',label:'Indicator Light',         type:'select', options:['Yes','No','N/A'] },
+  { key:'roomName',      label:'Room Name',               type:'text' },
+  { key:'roomNumber',    label:'Room Number',             type:'text' },
+  { key:'floor',         label:'Floor',                   type:'text' },
+  { key:'installedIn',   label:'Installed In',            type:'select', options:['Supply','Return','Exhaust'] },
+  { key:'requiresShutdown', label:'Requires Shutdown',    type:'select', options:['Yes','No'] },
+  { key:'criticalArea',  label:'Critical Area',           type:'select', options:['Yes','No'] },
+  { key:'testResult',    label:'Test Result',             type:'select', options:['Pass','Fail','Decommissioned',"Can't Test"] },
+];
+
+// ---- App State ----
+let records = loadRecords();
+let wizard = null; // current in-progress record state
+
+// ---- Storage Helpers ----
+function loadRecords(){
+  try{
+    return JSON.parse(localStorage.getItem(STORAGE_KEY)) || [];
+  }catch(e){ return []; }
+}
+function saveRecords(){
+  try{
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+  }catch(e){
+    showToast('Storage full — remove some photos and retry');
+  }
+}
+
+// ---- View Switching ----
+function switchView(view){
+  document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
+  document.querySelectorAll('nav.tabs button').forEach(b=>b.classList.remove('active'));
+  document.getElementById('view-'+view).classList.add('active');
+  document.querySelector(`nav.tabs button[data-view="${view}"]`).classList.add('active');
+  if(view==='dashboard') renderDashboard();
+  if(view==='log') renderLog();
+  if(view==='inspect' && !wizard) renderIdEntry();
+}
+
+function showToast(msg){
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(()=>t.classList.remove('show'), 1800);
+}
+
+/* =========================================================
+   DASHBOARD
+   ========================================================= */
+function renderDashboard(){
+  const total = records.length;
+  const counts = {Pass:0, Fail:0, Decommissioned:0, "Can't Test":0};
+  records.forEach(r=>{ if(counts[r.testResult]!==undefined) counts[r.testResult]++; });
+  const tested = counts.Pass + counts.Fail + counts.Decommissioned + counts["Can't Test"];
+  const pct = total ? Math.round((tested/total)*100) : 0;
+
+  document.getElementById('stat-total').textContent = total;
+  document.getElementById('stat-pass').textContent = counts.Pass;
+  document.getElementById('stat-fail').textContent = counts.Fail;
+  document.getElementById('stat-decom').textContent = counts.Decommissioned;
+  document.getElementById('stat-cant').textContent = counts["Can't Test"];
+  document.getElementById('stat-untested').textContent = total - tested;
+  document.getElementById('progress-fill').style.width = pct+'%';
+  document.getElementById('progress-pct').textContent = pct+'% Complete';
+  document.getElementById('progress-count').textContent = `${tested} / ${total}`;
+}
+
+function startNewInspection(){
+  wizard = null;
+  switchView('inspect');
+}
+
+/* =========================================================
+   ID ENTRY (Step 0)
+   ========================================================= */
+function renderIdEntry(){
+  const card = document.getElementById('inspect-card');
+  const existingIds = [...new Set(records.map(r=>r.damperId))];
+  card.innerHTML = `
+    <h2>Begin Inspection</h2>
+    <label>Damper Name / ID</label>
+    <div class="id-search-wrap">
+      <input type="text" id="entry-damper-id" placeholder="e.g. FSD-101 or scan/type ID" autocomplete="off">
+      <div class="id-suggest" id="id-suggest" style="display:none;"></div>
+    </div>
+    <button class="btn btn-primary" onclick="beginWizard()">Begin Inspection</button>
+    <div style="margin-top:14px;font-size:12px;color:var(--text-dim);">
+      Existing dampers can be re-opened from the Project Log to edit or add photos.
+    </div>
+  `;
+  const input = document.getElementById('entry-damper-id');
+  const suggest = document.getElementById('id-suggest');
+  input.addEventListener('input', ()=>{
+    const val = input.value.trim().toLowerCase();
+    if(!val){ suggest.style.display='none'; return; }
+    const matches = existingIds.filter(id=>id.toLowerCase().includes(val)).slice(0,5);
+    if(matches.length){
+      suggest.innerHTML = matches.map(id=>`<div onclick="selectExistingId('${id.replace(/'/g,"\\'")}')">${id}</div>`).join('');
+      suggest.style.display='block';
+    } else suggest.style.display='none';
+  });
+  input.focus();
+}
+
+function selectExistingId(id){
+  const existing = records.find(r=>r.damperId===id);
+  if(existing){
+    // open existing record for edit
+    wizard = { data: {...existing}, step: -1, editingId: existing._id, photos: [...(existing.photos||[])] };
+    renderReview();
+    switchView('inspect');
+  }
+}
+
+function beginWizard(){
+  const id = document.getElementById('entry-damper-id').value.trim();
+  if(!id){ showToast('Enter a Damper Name / ID'); return; }
+  const existing = records.find(r=>r.damperId===id);
+  if(existing){
+    selectExistingId(id);
+    return;
+  }
+  wizard = {
+    data: { damperId: id, dateTested: todayStr() },
+    step: 1, // skip damperId step since already entered
+    photos: [],
+    editingId: null
+  };
+  renderStep();
+}
+
+function todayStr(){
+  const d = new Date();
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+}
+
+/* =========================================================
+   WIZARD STEPS
+   ========================================================= */
+function renderStep(){
+  const card = document.getElementById('inspect-card');
+  const step = STEPS[wizard.step];
+
+  if(!step){
+    renderPhotoStep();
+    return;
+  }
+
+  const progressPct = Math.round((wizard.step/STEPS.length)*100);
+  let body = '';
+
+  if(step.type==='select'){
+    body = `<div class="opt-grid">` + step.options.map(opt=>{
+      const selected = wizard.data[step.key]===opt ? 'selected' : '';
+      return `<button class="opt-btn ${selected}" onclick="setStepValue('${escapeJs(step.key)}','${escapeJs(opt)}')">
+                <span>${opt}</span><span class="chk">${selected?'&#10003;':''}</span>
+              </button>`;
+    }).join('') + `</div>`;
+  } else if(step.type==='date'){
+    body = `<input type="date" id="step-input" value="${wizard.data[step.key]||todayStr()}">`;
+  } else {
+    body = `<input type="text" id="step-input" value="${wizard.data[step.key]||''}" placeholder="Enter ${step.label.toLowerCase()}" autocomplete="off">`;
+  }
+
+  card.innerHTML = `
+    <div class="wizard-progress">
+      <span>STEP ${wizard.step+1} / ${STEPS.length}</span>
+      <span>${wizard.data.damperId || ''}</span>
+    </div>
+    <div class="wizard-bar"><div class="wizard-bar-fill" style="width:${progressPct}%"></div></div>
+    <div class="step-question">${step.label}</div>
+    ${body}
+    <div class="btn-row" style="margin-top:14px;">
+      ${wizard.step>0 ? '<button class="btn" onclick="prevStep()">Back</button>' : '<button class="btn" onclick="cancelWizard()">Cancel</button>'}
+      ${step.type!=='select' ? `<button class="btn btn-primary" onclick="nextStepFromInput('${step.key}', ${step.optional?'true':'false'})">${step.optional?'Next (or skip)':'Next'}</button>` : ''}
+    </div>
+  `;
+
+  if(step.type!=='select'){
+    const input = document.getElementById('step-input');
+    input.focus();
+    input.addEventListener('keydown', e=>{
+      if(e.key==='Enter') nextStepFromInput(step.key, step.optional);
+    });
+  }
+}
+
+function escapeJs(str){
+  return String(str).replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+}
+
+function setStepValue(key,val){
+  wizard.data[key]=val;
+  nextStep();
+}
+
+function nextStepFromInput(key, optional){
+  const val = document.getElementById('step-input').value.trim();
+  if(!val && !optional){ showToast('This field is required'); return; }
+  wizard.data[key]=val;
+  nextStep();
+}
+
+function nextStep(){
+  wizard.step++;
+  renderStep();
+}
+function prevStep(){
+  wizard.step--;
+  renderStep();
+}
+function cancelWizard(){
+  wizard = null;
+  switchView('dashboard');
+}
+
+/* =========================================================
+   PHOTO STEP
+   ========================================================= */
+function renderPhotoStep(){
+  const card = document.getElementById('inspect-card');
+  const photos = wizard.photos || [];
+  let slots = '';
+  for(let i=0;i<3;i++){
+    if(photos[i]){
+      slots += `<div class="photo-slot"><img src="${photos[i]}"><button class="photo-remove" onclick="removePhoto(${i})">&times;</button></div>`;
+    } else {
+      slots += `<div class="photo-slot">No Photo ${i+1}</div>`;
+    }
+  }
+  card.innerHTML = `
+    <div class="wizard-progress">
+      <span>PHOTOS</span>
+      <span>${wizard.data.damperId || ''}</span>
+    </div>
+    <div class="wizard-bar"><div class="wizard-bar-fill" style="width:100%"></div></div>
+    <div class="step-question">Upload Inspection Photos</div>
+    <div style="font-size:12px;color:var(--text-dim);margin-bottom:12px;">Minimum 1, maximum 3. Can be added later from the Project Log.</div>
+    <div class="photo-grid">${slots}</div>
+    <label class="upload-label">
+      &#128247; Add Photo${photos.length>=3?' (max reached)':''}
+      <input type="file" accept="image/*" capture="environment" ${photos.length>=3?'disabled':''} onchange="handlePhotoUpload(event)">
+    </label>
+    <div class="btn-row" style="margin-top:14px;">
+      <button class="btn" onclick="prevStep()">Back</button>
+      <button class="btn btn-primary" onclick="goToReview()">Continue</button>
+    </div>
+  `;
+}
+
+function handlePhotoUpload(e){
+  const file = e.target.files[0];
+  if(!file) return;
+  if(!wizard.photos) wizard.photos=[];
+  if(wizard.photos.length>=3){ showToast('Maximum 3 photos'); return; }
+  const reader = new FileReader();
+  reader.onload = ev=>{
+    // downscale image to keep storage manageable
+    compressImage(ev.target.result, 1280, 0.7).then(dataUrl=>{
+      wizard.photos.push(dataUrl);
+      renderPhotoStep();
+    });
+  };
+  reader.readAsDataURL(file);
+}
+
+function compressImage(dataUrl, maxDim, quality){
+  return new Promise(resolve=>{
+    const img = new Image();
+    img.onload = ()=>{
+      let {width,height} = img;
+      if(width>height && width>maxDim){ height*=maxDim/width; width=maxDim; }
+      else if(height>maxDim){ width*=maxDim/height; height=maxDim; }
+      const canvas = document.createElement('canvas');
+      canvas.width=width; canvas.height=height;
+      canvas.getContext('2d').drawImage(img,0,0,width,height);
+      resolve(canvas.toDataURL('image/jpeg', quality));
+    };
+    img.onerror = ()=>resolve(dataUrl);
+    img.src = dataUrl;
+  });
+}
+
+function removePhoto(i){
+  wizard.photos.splice(i,1);
+  renderPhotoStep();
+}
+
+function goToReview(){
+  if(!wizard.photos || wizard.photos.length<1){
+    showToast('At least 1 photo is required');
+    return;
+  }
+  renderReview();
+}
+
+/* =========================================================
+   REVIEW & EDIT
+   ========================================================= */
+function renderReview(){
+  const card = document.getElementById('inspect-card');
+  const d = wizard.data;
+  const rows = STEPS.map((s,idx)=>{
+    let val = d[s.key] || (s.optional ? '&mdash;' : '');
+    return `<tr>
+      <td>${s.label} <span class="edit-link" onclick="jumpToStep(${idx})">Edit</span></td>
+      <td>${val}</td>
+    </tr>`;
+  }).join('');
+
+  const photoThumbs = (wizard.photos||[]).map((p,i)=>`<div class="photo-slot"><img src="${p}"><button class="photo-remove" onclick="removePhoto(${i});renderReview()">&times;</button></div>`).join('');
+  const emptySlots = 3-(wizard.photos||[]).length;
+  let extraSlots='';
+  for(let i=0;i<emptySlots;i++) extraSlots += `<div class="photo-slot">No Photo</div>`;
+
+  card.innerHTML = `
+    <h2>Review Inspection <small>before submitting</small></h2>
+    <table class="review-table">${rows}</table>
+    <div style="margin:14px 0 8px;font-size:12px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.5px;font-weight:600;">Photos (${(wizard.photos||[]).length}/3)
+      <span class="edit-link" onclick="renderPhotoStep()">Edit</span>
+    </div>
+    <div class="photo-grid">${photoThumbs}${extraSlots}</div>
+    <div class="btn-row" style="margin-top:14px;">
+      <button class="btn" onclick="cancelWizard()">Cancel</button>
+      <button class="btn btn-gold" onclick="submitInspection()">Submit & Generate PDF</button>
+    </div>
+  `;
+}
+
+function jumpToStep(idx){
+  wizard.step = idx;
+  renderStep();
+}
+
+/* =========================================================
+   SUBMIT
+   ========================================================= */
+function submitInspection(){
+  if(!wizard.photos || wizard.photos.length<1){
+    showToast('At least 1 photo is required');
+    return;
+  }
+  // validate required fields
+  for(const s of STEPS){
+    if(!s.optional && !wizard.data[s.key]){
+      showToast(`Missing: ${s.label}`);
+      jumpToStep(STEPS.indexOf(s));
+      return;
+    }
+  }
+
+  const record = { ...wizard.data, photos: wizard.photos };
+
+  if(wizard.editingId){
+    const idx = records.findIndex(r=>r._id===wizard.editingId);
+    record._id = wizard.editingId;
+    records[idx] = record;
+  } else {
+    record._id = 'd_'+Date.now()+'_'+Math.random().toString(36).slice(2,7);
+    records.push(record);
+  }
+
+  // generate PDF
+  generatePDF(record);
+
+  saveRecords();
+  showToast('Inspection saved & report generated');
+  wizard = null;
+  switchView('dashboard');
+}
+
+/* =========================================================
+   PDF GENERATION
+   ========================================================= */
+function generatePDF(record){
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit:'pt', format:'letter' });
+  const pageW = doc.internal.pageSize.getWidth();
+  const margin = 40;
+  let y = 40;
+
+  // Header / branding
+  doc.setFillColor(20,25,20);
+  doc.rect(0,0,pageW,70,'F');
+  doc.setTextColor(57,217,122);
+  doc.setFont('helvetica','bold');
+  doc.setFontSize(18);
+  doc.text('FSD TESTING', margin, 30);
+  doc.setTextColor(217,178,87);
+  doc.setFontSize(9);
+  doc.text('FIRE / SMOKE DAMPER INSPECTION REPORT', margin, 45);
+  doc.setTextColor(140,150,140);
+  doc.setFontSize(8);
+  doc.text('Generated: '+new Date().toLocaleString(), margin, 58);
+
+  y = 95;
+  doc.setTextColor(20,20,20);
+  doc.setFontSize(16);
+  doc.setFont('helvetica','bold');
+  doc.text(`Damper: ${record.damperId}`, margin, y);
+  y += 10;
+
+  // Result badge
+  const resultColors = {
+    'Pass':[57,180,100], 'Fail':[200,60,50], 'Decommissioned':[180,140,40], "Can't Test":[140,100,180]
+  };
+  const rc = resultColors[record.testResult] || [100,100,100];
+  doc.setFillColor(rc[0],rc[1],rc[2]);
+  doc.roundedRect(pageW-margin-110, y-20, 110, 24, 4, 4, 'F');
+  doc.setTextColor(255,255,255);
+  doc.setFontSize(12);
+  doc.setFont('helvetica','bold');
+  doc.text(record.testResult.toUpperCase(), pageW-margin-55, y-3, {align:'center'});
+
+  y += 20;
+  doc.setDrawColor(220,220,220);
+  doc.line(margin, y, pageW-margin, y);
+  y += 20;
+
+  // Field table (2 columns)
+  const fields = [
+    ['Date Tested', record.dateTested],
+    ['Damper Size', record.damperSize],
+    ['Damper Alias', record.damperAlias || '—'],
+    ['Equipment Name', record.equipmentName],
+    ['Damper Type', record.damperType],
+    ['Actuator Type', record.actuatorType],
+    ['Indicator Light', record.indicatorLight],
+    ['Room Name', record.roomName],
+    ['Room Number', record.roomNumber],
+    ['Floor', record.floor],
+    ['Installed In', record.installedIn],
+    ['Requires Shutdown', record.requiresShutdown],
+    ['Critical Area', record.criticalArea],
+    ['Test Result', record.testResult],
+  ];
+
+  doc.setFontSize(10);
+  const colW = (pageW - margin*2)/2;
+  fields.forEach((f, i)=>{
+    const col = i % 2;
+    const row = Math.floor(i/2);
+    const x = margin + col*colW;
+    const fy = y + row*28;
+    doc.setFont('helvetica','bold');
+    doc.setTextColor(120,120,120);
+    doc.text(f[0].toUpperCase(), x, fy);
+    doc.setFont('helvetica','normal');
+    doc.setTextColor(20,20,20);
+    doc.setFontSize(11);
+    doc.text(String(f[1]||'—'), x, fy+13);
+    doc.setFontSize(10);
+  });
+
+  y += Math.ceil(fields.length/2)*28 + 20;
+  doc.setDrawColor(220,220,220);
+  doc.line(margin, y, pageW-margin, y);
+  y += 20;
+
+  // Inspector / signature block
+  doc.setFontSize(10);
+  doc.setTextColor(120,120,120);
+  doc.setFont('helvetica','bold');
+  doc.text('INSPECTOR NAME', margin, y);
+  doc.text('SIGNATURE', margin + colW, y);
+  y += 6;
+  doc.setDrawColor(180,180,180);
+  doc.line(margin, y+18, margin+colW-20, y+18);
+  doc.line(margin+colW, y+18, pageW-margin, y+18);
+  y += 40;
+
+  // Photos
+  const photos = record.photos || [];
+  if(photos.length){
+    doc.setFontSize(11);
+    doc.setTextColor(20,20,20);
+    doc.setFont('helvetica','bold');
+    doc.text('INSPECTION PHOTOS', margin, y);
+    y += 12;
+
+    const imgW = (pageW - margin*2 - 20)/2;
+    const imgH = imgW*0.75;
+    photos.forEach((p, i)=>{
+      const col = i % 2;
+      const row = Math.floor(i/2);
+      const x = margin + col*(imgW+20);
+      let py = y + row*(imgH+15);
+      if(py + imgH > doc.internal.pageSize.getHeight()-40){
+        doc.addPage();
+        y = 40;
+        py = y;
+      }
+      try{
+        doc.addImage(p, 'JPEG', x, py, imgW, imgH);
+      }catch(e){}
+    });
+  }
+
+  // Footer
+  const pageCount = doc.internal.getNumberOfPages();
+  for(let i=1;i<=pageCount;i++){
+    doc.setPage(i);
+    doc.setFontSize(8);
+    doc.setTextColor(150,150,150);
+    doc.text(`FSD Testing Report — ${record.damperId} — Page ${i} of ${pageCount}`, margin, doc.internal.pageSize.getHeight()-20);
+  }
+
+  const filename = `FSD_${sanitizeFilename(record.damperId)}.pdf`;
+  doc.save(filename);
+
+  // store a flag/name for the master log link reference
+  record.pdfName = filename;
+}
+
+function sanitizeFilename(str){
+  return String(str).replace(/[^a-z0-9_\-]/gi,'_');
+}
+
+/* =========================================================
+   PROJECT LOG
+   ========================================================= */
+function renderLog(){
+  // populate floor filter options dynamically
+  const floorSelect = document.getElementById('f-floor');
+  const floors = [...new Set(records.map(r=>r.floor).filter(Boolean))].sort();
+  const currentFloor = floorSelect.value;
+  floorSelect.innerHTML = '<option value="">All Floors</option>' + floors.map(f=>`<option ${f===currentFloor?'selected':''}>${f}</option>`).join('');
+
+  const qDamper = document.getElementById('f-damper').value.trim().toLowerCase();
+  const qRoom = document.getElementById('f-room').value.trim().toLowerCase();
+  const qEquip = document.getElementById('f-equip').value.trim().toLowerCase();
+  const fResult = document.getElementById('f-result').value;
+  const fFloor = document.getElementById('f-floor').value;
+  const fType = document.getElementById('f-type').value;
+
+  let filtered = records.filter(r=>{
+    if(qDamper && !(r.damperId||'').toLowerCase().includes(qDamper)) return false;
+    if(qRoom && !(r.roomNumber||'').toLowerCase().includes(qRoom)) return false;
+    if(qEquip && !(r.equipmentName||'').toLowerCase().includes(qEquip)) return false;
+    if(fResult && r.testResult!==fResult) return false;
+    if(fFloor && r.floor!==fFloor) return false;
+    if(fType && r.damperType!==fType) return false;
+    return true;
+  });
+
+  const list = document.getElementById('log-list');
+  if(!filtered.length){
+    list.innerHTML = `<div class="empty">No dampers match your filters.<br>Start a new inspection from the dashboard.</div>`;
+    return;
+  }
+
+  const badgeClass = {'Pass':'pass','Fail':'fail','Decommissioned':'decom',"Can't Test":'cant'};
+
+  list.innerHTML = filtered.slice().reverse().map(r=>`
+    <div class="log-item">
+      <div class="row1">
+        <span class="did">${r.damperId}</span>
+        <span class="badge ${badgeClass[r.testResult]||''}">${r.testResult}</span>
+      </div>
+      <div class="meta">${r.equipmentName||''} &middot; Room ${r.roomNumber||'—'} &middot; Floor ${r.floor||'—'} &middot; ${r.damperType||''}</div>
+      <div class="meta">Tested ${r.dateTested||'—'} &middot; ${(r.photos||[]).length} photo(s)</div>
+      <div class="actions">
+        <button class="btn btn-outline" onclick="editRecord('${r._id}')">Edit</button>
+        <button class="btn btn-outline" onclick="regeneratePDF('${r._id}')">Re-download PDF</button>
+        <button class="btn btn-danger" onclick="deleteRecord('${r._id}')">Delete</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+function editRecord(id){
+  const existing = records.find(r=>r._id===id);
+  if(!existing) return;
+  wizard = { data: {...existing}, step:-1, editingId: id, photos:[...(existing.photos||[])] };
+  renderReview();
+  switchView('inspect');
+}
+
+function regeneratePDF(id){
+  const existing = records.find(r=>r._id===id);
+  if(!existing) return;
+  generatePDF(existing);
+  saveRecords();
+}
+
+function deleteRecord(id){
+  if(!confirm('Delete this damper record permanently?')) return;
+  records = records.filter(r=>r._id!==id);
+  saveRecords();
+  renderLog();
+  renderDashboard();
+}
+
+/* =========================================================
+   EXPORTS
+   ========================================================= */
+const EXPORT_COLUMNS = [
+  ['Damper Name/ID','damperId'],
+  ['Date Tested','dateTested'],
+  ['Damper Size','damperSize'],
+  ['Damper Alias','damperAlias'],
+  ['Equipment Name','equipmentName'],
+  ['Damper Type','damperType'],
+  ['Actuator Type','actuatorType'],
+  ['Indicator Light','indicatorLight'],
+  ['Room Name','roomName'],
+  ['Room Number','roomNumber'],
+  ['Floor','floor'],
+  ['Installed In','installedIn'],
+  ['Requires Shutdown','requiresShutdown'],
+  ['Critical Area','criticalArea'],
+  ['Test Result','testResult'],
+  ['Photo Count','__photoCount'],
+  ['PDF Report Link','__pdfLink'],
+];
+
+function buildExportRows(){
+  return records.map(r=>{
+    const row = {};
+    EXPORT_COLUMNS.forEach(([header,key])=>{
+      if(key==='__photoCount') row[header] = (r.photos||[]).length;
+      else if(key==='__pdfLink') row[header] = r.pdfName || `FSD_${sanitizeFilename(r.damperId)}.pdf`;
+      else row[header] = r[key] || '';
+    });
+    return row;
+  });
+}
+
+function exportXLSX(){
+  if(!records.length){ showToast('No records to export'); return; }
+  const rows = buildExportRows();
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Master Log');
+  XLSX.writeFile(wb, 'FSD_Master_Project_Log.xlsx');
+}
+
+function exportCSV(){
+  if(!records.length){ showToast('No records to export'); return; }
+  const rows = buildExportRows();
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const csv = XLSX.utils.sheet_to_csv(ws);
+  const blob = new Blob([csv], {type:'text/csv'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'FSD_Master_Project_Log.csv';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+/* =========================================================
+   INIT
+   ========================================================= */
+renderDashboard();
+
+</script>
 </body>
 </html>
