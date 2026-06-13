@@ -851,6 +851,17 @@ function downloadReport(record){
   record.pdfName = filename;
 }
 
+// Opens the report in a new browser tab for viewing (blob: URL, session-only —
+// not a permanent link, but lets you preview/print the report immediately)
+function openReport(record){
+  const html = generateReportHTML(record);
+  const blob = new Blob([html], {type:'text/html'});
+  const url = URL.createObjectURL(blob);
+  window.open(url, '_blank');
+  // revoke after a delay to give the new tab time to load it
+  setTimeout(()=>URL.revokeObjectURL(url), 30000);
+}
+
 /* =========================================================
    PROJECT LOG
    ========================================================= */
@@ -946,7 +957,8 @@ function renderLog(){
       <td>
         <div class="actions-cell">
           <button class="btn btn-outline" onclick="editRecord('${r._id}')">Edit</button>
-          <button class="btn btn-outline" onclick="regenerateReport('${r._id}')">Report</button>
+          <button class="btn btn-outline" onclick="openReport(records.find(rec=>rec._id==='${r._id}'))">Open</button>
+          <button class="btn btn-outline" onclick="regenerateReport('${r._id}')">Download</button>
           <button class="btn btn-danger" onclick="deleteRecord('${r._id}')">Del</button>
         </div>
       </td>
