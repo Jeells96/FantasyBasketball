@@ -341,6 +341,13 @@
         <button class="btn btn-primary" onclick="startNewInspection()">+ Start New Damper Inspection</button>
       </div>
       <div class="card">
+        <h2>Share This Folder</h2>
+        <div id="share-link-display" style="font-family:var(--mono);font-size:11px;color:var(--text-dim);
+          background:var(--panel2);border:1px solid var(--line);border-radius:6px;
+          padding:10px 12px;margin-bottom:10px;word-break:break-all;"></div>
+        <button class="btn btn-outline" onclick="copyCurrentLink()">&#128279; Copy Shareable Link</button>
+      </div>
+      <div class="card">
         <div class="btn-row">
           <button id="switch-hospital-btn" class="btn btn-home" onclick="requestSwitchHospital()">&#8962; FSD Testing Home</button>
           <button id="change-building-btn" class="btn btn-outline" onclick="goToSubFolderSelect()">&#8592; Change Building</button>
@@ -427,7 +434,7 @@
    Storage: localStorage (key: fsd_records_v1)
    ========================================================= */
 
-const APP_VERSION = 'v2.0';
+const APP_VERSION = 'v2.1';
 
 const STORAGE_KEY = 'fsd_records_v1';
 const HOSPITALS_KEY = 'fsd_hospitals_v1';
@@ -582,7 +589,6 @@ function renderHospitalSelect(){
           <span>${escapeHtml(h.name)}</span>
           <span class="folder-count">${count} damper${count===1?'':'s'} &rsaquo;</span>
         </button>
-        <button class="folder-link-btn" onclick="copyHospitalLink('${escapeJs(h.id)}')">&#128279; Copy shareable link for this hospital</button>
       </div>`;
   }).join('');
 }
@@ -597,6 +603,32 @@ function copyHospitalLink(hospitalId){
   } else {
     showToast(url);
   }
+}
+
+// Copies the shareable link for the currently active hospital or building
+function copyCurrentLink(){
+  const h = getHospital(currentHospitalId);
+  if(!h) return;
+  const url = currentSubFolder
+    ? `${window.location.origin}${window.location.pathname}#${slugify(h.name)}/${slugify(currentSubFolder)}`
+    : `${window.location.origin}${window.location.pathname}#${slugify(h.name)}`;
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(url).then(()=>showToast('Link copied!'))
+      .catch(()=>showToast(url));
+  } else {
+    showToast(url);
+  }
+}
+
+// Updates the share link preview in the dashboard
+function updateShareLinkDisplay(){
+  const el = document.getElementById('share-link-display');
+  if(!el) return;
+  const h = getHospital(currentHospitalId);
+  if(!h){ el.textContent = ''; return; }
+  el.textContent = currentSubFolder
+    ? `${window.location.origin}${window.location.pathname}#${slugify(h.name)}/${slugify(currentSubFolder)}`
+    : `${window.location.origin}${window.location.pathname}#${slugify(h.name)}`;
 }
 
 function selectHospital(id){
@@ -644,7 +676,6 @@ function renderSubFolderSelect(){
           <span>${escapeHtml(sf)}</span>
           <span class="folder-count">${count} damper${count===1?'':'s'} &rsaquo;</span>
         </button>
-        <button class="folder-link-btn" onclick="copySubFolderLink('${escapeJs(sf)}')">&#128279; Copy shareable link for this building</button>
       </div>`;
   }).join('');
 
@@ -901,6 +932,7 @@ function renderDashboard(){
   document.getElementById('progress-fill').style.width = pct+'%';
   document.getElementById('progress-pct').textContent = pct+'% Complete';
   document.getElementById('progress-count').textContent = `${tested} / ${total}`;
+  updateShareLinkDisplay();
 }
 
 function startNewInspection(){
@@ -1257,19 +1289,13 @@ function generateReportHTML(record){
   const photoBox = (src) => `
     <div class="photobox">${src ? `<img src="${src}" alt="Inspection photo">` : ''}</div>`;
 
-  const extraPhotoHtml = photos[2] ? `
-    <div class="extra-photo-section">
-      <h3>Additional Photo</h3>
-      <img src="${photos[2]}" alt="Additional inspection photo" style="max-width:100%;border:1px solid #333;">
-    </div>` : '';
-
   const motorTypeField = record.actuatorType==='Electric'
     ? `<div class="f"><div class="flabel small">Type of Motor:</div><div class="fbox" style="width:130px;">${escapeHtml(record.motorType||'')}</div></div>`
     : '';
 
-  const hospitalObj = getHospital(record.hospitalId);
-  const hospitalName = hospitalObj ? hospitalObj.name : '';
-  const locationLine = [hospitalName, record.subFolder].filter(Boolean).join(' &middot; ');
+  const hospitalName = hospitalObj ? escapeHtml(hospitalObj.name) : '';
+  const subFolderName = record.subFolder ? escapeHtml(record.subFolder) : '';
+  const locationLine = [hospitalName, subFolderName].filter(Boolean).join(' &middot; ');
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -1316,7 +1342,7 @@ function generateReportHTML(record){
 <div class="sheet">
   <div class="logo-wrap"><img src="${ARCTIC_LOGO_B64}" alt="ARCTIC"></div>
   <div class="subtitle">Fire Damper Inspection</div>
-  ${locationLine ? `<div class="location-line">${escapeHtml(locationLine)}</div>` : ''}
+  ${locationLine ? `<div class="location-line">${locationLine}</div>` : ''}
 
   <div class="columns">
     <div class="col">
@@ -1347,10 +1373,9 @@ function generateReportHTML(record){
       <div class="f"><div class="flabel">Test:</div><div class="fbox test-box">${escapeHtml(record.testResult||'')}</div></div>
       ${photoBox(photos[0])}
       ${photoBox(photos[1])}
+      ${photos[2] ? photoBox(photos[2]) : ''}
     </div>
   </div>
-
-  ${extraPhotoHtml}
 
   <div class="notes-section">
     <div class="section-label">Notes:</div>
