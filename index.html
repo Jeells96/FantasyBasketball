@@ -434,7 +434,7 @@
    Storage: localStorage (key: fsd_records_v1)
    ========================================================= */
 
-const APP_VERSION = 'v2.2';
+const APP_VERSION = 'v2.3';
 
 const STORAGE_KEY = 'fsd_records_v1';
 const HOSPITALS_KEY = 'fsd_hospitals_v1';
@@ -1254,17 +1254,22 @@ function submitInspection(){
     }
 
     saveRecords();
-
-    try {
-      downloadReport(record);
-    } catch(dlErr){
-      showToast('Report download failed: '+dlErr.message);
-      console.error('downloadReport error:', dlErr);
-    }
-
-    showToast('Inspection saved!');
     wizard = null;
+
+    // Navigate to dashboard first so data is visibly saved
     switchView('dashboard');
+    showToast('Inspection saved!');
+
+    // Then open the report (on iOS this opens a new tab; on desktop downloads)
+    setTimeout(()=>{
+      try {
+        downloadReport(record);
+      } catch(dlErr){
+        showToast('Report error: '+dlErr.message);
+        console.error('downloadReport error:', dlErr);
+      }
+    }, 300);
+
   } catch(err) {
     showToast('Error saving: '+err.message);
     console.error('submitInspection error:', err);
@@ -1415,17 +1420,31 @@ function escapeHtml(str){
 // keeping https://jeells96.github.io/{damperId}.html permanent.
 function downloadReport(record){
   const html = generateReportHTML(record);
-  const blob = new Blob([html], {type:'text/html'});
-  const url = URL.createObjectURL(blob);
   const filename = `${sanitizeFilename(record.damperId)}.html`;
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  setTimeout(()=>URL.revokeObjectURL(url), 5000);
   record.pdfName = filename;
+
+  // iOS Safari doesn't support <a download> with blob URLs — it navigates away instead.
+  // We detect iOS and open in a new tab; on other platforms we attempt the download anchor.
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+
+  if(isIOS){
+    // Open report in new tab — user can use iOS share sheet to save
+    const blob = new Blob([html], {type:'text/html'});
+    const url = URL.createObjectURL(blob);
+    window.open(url, '_blank');
+    setTimeout(()=>URL.revokeObjectURL(url), 30000);
+  } else {
+    // Standard download for desktop/Android
+    const blob = new Blob([html], {type:'text/html'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(()=>URL.revokeObjectURL(url), 5000);
+  }
 }
 
 // Navigates to a stable, no-GUID, on-domain URL:
@@ -1707,7 +1726,7 @@ function regenerateReport(id){
   if(!existing) return;
   downloadReport(existing);
   saveRecords();
-  showToast(`Re-downloaded ${sanitizeFilename(existing.damperId)}.html — recommit it to overwrite the existing file at the same URL`);
+  showToast('Report opened');
 }
 
 function deleteRecord(id){
