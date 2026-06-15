@@ -434,7 +434,7 @@
    Storage: localStorage (key: fsd_records_v1)
    ========================================================= */
 
-const APP_VERSION = 'v2.1';
+const APP_VERSION = 'v2.2';
 
 const STORAGE_KEY = 'fsd_records_v1';
 const HOSPITALS_KEY = 'fsd_hospitals_v1';
@@ -1241,26 +1241,34 @@ function jumpToStep(idx){
    SUBMIT
    ========================================================= */
 function submitInspection(){
-  const record = { ...wizard.data, photos: wizard.photos || [] };
+  try {
+    const record = { ...wizard.data, photos: wizard.photos || [] };
 
-  if(wizard.editingId){
-    const idx = records.findIndex(r=>r._id===wizard.editingId);
-    record._id = wizard.editingId;
-    records[idx] = record;
-  } else {
-    record._id = 'd_'+Date.now()+'_'+Math.random().toString(36).slice(2,7);
-    records.push(record);
+    if(wizard.editingId){
+      const idx = records.findIndex(r=>r._id===wizard.editingId);
+      record._id = wizard.editingId;
+      records[idx] = record;
+    } else {
+      record._id = 'd_'+Date.now()+'_'+Math.random().toString(36).slice(2,7);
+      records.push(record);
+    }
+
+    saveRecords();
+
+    try {
+      downloadReport(record);
+    } catch(dlErr){
+      showToast('Report download failed: '+dlErr.message);
+      console.error('downloadReport error:', dlErr);
+    }
+
+    showToast('Inspection saved!');
+    wizard = null;
+    switchView('dashboard');
+  } catch(err) {
+    showToast('Error saving: '+err.message);
+    console.error('submitInspection error:', err);
   }
-
-  // The in-app hash link (#hospital-slug/SubFolder/damperId) is the permanent
-  // shareable URL and works without any file commit. The downloaded HTML below
-  // is an optional offline copy.
-  downloadReport(record);
-
-  saveRecords();
-  showToast('Inspection saved & report downloaded');
-  wizard = null;
-  switchView('dashboard');
 }
 
 function sanitizeFilename(str){
@@ -1409,10 +1417,6 @@ function downloadReport(record){
   const html = generateReportHTML(record);
   const blob = new Blob([html], {type:'text/html'});
   const url = URL.createObjectURL(blob);
-  // Note: this is a standalone offline copy named after the damper only.
-  // The live, permanent, hospital-scoped link is the hash URL from
-  // reportHashPath() (e.g. #st-marys/MOB 1/101), handled entirely in-app —
-  // this downloaded file does not need to be committed for that link to work.
   const filename = `${sanitizeFilename(record.damperId)}.html`;
   const a = document.createElement('a');
   a.href = url;
@@ -1420,7 +1424,7 @@ function downloadReport(record){
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  setTimeout(()=>URL.revokeObjectURL(url), 5000);
   record.pdfName = filename;
 }
 
