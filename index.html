@@ -434,7 +434,7 @@
    Storage: localStorage (key: fsd_records_v1)
    ========================================================= */
 
-const APP_VERSION = 'v2.3';
+const APP_VERSION = 'v2.4';
 
 const STORAGE_KEY = 'fsd_records_v1';
 const HOSPITALS_KEY = 'fsd_hospitals_v1';
@@ -1254,24 +1254,22 @@ function submitInspection(){
     }
 
     saveRecords();
+
+    // Open report synchronously (direct user gesture = not blocked by iOS)
+    const downloaded = downloadReport(record);
+
     wizard = null;
-
-    // Navigate to dashboard first so data is visibly saved
     switchView('dashboard');
-    showToast('Inspection saved!');
 
-    // Then open the report (on iOS this opens a new tab; on desktop downloads)
-    setTimeout(()=>{
-      try {
-        downloadReport(record);
-      } catch(dlErr){
-        showToast('Report error: '+dlErr.message);
-        console.error('downloadReport error:', dlErr);
-      }
-    }, 300);
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+    if(isIOS && !downloaded){
+      showToast('Saved! Tap Open in the log to view report');
+    } else {
+      showToast('Inspection saved!');
+    }
 
   } catch(err) {
-    showToast('Error saving: '+err.message);
+    showToast('Error: '+err.message);
     console.error('submitInspection error:', err);
   }
 }
@@ -1423,18 +1421,18 @@ function downloadReport(record){
   const filename = `${sanitizeFilename(record.damperId)}.html`;
   record.pdfName = filename;
 
-  // iOS Safari doesn't support <a download> with blob URLs — it navigates away instead.
-  // We detect iOS and open in a new tab; on other platforms we attempt the download anchor.
   const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
 
   if(isIOS){
-    // Open report in new tab — user can use iOS share sheet to save
-    const blob = new Blob([html], {type:'text/html'});
-    const url = URL.createObjectURL(blob);
-    window.open(url, '_blank');
-    setTimeout(()=>URL.revokeObjectURL(url), 30000);
-  } else {
-    // Standard download for desktop/Android
+    // iOS blocks blob downloads and popup window.open outside direct gesture.
+    // Store the HTML in sessionStorage so the "Open" button in the log can access it,
+    // or just skip — the in-app "Open" button works from the log.
+    // We show a toast so the user knows to use the Open button.
+    return false; // signal no download happened
+  }
+
+  // Desktop / Android — standard blob download
+  try {
     const blob = new Blob([html], {type:'text/html'});
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -1444,6 +1442,10 @@ function downloadReport(record){
     a.click();
     document.body.removeChild(a);
     setTimeout(()=>URL.revokeObjectURL(url), 5000);
+    return true;
+  } catch(e){
+    console.error('blob download failed:', e);
+    return false;
   }
 }
 
