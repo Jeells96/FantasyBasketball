@@ -41,7 +41,7 @@
   .pgitem .mech{color:var(--green)}
   /* canvas area */
   #viewerWrap{flex:1;position:relative;overflow:hidden;background:#070806;min-width:0}
-  #stage{position:absolute;left:0;top:0;transform-origin:0 0;will-change:transform}
+  #stage{position:absolute;left:0;top:0;transform-origin:0 0}
   #pageCanvas{display:block;background:#fff;box-shadow:0 0 0 1px #000}
   #overlay{position:absolute;left:0;top:0;pointer-events:none}
   #toolbar{position:absolute;left:50%;bottom:14px;transform:translateX(-50%);display:flex;gap:6px;background:rgba(13,16,11,.92);border:1px solid var(--line);border-radius:12px;padding:6px;backdrop-filter:blur(6px);z-index:5}
@@ -134,7 +134,7 @@
 <body>
 <div id="app">
   <header>
-    <div class="brand"><span class="mark">▰</span><span>Ductline</span><span class="v" id="verlabel">v1.0</span><span class="sub">Duct Takeoff</span></div>
+    <div class="brand"><span class="mark">▰</span><span>Ductline</span><span class="v" id="verlabel">v1.2</span><span class="sub">Duct Takeoff</span></div>
     <div class="grow"></div>
     <button class="hbtn" id="btnOpen">Open PDF</button>
     <button class="hbtn" id="btnSave">Save</button>
@@ -253,7 +253,7 @@ const store = (()=>{ const mem={}; let ok=true;
 
 /* ---------- config / state ---------- */
 pdfjsLib.GlobalWorkerOptions.workerSrc="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
-const RENDER_TARGET=2600;          // long-side px of the rendered page bitmap
+const RENDER_TARGET=2200;          // long-side px of the rendered page bitmap
 const GAUGE_LB={30:0.656,28:0.781,26:0.906,24:1.156,22:1.406,20:1.656,18:2.156,16:2.656}; // galv. lb/ft²
 const SYS_COLORS={SA:"#39d98a",RA:"#46c8ff",EA:"#f4b740",OA:"#c98bff","?":"#9aa68c"};
 
@@ -314,7 +314,7 @@ function fit(){ if(!S.bmpW)return; const pad=40;
 function clientToStage(ev){ const r=wrap.getBoundingClientRect();
   const x=(ev.clientX-r.left-S.pan.x)/S.zoom, y=(ev.clientY-r.top-S.pan.y)/S.zoom; return {x,y}; }
 function zoomAt(cx,cy,factor){ const r=wrap.getBoundingClientRect(); const px=cx-r.left, py=cy-r.top;
-  const sx=(px-S.pan.x)/S.zoom, sy=(py-S.pan.y)/S.zoom; S.zoom=Math.max(0.05,Math.min(8,S.zoom*factor));
+  const sx=(px-S.pan.x)/S.zoom, sy=(py-S.pan.y)/S.zoom; S.zoom=Math.max(0.05,Math.min(S.maxZoom||6,S.zoom*factor));
   S.pan.x=px-sx*S.zoom; S.pan.y=py-sy*S.zoom; applyTransform(); }
 
 /* ---------- pdf load + render ---------- */
@@ -367,6 +367,7 @@ async function renderPage(n){
     S.baseScale=RENDER_TARGET/Math.max(raw.width,raw.height);
     S.viewport=S.page.getViewport({scale:S.baseScale});
     S.bmpW=Math.ceil(S.viewport.width); S.bmpH=Math.ceil(S.viewport.height);
+    S.maxZoom=Math.max(3,Math.min(6,11000/Math.max(S.bmpW,S.bmpH))); // cap scaled layer < ~11k px
     cv.width=S.bmpW; cv.height=S.bmpH; cv.style.width=S.bmpW+"px"; cv.style.height=S.bmpH+"px";
     ov.setAttribute("width",S.bmpW); ov.setAttribute("height",S.bmpH);
     ov.setAttribute("viewBox",`0 0 ${S.bmpW} ${S.bmpH}`);
@@ -383,40 +384,37 @@ async function renderPage(n){
 /* ---------- overlay drawing ---------- */
 function svgEl(t,a){ const e=document.createElementNS("http://www.w3.org/2000/svg",t); for(const k in a)e.setAttribute(k,a[k]); return e; }
 function runColor(r){ const sys=r.system||"?"; return SYS_COLORS[sys]||SYS_COLORS["?"]; }
+/* overlay lives inside #stage, so it pans/zooms via CSS transform automatically.
+   Strokes use non-scaling-stroke (constant on screen); we never rebuild on zoom. */
 function drawOverlay(){
   ov.innerHTML="";
-  if(S.verify){ ov.appendChild(svgEl("rect",{x:0,y:0,width:S.bmpW,height:S.bmpH,fill:"rgba(7,8,6,0.55)"})); }
-  const lw=Math.max(1.5,3/S.zoom);
-  // runs
+  if(S.verify) ov.appendChild(svgEl("rect",{x:0,y:0,width:S.bmpW,height:S.bmpH,fill:"rgba(7,8,6,0.55)"}));
+  const SW=3, R=5, FS=18;
   for(const r of S.runs){
     if(r.page!==S.pageNum)continue;
-    const col=runColor(r), sel=r.id===S.selId;
-    const pts=r.points.map(p=>`${p.x},${p.y}`).join(" ");
+    const col=runColor(r), sel=r.id===S.selId, cand=(r.source==="auto"&&!r.confirmed);
+    const pts=r.points.map(p=>p.x+","+p.y).join(" ");
     ov.appendChild(svgEl("polyline",{points:pts,fill:"none",stroke:col,
-      "stroke-width":(sel?lw*1.8:lw),"stroke-opacity":r.source==="auto"&&!r.confirmed?0.85:1,
-      "stroke-dasharray":(r.source==="auto"&&!r.confirmed)?`${6/S.zoom},${5/S.zoom}`:"",
+      "stroke-width":sel?SW*1.7:SW,"vector-effect":"non-scaling-stroke",
+      "stroke-opacity":cand?0.9:1,"stroke-dasharray":cand?"7,5":"",
       "stroke-linecap":"round","stroke-linejoin":"round"}));
-    for(const p of r.points) ov.appendChild(svgEl("circle",{cx:p.x,cy:p.y,r:(sel?lw*1.6:lw*1.1),fill:col}));
-    // label
-    if(S.verify||sel||r.size){ const mid=r.points[Math.floor(r.points.length/2)];
+    for(const p of r.points) ov.appendChild(svgEl("circle",{cx:p.x,cy:p.y,r:R,fill:col}));
+    if(S.verify||sel){ const mid=r.points[Math.floor(r.points.length/2)];
       const label=(r.size||"?")+(r.system&&r.system!=="?"?" "+r.system:"");
-      const g=svgEl("g",{}); const fs=Math.max(11,13/S.zoom);
-      const tw=label.length*fs*0.62+8;
-      g.appendChild(svgEl("rect",{x:mid.x+6/S.zoom,y:mid.y-fs,width:tw,height:fs*1.5,rx:3,fill:"rgba(8,10,7,.9)",stroke:col,"stroke-width":1/S.zoom}));
-      const tx=svgEl("text",{x:mid.x+6/S.zoom+4,y:mid.y+fs*0.2,fill:col,"font-size":fs,"font-family":"ui-monospace,monospace","font-weight":"700"}); tx.textContent=label;
+      const tw=label.length*FS*0.62+10, g=svgEl("g",{});
+      g.appendChild(svgEl("rect",{x:mid.x+8,y:mid.y-FS,width:tw,height:FS*1.5,rx:4,fill:"rgba(8,10,7,.92)",stroke:col,"stroke-width":1,"vector-effect":"non-scaling-stroke"}));
+      const tx=svgEl("text",{x:mid.x+13,y:mid.y+FS*0.25,fill:col,"font-size":FS,"font-family":"ui-monospace,monospace","font-weight":"700"}); tx.textContent=label;
       g.appendChild(tx); ov.appendChild(g);
     }
   }
-  // active trace
-  if(S.trace&&S.trace.points.length){ const pts=S.trace.points.map(p=>`${p.x},${p.y}`).join(" ");
-    ov.appendChild(svgEl("polyline",{points:pts,fill:"none",stroke:"#39d98a","stroke-width":lw,"stroke-dasharray":`${4/S.zoom},${4/S.zoom}`}));
-    for(const p of S.trace.points) ov.appendChild(svgEl("circle",{cx:p.x,cy:p.y,r:lw*1.3,fill:"#39d98a"}));
+  if(S.trace&&S.trace.points.length){ const pts=S.trace.points.map(p=>p.x+","+p.y).join(" ");
+    ov.appendChild(svgEl("polyline",{points:pts,fill:"none",stroke:"#39d98a","stroke-width":3,"vector-effect":"non-scaling-stroke","stroke-dasharray":"5,5"}));
+    for(const p of S.trace.points) ov.appendChild(svgEl("circle",{cx:p.x,cy:p.y,r:5,fill:"#39d98a"}));
   }
-  // pending scale line
   if(S.pendingScale){ const{a,b}=S.pendingScale;
-    ov.appendChild(svgEl("line",{x1:a.x,y1:a.y,x2:b.x,y2:b.y,stroke:"#f4b740","stroke-width":lw,"stroke-dasharray":`${5/S.zoom},${4/S.zoom}`}));
-    [a,b].forEach(p=>ov.appendChild(svgEl("circle",{cx:p.x,cy:p.y,r:lw*1.4,fill:"#f4b740"})));
-  } else if(S._scaleFirst){ ov.appendChild(svgEl("circle",{cx:S._scaleFirst.x,cy:S._scaleFirst.y,r:lw*1.4,fill:"#f4b740"})); }
+    ov.appendChild(svgEl("line",{x1:a.x,y1:a.y,x2:b.x,y2:b.y,stroke:"#f4b740","stroke-width":3,"vector-effect":"non-scaling-stroke","stroke-dasharray":"6,4"}));
+    [a,b].forEach(p=>ov.appendChild(svgEl("circle",{cx:p.x,cy:p.y,r:6,fill:"#f4b740"})));
+  } else if(S._scaleFirst){ ov.appendChild(svgEl("circle",{cx:S._scaleFirst.x,cy:S._scaleFirst.y,r:6,fill:"#f4b740"})); }
 }
 
 /* ---------- interaction ---------- */
@@ -436,7 +434,7 @@ wrap.addEventListener("pointermove",ev=>{
 wrap.addEventListener("pointerup",ev=>{ if(dragging){dragging=false;} });
 wrap.addEventListener("dblclick",ev=>{ if(S.tool==="trace"&&S.trace&&S.trace.points.length>=2){ finishTrace(); } });
 wrap.addEventListener("wheel",ev=>{ if($("#drop").style.display!=="none")return; ev.preventDefault();
-  zoomAt(ev.clientX,ev.clientY, ev.deltaY<0?1.12:0.89); drawOverlay(); },{passive:false});
+  zoomAt(ev.clientX,ev.clientY, ev.deltaY<0?1.12:0.89); },{passive:false});
 window.addEventListener("keydown",ev=>{
   if(ev.key==="Escape"){ S.trace=null; S.pendingScale=null; S._scaleFirst=null; closeModals(); drawOverlay(); }
   if(ev.key==="Enter"&&S.tool==="trace"&&S.trace&&S.trace.points.length>=2){ finishTrace(); }
@@ -494,7 +492,7 @@ async function detectCandidates(){
       if(S.runs.some(r=>r.page===S.pageNum&&r.points.some(p=>Math.hypot(p.x-mid.x,p.y-mid.y)<maxGapPx*0.8)))continue;
       S.runs.push({id:RID++,page:S.pageNum,points:[c.a,c.b],size:"",system:"?",gauge:"auto",
         source:"auto",confirmed:false,conf:null,widthIn:+(c.gap*S.feetPerPx*12).toFixed(0)});
-      added++; if(added>=180)break;
+      added++; if(added>=80)break;
     }
     drawOverlay(); renderRuns(); renderTotals(); save();
     toast(added?`${added} candidates found — click each to confirm`:"No duct-like pairs in that width band","ok");
@@ -516,13 +514,15 @@ async function extractSegments(){
     else if(fn===OPS.restore){ if(stack.length)ctm=stack.pop(); }
     else if(fn===OPS.transform){ ctm=compose(ctm,a); }
     else if(fn===OPS.constructPath){
-      const sub=a[0], coords=a[1]; let ci=0, cur=null, startP=null;
+      const sub=a&&a[0], coords=a&&a[1];
+      if(!Array.isArray(sub)||!coords){ continue; }
+      let ci=0, cur=null, startP=null; const CL=coords.length;
       for(let k=0;k<sub.length;k++){ const o=sub[k];
-        if(o===OPS.moveTo){ cur=ap(ctm,coords[ci],coords[ci+1]); startP=cur; ci+=2; }
-        else if(o===OPS.lineTo){ const np=ap(ctm,coords[ci],coords[ci+1]); ci+=2; if(cur)segs.push([cur,np]); cur=np; }
-        else if(o===OPS.curveTo){ ci+=6; cur=ap(ctm,coords[ci-2],coords[ci-1]); }
-        else if(o===OPS.curveTo2||o===OPS.curveTo3){ ci+=4; cur=ap(ctm,coords[ci-2],coords[ci-1]); }
-        else if(o===OPS.rectangle){ const x=coords[ci],y=coords[ci+1],w=coords[ci+2],h=coords[ci+3]; ci+=4;
+        if(o===OPS.moveTo){ if(ci+1>=CL)break; cur=ap(ctm,coords[ci],coords[ci+1]); startP=cur; ci+=2; }
+        else if(o===OPS.lineTo){ if(ci+1>=CL)break; const np=ap(ctm,coords[ci],coords[ci+1]); ci+=2; if(cur)segs.push([cur,np]); cur=np; }
+        else if(o===OPS.curveTo){ if(ci+5>=CL)break; ci+=6; cur=ap(ctm,coords[ci-2],coords[ci-1]); }
+        else if(o===OPS.curveTo2||o===OPS.curveTo3){ if(ci+3>=CL)break; ci+=4; cur=ap(ctm,coords[ci-2],coords[ci-1]); }
+        else if(o===OPS.rectangle){ if(ci+3>=CL)break; const x=coords[ci],y=coords[ci+1],w=coords[ci+2],h=coords[ci+3]; ci+=4;
           const p1=ap(ctm,x,y),p2=ap(ctm,x+w,y),p3=ap(ctm,x+w,y+h),p4=ap(ctm,x,y+h);
           segs.push([p1,p2],[p2,p3],[p3,p4],[p4,p1]); cur=p1; }
         else if(o===OPS.closePath){ if(cur&&startP)segs.push([cur,startP]); cur=startP; }
@@ -533,6 +533,7 @@ async function extractSegments(){
   const out=[]; const maxLen=Math.max(S.bmpW,S.bmpH)*0.92;
   for(const s of segs){ const L=Math.hypot(s[1].x-s[0].x,s[1].y-s[0].y);
     if(L>=18 && L<=maxLen) out.push({a:s[0],b:s[1],L,ang:Math.atan2(s[1].y-s[0].y,s[1].x-s[0].x)}); }
+  if(out.length>14000){ out.sort((a,b)=>b.L-a.L); out.length=14000; } // cap for dense sheets
   S.segments=out; return out;
 }
 
@@ -544,7 +545,7 @@ function findParallelPairs(segs,minGap,maxGap){
   segs.forEach((s,idx)=>{ s.idx=idx; s.na=norm(s.ang); s.mid={x:(s.a.x+s.b.x)/2,y:(s.a.y+s.b.y)/2};
     const cx=Math.floor(s.mid.x/cell),cy=Math.floor(s.mid.y/cell);
     for(let dx=-1;dx<=1;dx++)for(let dy=-1;dy<=1;dy++){ const k=key(cx+dx,cy+dy); if(!grid.has(k))grid.set(k,[]); grid.get(k).push(s); } });
-  const seen=new Set(), pairs=[]; const angTol=4*Math.PI/180; let budget=600000;
+  const seen=new Set(), pairs=[]; const angTol=4*Math.PI/180; let budget=250000;
   for(const s of segs){ const cx=Math.floor(s.mid.x/cell),cy=Math.floor(s.mid.y/cell);
     const near=grid.get(key(cx,cy))||[];
     for(const t of near){ if(t.idx<=s.idx)continue; if(budget--<=0)break;
@@ -596,21 +597,24 @@ async function runGemini(){
   toast(`Gemini filled ${ok} of ${targets.length}. Review gold/red — verify on the drawing.`, ok?"ok":"err");
   setPane("runs");
 }
-function cropRunDataURL(r,padPx){
+async function cropPDFRegion(r,padPx){
   const xs=r.points.map(p=>p.x), ys=r.points.map(p=>p.y);
-  let x0=Math.max(0,Math.min(...xs)-padPx), y0=Math.max(0,Math.min(...ys)-padPx);
-  let x1=Math.min(S.bmpW,Math.max(...xs)+padPx), y1=Math.min(S.bmpH,Math.max(...ys)+padPx);
-  let w=Math.max(40,x1-x0), h=Math.max(40,y1-y0);
-  const c=document.createElement("canvas"); c.width=w; c.height=h;
-  const cc=c.getContext("2d"); cc.drawImage(cv,x0,y0,w,h,0,0,w,h);
-  // mark the run so Gemini knows which duct we mean
-  cc.strokeStyle="rgba(255,40,40,0.9)"; cc.lineWidth=3; cc.beginPath();
-  r.points.forEach((p,i)=>{ const X=p.x-x0,Y=p.y-y0; i?cc.lineTo(X,Y):cc.moveTo(X,Y); }); cc.stroke();
+  const x0=Math.max(0,Math.min(...xs)-padPx), y0=Math.max(0,Math.min(...ys)-padPx);
+  const x1=Math.min(S.bmpW,Math.max(...xs)+padPx), y1=Math.min(S.bmpH,Math.max(...ys)+padPx);
+  const cw=Math.max(40,x1-x0), ch=Math.max(40,y1-y0);
+  const factor=Math.min(6,Math.max(1,1500/Math.max(cw,ch)));     // sharpen small crops, never blow up huge ones
+  const hv=S.page.getViewport({scale:S.baseScale*factor});
+  const rx=x0*factor, ry=y0*factor, rw=Math.ceil(cw*factor), rh=Math.ceil(ch*factor);
+  const c=document.createElement("canvas"); c.width=rw; c.height=rh; const cc=c.getContext("2d");
+  cc.fillStyle="#fff"; cc.fillRect(0,0,rw,rh);
+  await S.page.render({canvasContext:cc,viewport:hv,transform:[1,0,0,1,-rx,-ry]}).promise;
+  cc.strokeStyle="rgba(255,40,40,0.92)"; cc.lineWidth=Math.max(2,2*factor); cc.beginPath();
+  r.points.forEach((p,i)=>{ const X=(p.x-x0)*factor,Y=(p.y-y0)*factor; i?cc.lineTo(X,Y):cc.moveTo(X,Y); }); cc.stroke();
   return c.toDataURL("image/jpeg",0.85);
 }
 async function geminiReadRun(r){
   const pad=Math.max(60,(r.widthIn? (r.widthIn/12/S.feetPerPx):80)*1.6);
-  const durl=cropRunDataURL(r,pad); const b64=durl.split(",")[1];
+  const durl=await cropPDFRegion(r,pad); const b64=durl.split(",")[1];
   const prompt=`This crop is from an HVAC mechanical floor plan. A single duct run is outlined in RED. Read the duct SIZE label that belongs to that red duct (rectangular like "14x10" in inches, or round like "14" for 14" diameter). Also identify the air system from nearby text/tags: SA=supply, RA=return, EA=exhaust, OA=outside air, or "?" if unclear. Respond with ONLY JSON, no prose: {"size":"14x10"|"14"|null,"shape":"rect"|"round"|null,"system":"SA"|"RA"|"EA"|"OA"|"?","confidence":0..1}`;
   const body={contents:[{role:"user",parts:[{inline_data:{mime_type:"image/jpeg",data:b64}},{text:prompt}]}],
     generationConfig:{temperature:0,responseMimeType:"application/json"}};
@@ -743,9 +747,9 @@ function updateHint(){ const h=$("#hint");
     detect:"<b>Auto</b> — scanning for parallel-line duct candidates…",
     verify:"<b>Verify</b> — drawing dimmed, every measured run highlighted with its size. Click a candidate to confirm it."};
   h.innerHTML=m[S.tool]||""; }
-$("#zIn").onclick=()=>{ zoomAt(wrap.getBoundingClientRect().left+wrap.clientWidth/2,wrap.getBoundingClientRect().top+wrap.clientHeight/2,1.2); drawOverlay(); };
-$("#zOut").onclick=()=>{ zoomAt(wrap.getBoundingClientRect().left+wrap.clientWidth/2,wrap.getBoundingClientRect().top+wrap.clientHeight/2,0.83); drawOverlay(); };
-$("#zFit").onclick=()=>{ fit(); drawOverlay(); };
+$("#zIn").onclick=()=>{ zoomAt(wrap.getBoundingClientRect().left+wrap.clientWidth/2,wrap.getBoundingClientRect().top+wrap.clientHeight/2,1.2); };
+$("#zOut").onclick=()=>{ zoomAt(wrap.getBoundingClientRect().left+wrap.clientWidth/2,wrap.getBoundingClientRect().top+wrap.clientHeight/2,0.83); };
+$("#zFit").onclick=()=>{ fit(); };
 
 /* ---------- file open ---------- */
 function pickFile(){ $("#fileInput").click(); }
@@ -762,6 +766,10 @@ wrap.addEventListener("drop",e=>{ e.preventDefault(); const f=e.dataTransfer.fil
 window.addEventListener("resize",()=>{ if(S.doc)applyTransform(); });
 loadSettings();
 updateHint();
+
+/* surface errors instead of dying silently */
+window.addEventListener("error",e=>{ busy(false); toast("Error: "+(e.message||"unknown")+" — tell me this message","err"); });
+window.addEventListener("unhandledrejection",e=>{ busy(false); const m=(e.reason&&(e.reason.message||e.reason))||"unknown"; toast("Error: "+m+" — tell me this message","err"); });
 </script>
 </body>
 </html>
