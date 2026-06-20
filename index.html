@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Best Game League v3.4</title>
+<title>Best Game League v3.5</title>
 <style>
 /* ============================================================
-   BGL v3.4 — Design System
+   BGL v3.5 — Design System
    Subject: competitive fantasy baseball; hook = best single game/week
    Palette: stadium-at-night
    ============================================================ */
@@ -257,7 +257,7 @@ body {
 <div class="topbar">
   <div class="brand" onclick="go('home')">
     <span>BGL<span class="mark">.</span></span>
-    <span class="ver">v3.4</span>
+    <span class="ver">v3.5</span>
   </div>
   <div class="topbar-right">
     <span class="week-pill">WK <b id="wk-label">—</b></span>
@@ -677,18 +677,24 @@ function viewTeams() {
   });
   const cards = LG().teams.map(t => {
     const roster = rosters[t.id] || [];
-    const totalPts = roster.reduce((s,p)=>s+(p.seasonPts||0),0);
+    const seasonTotal = roster.reduce((s,p)=>s+(p.seasonPts||0),0);
+    const adpRoster = roster.filter(p => p.adp < 9999);
+    const avgAdp = adpRoster.length ? (adpRoster.reduce((s,p)=>s+p.adp,0)/adpRoster.length) : 0;
+    // metric shown: season pts once available, otherwise avg ADP (lower=better)
+    const showPts = seasonTotal > 0;
+    const metricVal = showPts ? seasonTotal.toFixed(0) : (avgAdp ? avgAdp.toFixed(0) : '—');
+    const metricLbl = showPts ? 'SEASON PTS' : 'AVG ADP';
     const preview = roster.slice(0,5).map(p =>
       `<div class="row-between" style="padding:.2rem 0;font-size:.8rem">
         <span class="plink" onclick="showPlayer('${p.espnId}')">${esc(p.name)}</span>
-        <span class="num sage">${(p.seasonPts||0).toFixed(0)}</span></div>`).join('');
+        <span class="num sage">${showPts ? (p.seasonPts||0).toFixed(0) : (p.adp<9999?p.adp.toFixed(0):'—')}</span></div>`).join('');
     return `<div class="card" onclick="showTeam('${t.id}')" style="cursor:pointer">
       <div class="row-between">
         <div><div class="h2" style="margin:0">${esc(t.name)}</div>
           <div class="sub">${esc(t.owner||'')} · ${roster.length} players</div></div>
         <div style="text-align:right">
-          <div class="num amber display" style="font-size:1.4rem">${totalPts.toFixed(0)}</div>
-          <div class="sub" style="font-size:.6rem">SEASON PTS</div></div>
+          <div class="num amber display" style="font-size:1.4rem">${metricVal}</div>
+          <div class="sub" style="font-size:.6rem">${metricLbl}</div></div>
       </div>
       <div class="mt">${preview || '<span class="sub">No players drafted</span>'}</div>
       ${roster.length>5?`<div class="divlabel">+${roster.length-5} more — tap to view</div>`:''}
@@ -706,20 +712,21 @@ window.showTeam = function(teamId) {
       const p = LG().playerPool.find(x => String(x.espnId) === String(pk.playerId));
       return p ? {...p, pick: pk.pick, round: pk.round} : null;
     }).filter(Boolean).sort((a,b)=>a.pick-b.pick);
+  const seasonTotal = roster.reduce((s,p)=>s+(p.seasonPts||0),0);
+  const showPts = seasonTotal > 0;
   const rosterRows = roster.map(p =>
     `<tr>
       <td class="pos">${p.round}.${String(p.pick).padStart(2,'0')}</td>
       <td><span class="plink" onclick="showPlayer('${p.espnId}')">${esc(p.name)}</span></td>
       <td class="pos">${esc((p.eligible||[]).join('/')||p.pos)}</td>
       <td class="pos">${esc(p.proTeam||'')}</td>
-      <td class="r num cell-best">${(p.seasonPts||0).toFixed(0)}</td>
+      <td class="r num cell-best">${showPts ? (p.seasonPts||0).toFixed(0) : (p.adp<9999?p.adp.toFixed(0):'—')}</td>
     </tr>`).join('');
-  const total = roster.reduce((s,p)=>s+(p.seasonPts||0),0);
   openModal(`
     <div class="h2">${esc(t.name)}</div>
-    <div class="sub mb">${esc(t.owner||'')} · ${roster.length} players · ${total.toFixed(0)} season pts</div>
+    <div class="sub mb">${esc(t.owner||'')} · ${roster.length} players${showPts ? ` · ${seasonTotal.toFixed(0)} season pts` : ''}</div>
     <table class="tbl mt">
-      <thead><tr><th>Pick</th><th>Player</th><th>Pos</th><th>Tm</th><th class="r">Pts</th></tr></thead>
+      <thead><tr><th>Pick</th><th>Player</th><th>Pos</th><th>Tm</th><th class="r">${showPts?'Pts':'ADP'}</th></tr></thead>
       <tbody>${rosterRows || '<tr><td colspan="5" class="sub">No players</td></tr>'}</tbody>
     </table>
     <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Close</button>
@@ -734,7 +741,7 @@ function placeholderView(title, msg) {
 }
 
 /* Players view works in Phase 1 once pool is loaded — proves the data layer */
-const playerView = { sort: 'seasonPts', dir: -1, posFilter: 'ALL', search: '', avail: 'all' };
+const playerView = { sort: 'adp', dir: 1, posFilter: 'ALL', search: '', avail: 'all' };
 
 function viewPlayersReal() {
   if (!LG().playerPool.length) {
@@ -769,14 +776,15 @@ function viewPlayersReal() {
     const drafted = draftedIds.has(String(p.espnId));
     const pk = LG().draft.picks.find(x => String(x.playerId) === String(p.espnId));
     const ownerTeam = pk ? teamById(pk.teamId).abbrev : '';
+    const adpTxt = p.adp < 9999 ? p.adp.toFixed(0) : '—';
     return `<tr style="${drafted?'opacity:.45':''}">
       <td><span class="plink" onclick="showPlayer('${p.espnId}')">${esc(p.name)}</span>
         ${p.injured?'<span class="cell-neg" style="font-size:.6rem"> ⚕</span>':''}
         ${drafted?`<span class="sub" style="font-size:.6rem"> · ${esc(ownerTeam)}</span>`:''}</td>
       <td class="pos">${esc((p.eligible||[]).join('/') || p.pos || '?')}</td>
       <td class="pos">${esc(p.proTeam||'')}</td>
-      <td class="r num cell-best" style="${p.seasonPts<=0?'color:var(--sage-dim)':''}">${p.seasonPts.toFixed(1)}</td>
-      <td class="r num sage" style="font-size:.72rem">${p.owned?.toFixed(0)??0}%</td>
+      <td class="r num cell-best" style="${p.adp>=9999?'color:var(--sage-dim)':''}">${adpTxt}</td>
+      <td class="r num sage" style="font-size:.72rem;${p.seasonPts<=0?'color:var(--sage-dim)':'color:var(--chalk)'}">${p.seasonPts>0?p.seasonPts.toFixed(0):'—'}</td>
     </tr>`;
   }).join('');
 
@@ -794,14 +802,14 @@ function viewPlayersReal() {
     <div class="row" style="gap:.35rem;overflow-x:auto;padding-bottom:.4rem">${allPos.map(posBtn).join('')}</div>
     <div class="row" style="gap:.35rem;margin-top:.4rem">
       <span class="sub" style="align-self:center;font-size:.68rem">Sort:</span>
-      ${sortBtn('seasonPts','Pts')} ${sortBtn('owned','Owned')} ${sortBtn('name','Name')}
+      ${sortBtn('adp','ADP')} ${sortBtn('seasonPts','Pts')} ${sortBtn('owned','Owned')} ${sortBtn('name','Name')}
       <span class="sub" style="align-self:center;font-size:.68rem;margin-left:.5rem">Show:</span>
       <button class="btn btn-sm ${playerView.avail==='all'?'btn-amber':'btn-ghost'}" onclick="setAvail('all')">All</button>
       <button class="btn btn-sm ${playerView.avail==='avail'?'btn-amber':'btn-ghost'}" onclick="setAvail('avail')">Available</button>
     </div>
     <div class="card card-tight mt">
       <table class="tbl">
-        <thead><tr><th>Player</th><th>Pos</th><th>Tm</th><th class="r">Season</th><th class="r">Own</th></tr></thead>
+        <thead><tr><th>Player</th><th>Pos</th><th>Tm</th><th class="r">ADP</th><th class="r">Pts</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
       ${list.length > 150 ? `<div class="divlabel">showing 150 of ${list.length} matches</div>` :
@@ -811,7 +819,7 @@ function viewPlayersReal() {
 
 window.setSort = function(key) {
   if (playerView.sort === key) playerView.dir *= -1;
-  else { playerView.sort = key; playerView.dir = (key==='name') ? 1 : -1; }
+  else { playerView.sort = key; playerView.dir = (key==='name' || key==='adp') ? 1 : -1; }
   renderActive();
 };
 window.setPosFilter = function(pos) { playerView.posFilter = pos; renderActive(); };
@@ -835,16 +843,17 @@ window.showPlayer = function(espnId) {
     <div class="sub mb">${esc((p.eligible||[]).join(', '))} · ${esc(p.proTeam||'')}
       ${p.injured?'· <span class="cell-neg">injured</span>':''}</div>
     <div class="statrow mt mb">
-      <div class="stat"><div class="lbl">Season pts</div><div class="val amber">${p.seasonPts.toFixed(1)}</div></div>
-      <div class="stat"><div class="lbl">Owned</div><div class="val">${p.owned?.toFixed(0)??0}%</div></div>
+      <div class="stat"><div class="lbl">ADP</div><div class="val amber">${p.adp<9999?p.adp.toFixed(0):'—'}</div></div>
+      <div class="stat"><div class="lbl">Season pts</div><div class="val">${p.seasonPts>0?p.seasonPts.toFixed(0):'—'}</div></div>
       <div class="stat"><div class="lbl">Status</div><div class="val" style="font-size:1rem">${pk?'Drafted':'Free'}</div></div>
     </div>
     ${pk ? `<p class="sub">On <b>${esc(teamById(pk.teamId).name)}</b> — pick #${pk.pick}</p>` : ''}
     <table class="tbl mt">
+      <tr><td class="sage">Owned</td><td class="r num">${p.owned?.toFixed(0)??0}%</td></tr>
       <tr><td class="sage">ESPN ID</td><td class="r num">${esc(p.espnId)}</td></tr>
       <tr><td class="sage">${SP().statsApi.toUpperCase()} ID</td><td class="r num">${p.mlbId ? esc(p.mlbId) : '<span class="cell-neg">not linked</span>'}</td></tr>
     </table>
-    <p class="sub mt">Game-by-game stats load in Phase 3.</p>
+    <p class="sub mt">Season points fill in once MLB game stats are pulled (Phase 3).</p>
     <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Close</button>
   `);
 };
@@ -945,26 +954,33 @@ window.doPullPool = async function() {
     const raw = await fetchPlayerPool(slog);
     LG().playerPool = raw.map(pp => {
       const pl = pp.player || pp;
-      // build clean, de-duplicated eligibility in a sensible order
       const order = ['C','1B','2B','3B','SS','OF','DH','SP','RP','UTIL','P'];
       const eligRaw = (pl.eligibleSlots||[]).map(slotName).filter(Boolean);
       const eligible = [...new Set(eligRaw)]
-        .filter(x => x !== 'UTIL' && x !== 'P')           // drop generic util/p from display
+        .filter(x => x !== 'UTIL' && x !== 'P')
         .sort((a,b) => order.indexOf(a) - order.indexOf(b));
+      // ADP = averageDraftPosition. 0 or missing means undrafted/filler → treat as huge.
+      const adpRaw = pl.ownership?.averageDraftPosition || 0;
+      const adp = (adpRaw > 0) ? adpRaw : 9999;
       return {
         espnId: pl.id,
         name: pl.fullName || `${pl.firstName||''} ${pl.lastName||''}`.trim(),
         pos: posName(pl.defaultPositionId),
         eligible: eligible.length ? eligible : [posName(pl.defaultPositionId)],
         proTeam: proTeamAbbr(pl.proTeamId),
-        seasonPts: seasonPointsFromEspn(pl),
+        adp: Math.round(adp * 10) / 10,
+        seasonPts: seasonPointsFromEspn(pl),   // 0 until MLB stats are pulled
         owned: Math.round((pl.ownership?.percentOwned || 0) * 10) / 10,
         injured: !!pl.injured,
         mlbId: null,
       };
     }).filter(p => p.name);
-    LG().playerPool.sort((a,b) => b.seasonPts - a.seasonPts);
-    slog(`Stored ${LG().playerPool.length} players, sorted by season pts`, 'ok');
+
+    // sort by ADP (best first), then trim to top 600 relevant players
+    LG().playerPool.sort((a,b) => a.adp - b.adp);
+    LG().playerPool = LG().playerPool.slice(0, 600);
+    const ranked = LG().playerPool.filter(p => p.adp < 9999).length;
+    slog(`Stored top ${LG().playerPool.length} players (${ranked} with real ADP)`, 'ok');
     await save();
     toast('Player pool loaded', 'ok');
     renderActive();
@@ -1095,7 +1111,7 @@ window.autodraft = function() {
   const ROUNDS = SP().rosterSize;
   const teamIds = LG().teams.map(t => t.id);
   const picks = [], taken = new Set();
-  const pool = [...LG().playerPool].sort((a,b) => b.seasonPts - a.seasonPts);
+  const pool = [...LG().playerPool].sort((a,b) => a.adp - b.adp); // best ADP first
   let pickNum = 1;
   for (let round = 0; round < ROUNDS; round++) {
     const order = round % 2 === 0 ? teamIds : [...teamIds].reverse();
