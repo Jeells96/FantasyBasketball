@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Best Game League v3.0</title>
+<title>Best Game League v3.1</title>
 <style>
 /* ============================================================
-   BGL v3.0 — Design System
+   BGL v3.1 — Design System
    Subject: competitive fantasy baseball; hook = best single game/week
    Palette: stadium-at-night
    ============================================================ */
@@ -257,7 +257,7 @@ body {
 <div class="topbar">
   <div class="brand" onclick="go('home')">
     <span>BGL<span class="mark">.</span></span>
-    <span class="ver">v3.0</span>
+    <span class="ver">v3.1</span>
   </div>
   <div class="topbar-right">
     <span class="week-pill">WK <b id="wk-label">—</b></span>
@@ -307,49 +307,87 @@ const FB_CONFIG = {
   appId: "REPLACE"
 };
 
-const ESPN_LEAGUE_ID = '69029411';
-const SEASON = 2026;
-const MLB_SEASON = 2025; // MLB stat season (2026 may not have started; configurable)
+/* ============================================================
+   MULTI-SPORT CONFIG
+   Everything sport-specific lives here. Adding a sport = filling
+   in one entry. Baseball is complete; basketball is scaffolded.
+   ============================================================ */
+const SPORTS = {
+  flb: {
+    key: 'flb',
+    label: 'Baseball',
+    icon: '⚾',
+    espnGame: 'flb',
+    leagueId: '69029411',
+    season: 2026,
+    statSeason: 2025,            // real-stat season (MLB)
+    rosterSize: 23,
+    statsApi: 'mlb',
+    // ESPN defaultPositionId -> position
+    posMap: {1:'SP',2:'C',3:'1B',4:'2B',5:'3B',6:'SS',7:'OF',8:'OF',9:'OF',10:'DH',11:'RP'},
+    // ESPN lineupSlotId -> slot label (null = bench/IL, not scored)
+    slotMap: {0:'C',1:'1B',2:'2B',3:'3B',4:'SS',5:'OF',6:'2B/SS',7:'1B/3B',8:'OF',9:'OF',
+              10:'DH',11:'UTIL',12:'SP',13:'RP',14:'P'},
+    benchSlots: [16,17],
+    proTeams: {0:'FA',1:'BAL',2:'BOS',3:'LAA',4:'CWS',5:'CLE',6:'DET',7:'KC',8:'MIL',9:'MIN',
+      10:'NYY',11:'OAK',12:'SEA',13:'TEX',14:'TOR',15:'ATL',16:'CHC',17:'CIN',18:'HOU',19:'LAD',
+      20:'WSH',21:'NYM',22:'PHI',23:'PIT',24:'STL',25:'SD',26:'SF',27:'COL',28:'MIA',29:'ARI',30:'TB'},
+    posFilters: ['ALL','C','1B','2B','3B','SS','OF','DH','SP','RP'],
+  },
+  fba: {
+    key: 'fba',
+    label: 'Basketball',
+    icon: '🏀',
+    espnGame: 'fba',
+    leagueId: '',                // set when you create the NBA league
+    season: 2026,
+    statSeason: 2025,            // real-stat season (NBA)
+    rosterSize: 13,
+    statsApi: 'nba',
+    posMap: {1:'PG',2:'SG',3:'SF',4:'PF',5:'C',6:'G',7:'F'},
+    slotMap: {0:'PG',1:'SG',2:'SF',3:'PF',4:'C',5:'G',6:'F',7:'F/C',8:'G/F',9:'UTIL',10:'BE'},
+    benchSlots: [12,13],
+    proTeams: {}, // filled when basketball is activated
+    posFilters: ['ALL','PG','SG','SF','PF','C','G','F'],
+  },
+};
+
+const FB_DOC_ID = 'bgl_multisport'; // single Firebase doc holds all sports
 const ADMIN_PIN = '2325';
 
+/* the active sport — persisted in STATE.sport */
+function SP() { return SPORTS[STATE.sport] || SPORTS.flb; }
+
 /* ============================================================
-   STATE
+   STATE  (now namespaced per-sport for league data)
    ============================================================ */
 const STATE = {
-  // league meta
-  leagueName: 'Best Game League',
-  currentWeek: 1,
-  sport: 'flb',
-
-  // teams created in-app (NOT from ESPN)
-  teams: [],            // [{id, name, owner, abbrev}]
-
-  // draft
-  draft: {
-    started: false,
-    complete: false,
-    order: [],          // [teamId, teamId, ...] snake order resolved
-    picks: [],          // [{pick, teamId, playerId}]
-    currentPick: 0,
+  sport: 'flb',                 // active sport
+  // per-sport league data lives under leagues[sportKey]
+  leagues: {
+    flb: blankLeague('Best Game League'),
+    fba: blankLeague('BGL Hoops'),
   },
-
-  // player pool from ESPN (the ONLY thing we use ESPN rosters/pool for)
-  playerPool: [],       // [{espnId, name, mlbId, pos, eligible[], proTeam}]
-
-  // scoring rules from ESPN
-  scoringRules: null,   // {statId: pointValue}
-
-  // computed stats from MLB API: stats[playerId][date] = {raw, points}
-  stats: {},
-
-  // weekly best-game results: weekly[week][teamId] = {score, breakdown[]}
-  weekly: {},
-
-  // id mapping overrides (name->mlbId) for edge cases
-  idOverrides: {},
-
+  idOverrides: {},              // shared name->realId overrides
   _loaded: false,
 };
+
+function blankLeague(name) {
+  return {
+    leagueName: name,
+    currentWeek: 1,
+    teams: [],
+    draft: { started:false, complete:false, order:[], picks:[], currentPick:0 },
+    playerPool: [],
+    scoringRules: null,
+    stats: {},
+    weekly: {},
+    trades: [],                 // trade requests (players + future picks)
+  };
+}
+
+/* shortcut to the active sport's league data */
+function LG() { return STATE.leagues[STATE.sport] || (STATE.leagues[STATE.sport] = blankLeague('League')); }
 
 let db = null, fbReady = false, fbErr = null;
 
@@ -366,7 +404,7 @@ function initFirebase() {
     db = getFirestore(app);
     fbReady = true;
     // live sync
-    onSnapshot(doc(db, 'leagues', ESPN_LEAGUE_ID), (snap) => {
+    onSnapshot(doc(db, 'leagues', FB_DOC_ID), (snap) => {
       if (snap.exists() && snap.data().state) {
         const incoming = snap.data().state;
         // shallow-merge to avoid clobbering local-only fields mid-edit
@@ -382,7 +420,7 @@ async function save() {
   if (!fbReady) { toast('Not saved — Firebase offline', 'err'); return; }
   try {
     const payload = {...STATE}; delete payload._loaded;
-    await setDoc(doc(db, 'leagues', ESPN_LEAGUE_ID), { state: payload, ts: Date.now() });
+    await setDoc(doc(db, 'leagues', FB_DOC_ID), { state: payload, ts: Date.now() });
   } catch(e) { toast('Save failed: ' + e.message, 'err'); }
 }
 
@@ -394,7 +432,7 @@ function esc(s) {
     ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 function $(id) { return document.getElementById(id); }
-function teamById(id) { return STATE.teams.find(t => String(t.id) === String(id)) || {name:'?', abbrev:'?'}; }
+function teamById(id) { return LG().teams.find(t => String(t.id) === String(id)) || {name:'?', abbrev:'?'}; }
 
 function toast(msg, kind='') {
   const el = document.createElement('div');
@@ -421,7 +459,7 @@ function normName(name) {
    ESPN API — player pool + scoring rules ONLY
    ============================================================ */
 function espnUrl(params) {
-  return `https://lm-api-reads.fantasy.espn.com/apis/v3/games/flb/seasons/${SEASON}/segments/0/leagues/${ESPN_LEAGUE_ID}?${params}`;
+  return `https://lm-api-reads.fantasy.espn.com/apis/v3/games/${SP().espnGame}/seasons/${SP().season}/segments/0/leagues/${SP().leagueId}?${params}`;
 }
 
 async function espnFetch(params) {
@@ -434,7 +472,7 @@ async function espnFetch(params) {
 async function fetchPlayerPool(logFn) {
   logFn?.('Fetching ESPN player pool…', 'run');
   // ESPN players_wl endpoint returns the full player universe
-  const url = `https://lm-api-reads.fantasy.espn.com/apis/v3/games/flb/seasons/${SEASON}/players?scoringPeriodId=0&view=players_wl`;
+  const url = `https://lm-api-reads.fantasy.espn.com/apis/v3/games/${SP().espnGame}/seasons/${SP().season}/players?scoringPeriodId=0&view=kona_player_info`;
   const res = await fetch(url, {
     headers: {
       'X-Fantasy-Filter': JSON.stringify({
@@ -450,6 +488,16 @@ async function fetchPlayerPool(logFn) {
   const players = Array.isArray(data) ? data : (data.players || []);
   logFn?.(`Got ${players.length} players from ESPN`, 'ok');
   return players;
+}
+
+/* Pull a player's season fantasy-point total from ESPN stat splits.
+   statSplitTypeId 0 = season total, statSourceId 0 = actual, appliedTotal = fantasy pts. */
+function seasonPointsFromEspn(pl) {
+  const stats = pl.stats || [];
+  let best = stats.find(s => s.statSplitTypeId === 0 && s.statSourceId === 0 && s.seasonId === SP().statSeason)
+          || stats.find(s => s.statSplitTypeId === 0 && s.statSourceId === 0)
+          || stats.find(s => s.statSourceId === 0 && s.appliedTotal != null);
+  return best ? Math.round((best.appliedTotal || 0) * 10) / 10 : 0;
 }
 
 /* Pull scoring rules from ESPN league settings */
@@ -494,7 +542,7 @@ async function resolveMlbIds(logFn) {
   logFn?.('Mapping ESPN players to MLB IDs…', 'run');
   let mapped = 0, failed = 0;
   const failures = [];
-  for (const p of STATE.playerPool) {
+  for (const p of LG().playerPool) {
     if (p.mlbId) { mapped++; continue; }          // already mapped
     if (STATE.idOverrides[normName(p.name)]) {     // manual override
       p.mlbId = STATE.idOverrides[normName(p.name)];
@@ -541,19 +589,19 @@ function renderPage(page) {
     case 'players':   el.innerHTML = viewPlayers(); break;
     case 'settings':  el.innerHTML = viewSettings(); break;
   }
-  $('wk-label').textContent = STATE.currentWeek || '—';
+  $('wk-label').textContent = LG().currentWeek || '—';
 }
 
 /* ============================================================
    VIEWS (Phase 1 — shells; filled in later phases)
    ============================================================ */
 function viewHome() {
-  const haveTeams = STATE.teams.length > 0;
-  const haveDraft = STATE.draft.complete;
-  const havePool  = STATE.playerPool.length > 0;
+  const haveTeams = LG().teams.length > 0;
+  const haveDraft = LG().draft.complete;
+  const havePool  = LG().playerPool.length > 0;
 
   return `
-    <div class="eyebrow">${esc(STATE.leagueName)}</div>
+    <div class="eyebrow">${SP().icon} ${esc(LG().leagueName)}</div>
     <div class="h1">Best game<br>of the week.</div>
     <p class="sub mt">Each week, only your starters count — and only their single
       best game. Highest weekly total wins.</p>
@@ -576,7 +624,7 @@ function viewHome() {
     ${havePool && !haveDraft ? `
       <div class="card">
         <div class="h2">Ready to draft</div>
-        <p class="sub mb">${STATE.playerPool.length} players available.</p>
+        <p class="sub mb">${LG().playerPool.length} players available.</p>
         <button class="btn btn-amber btn-block" onclick="go('draft')">Go to Draft →</button>
       </div>` : ''}
 
@@ -601,7 +649,69 @@ function checkRow(label, done, hint) {
 function viewDraft()     { return placeholderView('Draft', 'Snake draft from the ESPN player pool. Built in Phase 2.'); }
 function viewStandings() { return placeholderView('Standings', 'Win/loss records from weekly best-game matchups. Built in Phase 4.'); }
 function viewMatchups()  { return placeholderView('Matchups', 'Weekly head-to-head with daily best-game breakdowns. Built in Phase 4.'); }
-function viewTeams()     { return placeholderView('Teams', 'Rosters and team pages. Built in Phase 2.'); }
+function viewTeams() {
+  if (!LG().teams.length) {
+    return `<div class="h1">Teams</div>
+      <div class="empty"><div class="big">⛨</div>
+      <div class="msg">No teams yet. Create them in Settings, or use Quick Test.</div>
+      <button class="btn" onclick="go('settings')">Open Settings</button></div>`;
+  }
+  const rosters = {};
+  LG().teams.forEach(t => rosters[t.id] = []);
+  LG().draft.picks.forEach(pk => {
+    const p = LG().playerPool.find(x => String(x.espnId) === String(pk.playerId));
+    if (p && rosters[pk.teamId]) rosters[pk.teamId].push({...p, pick: pk.pick, round: pk.round});
+  });
+  const cards = LG().teams.map(t => {
+    const roster = rosters[t.id] || [];
+    const totalPts = roster.reduce((s,p)=>s+(p.seasonPts||0),0);
+    const preview = roster.slice(0,5).map(p =>
+      `<div class="row-between" style="padding:.2rem 0;font-size:.8rem">
+        <span class="plink" onclick="showPlayer('${p.espnId}')">${esc(p.name)}</span>
+        <span class="num sage">${(p.seasonPts||0).toFixed(0)}</span></div>`).join('');
+    return `<div class="card" onclick="showTeam('${t.id}')" style="cursor:pointer">
+      <div class="row-between">
+        <div><div class="h2" style="margin:0">${esc(t.name)}</div>
+          <div class="sub">${esc(t.owner||'')} · ${roster.length} players</div></div>
+        <div style="text-align:right">
+          <div class="num amber display" style="font-size:1.4rem">${totalPts.toFixed(0)}</div>
+          <div class="sub" style="font-size:.6rem">SEASON PTS</div></div>
+      </div>
+      <div class="mt">${preview || '<span class="sub">No players drafted</span>'}</div>
+      ${roster.length>5?`<div class="divlabel">+${roster.length-5} more — tap to view</div>`:''}
+    </div>`;
+  }).join('');
+  return `<div class="eyebrow">${LG().teams.length} teams · ${SP().label}</div>
+    <div class="h1">Teams</div><div class="mt">${cards}</div>`;
+}
+
+window.showTeam = function(teamId) {
+  const t = teamById(teamId);
+  const roster = LG().draft.picks
+    .filter(pk => String(pk.teamId) === String(teamId))
+    .map(pk => {
+      const p = LG().playerPool.find(x => String(x.espnId) === String(pk.playerId));
+      return p ? {...p, pick: pk.pick, round: pk.round} : null;
+    }).filter(Boolean).sort((a,b)=>a.pick-b.pick);
+  const rosterRows = roster.map(p =>
+    `<tr>
+      <td class="pos">${p.round}.${String(p.pick).padStart(2,'0')}</td>
+      <td><span class="plink" onclick="showPlayer('${p.espnId}')">${esc(p.name)}</span></td>
+      <td class="pos">${esc((p.eligible||[]).join('/')||p.pos)}</td>
+      <td class="pos">${esc(p.proTeam||'')}</td>
+      <td class="r num cell-best">${(p.seasonPts||0).toFixed(0)}</td>
+    </tr>`).join('');
+  const total = roster.reduce((s,p)=>s+(p.seasonPts||0),0);
+  openModal(`
+    <div class="h2">${esc(t.name)}</div>
+    <div class="sub mb">${esc(t.owner||'')} · ${roster.length} players · ${total.toFixed(0)} season pts</div>
+    <table class="tbl mt">
+      <thead><tr><th>Pick</th><th>Player</th><th>Pos</th><th>Tm</th><th class="r">Pts</th></tr></thead>
+      <tbody>${rosterRows || '<tr><td colspan="5" class="sub">No players</td></tr>'}</tbody>
+    </table>
+    <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Close</button>
+  `);
+};
 function viewPlayers()   { return viewPlayersReal(); }
 
 function placeholderView(title, msg) {
@@ -611,52 +721,117 @@ function placeholderView(title, msg) {
 }
 
 /* Players view works in Phase 1 once pool is loaded — proves the data layer */
+const playerView = { sort: 'seasonPts', dir: -1, posFilter: 'ALL', search: '', avail: 'all' };
+
 function viewPlayersReal() {
-  if (!STATE.playerPool.length) {
+  if (!LG().playerPool.length) {
     return `<div class="h1">Players</div>
       <div class="empty"><div class="big">◎</div>
       <div class="msg">No player pool yet. Pull it from ESPN in Settings.</div>
       <button class="btn" onclick="go('settings')">Open Settings</button></div>`;
   }
-  const mappedCount = STATE.playerPool.filter(p => p.mlbId).length;
-  const rows = STATE.playerPool.slice(0, 100).map(p => `
-    <tr>
-      <td><span class="plink" onclick="showPlayer('${p.espnId}')">${esc(p.name)}</span></td>
+  const mappedCount = LG().playerPool.filter(p => p.mlbId).length;
+  const draftedIds = new Set(LG().draft.picks.map(pk => String(pk.playerId)));
+  const allPos = SP().posFilters;
+
+  let list = LG().playerPool.filter(p => {
+    if (playerView.search && !normName(p.name).includes(normName(playerView.search))) return false;
+    if (playerView.posFilter !== 'ALL') {
+      const elig = (p.eligible||[]).join(' ') + ' ' + (p.pos||'');
+      if (!elig.includes(playerView.posFilter)) return false;
+    }
+    if (playerView.avail === 'avail' && draftedIds.has(String(p.espnId))) return false;
+    if (playerView.avail === 'drafted' && !draftedIds.has(String(p.espnId))) return false;
+    return true;
+  });
+
+  const s = playerView.sort, dir = playerView.dir;
+  list.sort((a,b) => {
+    if (s === 'name') return dir * a.name.localeCompare(b.name);
+    return dir * ((a[s] ?? 0) - (b[s] ?? 0));
+  });
+
+  const shown = list.slice(0, 150);
+  const rows = shown.map(p => {
+    const drafted = draftedIds.has(String(p.espnId));
+    const pk = LG().draft.picks.find(x => String(x.playerId) === String(p.espnId));
+    const ownerTeam = pk ? teamById(pk.teamId).abbrev : '';
+    return `<tr style="${drafted?'opacity:.45':''}">
+      <td><span class="plink" onclick="showPlayer('${p.espnId}')">${esc(p.name)}</span>
+        ${p.injured?'<span class="cell-neg" style="font-size:.6rem"> ⚕</span>':''}
+        ${drafted?`<span class="sub" style="font-size:.6rem"> · ${esc(ownerTeam)}</span>`:''}</td>
       <td class="pos">${esc((p.eligible||[]).join('/') || p.pos || '?')}</td>
-      <td class="pos">${esc(p.proTeam || '')}</td>
-      <td class="r num" style="font-size:.7rem;color:${p.mlbId?'var(--good)':'var(--bad)'}">
-        ${p.mlbId ? 'MLB✓' : '—'}</td>
-    </tr>`).join('');
+      <td class="pos">${esc(p.proTeam||'')}</td>
+      <td class="r num cell-best" style="${p.seasonPts<=0?'color:var(--sage-dim)':''}">${p.seasonPts.toFixed(1)}</td>
+      <td class="r num sage" style="font-size:.72rem">${p.owned?.toFixed(0)??0}%</td>
+    </tr>`;
+  }).join('');
+
+  const sortBtn = (key,label) =>
+    `<button class="btn btn-sm ${playerView.sort===key?'':'btn-ghost'}" onclick="setSort('${key}')">${label}${playerView.sort===key?(dir<0?' ▼':' ▲'):''}</button>`;
+  const posBtn = (pos) =>
+    `<button class="btn btn-sm ${playerView.posFilter===pos?'btn-amber':'btn-ghost'}" onclick="setPosFilter('${pos}')">${pos}</button>`;
 
   return `
-    <div class="eyebrow">Player pool</div>
+    <div class="eyebrow">${SP().label} pool · ${LG().playerPool.length} players · ${mappedCount} linked</div>
     <div class="h1">Players</div>
-    <div class="statrow mt mb">
-      <div class="stat"><div class="lbl">In pool</div><div class="val">${STATE.playerPool.length}</div></div>
-      <div class="stat"><div class="lbl">MLB linked</div><div class="val amber">${mappedCount}</div></div>
-      <div class="stat"><div class="lbl">Unlinked</div><div class="val">${STATE.playerPool.length - mappedCount}</div></div>
+    <div class="field mt">
+      <input class="input" placeholder="Search players…" value="${esc(playerView.search)}" oninput="setSearch(this.value)">
     </div>
-    <div class="card card-tight">
+    <div class="row" style="gap:.35rem;overflow-x:auto;padding-bottom:.4rem">${allPos.map(posBtn).join('')}</div>
+    <div class="row" style="gap:.35rem;margin-top:.4rem">
+      <span class="sub" style="align-self:center;font-size:.68rem">Sort:</span>
+      ${sortBtn('seasonPts','Pts')} ${sortBtn('owned','Owned')} ${sortBtn('name','Name')}
+      <span class="sub" style="align-self:center;font-size:.68rem;margin-left:.5rem">Show:</span>
+      <button class="btn btn-sm ${playerView.avail==='all'?'btn-amber':'btn-ghost'}" onclick="setAvail('all')">All</button>
+      <button class="btn btn-sm ${playerView.avail==='avail'?'btn-amber':'btn-ghost'}" onclick="setAvail('avail')">Available</button>
+    </div>
+    <div class="card card-tight mt">
       <table class="tbl">
-        <thead><tr><th>Player</th><th>Pos</th><th>Team</th><th class="r">MLB</th></tr></thead>
+        <thead><tr><th>Player</th><th>Pos</th><th>Tm</th><th class="r">Season</th><th class="r">Own</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
-      ${STATE.playerPool.length > 100 ? `<div class="divlabel">showing first 100 of ${STATE.playerPool.length}</div>` : ''}
+      ${list.length > 150 ? `<div class="divlabel">showing 150 of ${list.length} matches</div>` :
+        `<div class="divlabel">${list.length} player${list.length!==1?'s':''}</div>`}
     </div>`;
 }
 
+window.setSort = function(key) {
+  if (playerView.sort === key) playerView.dir *= -1;
+  else { playerView.sort = key; playerView.dir = (key==='name') ? 1 : -1; }
+  renderActive();
+};
+window.setPosFilter = function(pos) { playerView.posFilter = pos; renderActive(); };
+window.setSearch = function(v) {
+  playerView.search = v;
+  const el = $('page-players');
+  if (el) {
+    el.innerHTML = viewPlayersReal();
+    const inp = el.querySelector('input[placeholder="Search players…"]');
+    if (inp) { inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); }
+  }
+};
+window.setAvail = function(v) { playerView.avail = v; renderActive(); };
+
 window.showPlayer = function(espnId) {
-  const p = STATE.playerPool.find(x => String(x.espnId) === String(espnId));
+  const p = LG().playerPool.find(x => String(x.espnId) === String(espnId));
   if (!p) return;
+  const pk = LG().draft.picks.find(x => String(x.playerId) === String(espnId));
   openModal(`
     <div class="h2">${esc(p.name)}</div>
-    <div class="sub mb">${esc((p.eligible||[]).join(', '))} · ${esc(p.proTeam||'')}</div>
+    <div class="sub mb">${esc((p.eligible||[]).join(', '))} · ${esc(p.proTeam||'')}
+      ${p.injured?'· <span class="cell-neg">injured</span>':''}</div>
+    <div class="statrow mt mb">
+      <div class="stat"><div class="lbl">Season pts</div><div class="val amber">${p.seasonPts.toFixed(1)}</div></div>
+      <div class="stat"><div class="lbl">Owned</div><div class="val">${p.owned?.toFixed(0)??0}%</div></div>
+      <div class="stat"><div class="lbl">Status</div><div class="val" style="font-size:1rem">${pk?'Drafted':'Free'}</div></div>
+    </div>
+    ${pk ? `<p class="sub">On <b>${esc(teamById(pk.teamId).name)}</b> — pick #${pk.pick}</p>` : ''}
     <table class="tbl mt">
       <tr><td class="sage">ESPN ID</td><td class="r num">${esc(p.espnId)}</td></tr>
-      <tr><td class="sage">MLB ID</td><td class="r num">${p.mlbId ? esc(p.mlbId) : '<span class="cell-neg">not linked</span>'}</td></tr>
-      <tr><td class="sage">Default pos</td><td class="r">${esc(p.pos||'?')}</td></tr>
+      <tr><td class="sage">${SP().statsApi.toUpperCase()} ID</td><td class="r num">${p.mlbId ? esc(p.mlbId) : '<span class="cell-neg">not linked</span>'}</td></tr>
     </table>
-    <p class="sub mt">Game-by-game stats load in Phase 3 (from MLB API).</p>
+    <p class="sub mt">Game-by-game stats load in Phase 3.</p>
     <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Close</button>
   `);
 };
@@ -665,38 +840,61 @@ window.showPlayer = function(espnId) {
    SETTINGS — the control center (Phase 1 functional)
    ============================================================ */
 function viewSettings() {
-  const havePool = STATE.playerPool.length > 0;
-  const haveRules = STATE.scoringRules && Object.keys(STATE.scoringRules).length > 0;
+  const havePool = LG().playerPool.length > 0;
+  const haveRules = LG().scoringRules && Object.keys(LG().scoringRules).length > 0;
   return `
     <div class="eyebrow">Control center</div>
     <div class="h1">Settings</div>
 
     <div class="card mt">
+      <div class="h2">Sport</div>
+      <p class="sub mb">Each sport keeps its own teams, draft, and players.</p>
+      <div class="row">
+        ${Object.values(SPORTS).map(sp =>
+          `<button class="btn btn-sm ${STATE.sport===sp.key?'btn-amber':'btn-ghost'}" onclick="switchSport('${sp.key}')">${sp.icon} ${sp.label}</button>`
+        ).join('')}
+      </div>
+      ${!SP().leagueId ? `<p class="sub mt" style="font-size:.72rem">⚠ ${SP().label} has no ESPN league ID yet — set it to pull its pool.</p>` : ''}
+    </div>
+
+    <div class="card">
       <div class="h2">1 · Connect ESPN</div>
-      <p class="sub mb">Pull the player pool and scoring rules. League ID
-        <span class="num">${ESPN_LEAGUE_ID}</span>, season <span class="num">${SEASON}</span>.</p>
+      <p class="sub mb">Pull the ${SP().label} player pool and scoring rules. League ID
+        <span class="num">${SP().leagueId||"(not set)"}</span>, season <span class="num">${SP().season}</span>.</p>
       <div class="row">
         <button class="btn" onclick="doPullPool()">Pull player pool</button>
         <button class="btn btn-ghost" onclick="doPullRules()">Pull scoring rules</button>
       </div>
       <div class="row mt">
-        <span class="sub">${havePool ? `✓ ${STATE.playerPool.length} players` : '○ no pool yet'}</span>
-        <span class="sub">${haveRules ? `✓ ${Object.keys(STATE.scoringRules).length} rules` : '○ no rules yet'}</span>
+        <span class="sub">${havePool ? `✓ ${LG().playerPool.length} players` : '○ no pool yet'}</span>
+        <span class="sub">${haveRules ? `✓ ${Object.keys(LG().scoringRules).length} rules` : '○ no rules yet'}</span>
       </div>
     </div>
 
     <div class="card">
-      <div class="h2">2 · Link MLB stats</div>
-      <p class="sub mb">Match each ESPN player to their MLB ID so we can pull real
+      <div class="h2">2 · Link ${SP().statsApi.toUpperCase()} stats</div>
+      <p class="sub mb">Match each ESPN player to their ${SP().statsApi.toUpperCase()} ID so we can pull real
         box scores. Runs after the pool is loaded.</p>
       <button class="btn ${havePool?'':'btn-ghost'}" onclick="doMapIds()" ${havePool?'':'disabled'}>
-        Map players to MLB</button>
+        Map players to ${SP().statsApi.toUpperCase()}</button>
     </div>
 
     <div class="card">
       <div class="h2">3 · Teams</div>
       <p class="sub mb">Create the teams in your league. You'll draft players to them next.</p>
-      <button class="btn btn-ghost" onclick="manageTeams()">Manage teams (${STATE.teams.length})</button>
+      <button class="btn btn-ghost" onclick="manageTeams()">Manage teams (${LG().teams.length})</button>
+    </div>
+
+    <div class="card" style="border-color:var(--clay)">
+      <div class="h2">⚡ Quick test</div>
+      <p class="sub mb">Spin up a full league instantly to check functionality. Wipe anytime.</p>
+      <div class="row">
+        <button class="btn btn-sm" onclick="autogenTeams()">Autogen 8 teams</button>
+        <button class="btn btn-amber btn-sm" onclick="autodraft()" ${havePool && LG().teams.length?'':'disabled'}>Autodraft</button>
+        <button class="btn btn-ghost btn-sm" onclick="wipeDraft()">Wipe draft</button>
+      </div>
+      <p class="sub mt" style="font-size:.7rem">
+        ${LG().draft.complete ? `✓ Draft done — ${LG().draft.picks.length} picks across ${LG().teams.length} teams` : '○ No draft yet'}</p>
     </div>
 
     <div class="card">
@@ -731,7 +929,7 @@ function slog(msg, kind='pending') {
 window.doPullPool = async function() {
   try {
     const raw = await fetchPlayerPool(slog);
-    STATE.playerPool = raw.map(pp => {
+    LG().playerPool = raw.map(pp => {
       const pl = pp.player || pp;
       return {
         espnId: pl.id,
@@ -739,10 +937,14 @@ window.doPullPool = async function() {
         pos: posName(pl.defaultPositionId),
         eligible: (pl.eligibleSlots||[]).map(slotName).filter(Boolean),
         proTeam: proTeamAbbr(pl.proTeamId),
+        seasonPts: seasonPointsFromEspn(pl),
+        owned: Math.round((pl.ownership?.percentOwned || 0) * 10) / 10,
+        injured: !!pl.injured,
         mlbId: null,
       };
     }).filter(p => p.name);
-    slog(`Stored ${STATE.playerPool.length} players`, 'ok');
+    LG().playerPool.sort((a,b) => b.seasonPts - a.seasonPts);
+    slog(`Stored ${LG().playerPool.length} players, sorted by season pts`, 'ok');
     await save();
     toast('Player pool loaded', 'ok');
     renderActive();
@@ -751,7 +953,7 @@ window.doPullPool = async function() {
 
 window.doPullRules = async function() {
   try {
-    STATE.scoringRules = await fetchScoringRules(slog);
+    LG().scoringRules = await fetchScoringRules(slog);
     await save();
     toast('Scoring rules loaded', 'ok');
     renderActive();
@@ -777,7 +979,7 @@ window.dumpState = function() {
 
 /* ---- team management (basic; expanded in Phase 2) ---- */
 window.manageTeams = function() {
-  const rows = STATE.teams.map((t,i) => `
+  const rows = LG().teams.map((t,i) => `
     <div class="row-between" style="padding:.4rem 0;border-bottom:1px solid rgba(42,61,48,.4)">
       <span>${esc(t.name)} <span class="sub">· ${esc(t.owner||'')}</span></span>
       <button class="btn btn-ghost btn-sm" onclick="removeTeam('${t.id}')">Remove</button>
@@ -795,32 +997,80 @@ window.addTeam = function() {
   const name = $('nt-name').value.trim();
   const owner = $('nt-owner').value.trim();
   if (!name) { toast('Enter a team name', 'err'); return; }
-  STATE.teams.push({ id: 't' + Date.now(), name, owner, abbrev: name.slice(0,3).toUpperCase() });
+  LG().teams.push({ id: 't' + Date.now(), name, owner, abbrev: name.slice(0,3).toUpperCase() });
   save(); manageTeams(); toast('Team added', 'ok');
 };
 window.removeTeam = function(id) {
-  STATE.teams = STATE.teams.filter(t => String(t.id) !== String(id));
+  LG().teams = LG().teams.filter(t => String(t.id) !== String(id));
   save(); manageTeams();
+};
+
+/* ---- AUTOGEN teams (testing) ---- */
+window.autogenTeams = function() {
+  const sets = {
+    flb: [['The Sandlot','Benny'],['Dinger City','Marcus'],['Foul Territory','Dana'],
+          ['Bronx Bombers','Reggie'],['Wrigley Wind','Sam'],['Bay Bombers','Alex'],
+          ['Rally Caps','Jordan'],['Walk-Off Kings','Chris']],
+    fba: [['Court Vision','Magic'],['Rim Rockers','Dunk'],['Splash Bros','Curry'],
+          ['Paint Patrol','Shaq'],['Fast Break','Iso'],['Buzzer Beaters','Ray'],
+          ['Triple Doubles','Russ'],['Bench Mob','Sixth']],
+  };
+  const names = sets[STATE.sport] || sets.flb;
+  LG().teams = names.map((n,i) => ({
+    id: 't'+(i+1), name: n[0], owner: n[1],
+    abbrev: n[0].split(' ').map(w=>w[0]).join('').slice(0,3).toUpperCase(),
+  }));
+  save(); toast('8 teams created', 'ok'); renderActive();
+};
+
+/* ---- AUTODRAFT — snake, best available by season pts ---- */
+window.autodraft = function() {
+  if (LG().teams.length < 2) { toast('Need at least 2 teams', 'err'); return; }
+  if (!LG().playerPool.length) { toast('No player pool', 'err'); return; }
+  const ROUNDS = SP().rosterSize;
+  const teamIds = LG().teams.map(t => t.id);
+  const picks = [], taken = new Set();
+  const pool = [...LG().playerPool].sort((a,b) => b.seasonPts - a.seasonPts);
+  let pickNum = 1;
+  for (let round = 0; round < ROUNDS; round++) {
+    const order = round % 2 === 0 ? teamIds : [...teamIds].reverse();
+    for (const teamId of order) {
+      const next = pool.find(p => !taken.has(String(p.espnId)));
+      if (!next) break;
+      taken.add(String(next.espnId));
+      picks.push({ pick: pickNum++, round: round+1, teamId, playerId: next.espnId });
+    }
+  }
+  LG().draft = { started:true, complete:true, order:teamIds, picks, currentPick:picks.length, rounds:ROUNDS, type:'auto' };
+  save(); toast(`Autodraft complete — ${picks.length} picks`, 'ok'); go('teams');
+};
+
+window.wipeDraft = function() {
+  LG().draft = { started:false, complete:false, order:[], picks:[], currentPick:0 };
+  LG().weekly = {};
+  save(); toast('Draft wiped', 'ok'); renderActive();
+};
+
+/* ---- SPORT SWITCHER ---- */
+window.switchSport = function(key) {
+  if (!SPORTS[key]) return;
+  STATE.sport = key;
+  playerView.search = ''; playerView.posFilter = 'ALL'; playerView.sort = 'seasonPts'; playerView.dir = -1;
+  save(); toast(`Switched to ${SPORTS[key].label}`, 'ok'); go('home');
 };
 
 /* ============================================================
    ESPN ID → label maps (baseball, confirmed from prior work)
    ============================================================ */
 function posName(id) {
-  return ({1:'SP',2:'C',3:'1B',4:'2B',5:'3B',6:'SS',7:'OF',8:'OF',9:'OF',10:'DH',11:'RP'})[id] || '?';
+  return SP().posMap[id] || '?';
 }
 function slotName(id) {
-  const m = {0:'C',1:'1B',2:'2B',3:'3B',4:'SS',5:'OF',6:'2B/SS',7:'1B/3B',8:'OF',9:'OF',
-             10:'DH',11:'UTIL',12:'SP',13:'RP',14:'P'};
-  // skip bench/IL slots 16,17
-  if (id === 16 || id === 17) return null;
-  return m[id] || null;
+  if (SP().benchSlots.includes(id)) return null;  // bench/IL not scored
+  return SP().slotMap[id] || null;
 }
 function proTeamAbbr(id) {
-  const m = {0:'FA',1:'BAL',2:'BOS',3:'LAA',4:'CWS',5:'CLE',6:'DET',7:'KC',8:'MIL',9:'MIN',
-    10:'NYY',11:'OAK',12:'SEA',13:'TEX',14:'TOR',15:'ATL',16:'CHC',17:'CIN',18:'HOU',19:'LAD',
-    20:'WSH',21:'NYM',22:'PHI',23:'PIT',24:'STL',25:'SD',26:'SF',27:'COL',28:'MIA',29:'ARI',30:'TB'};
-  return m[id] || '';
+  return SP().proTeams[id] || '';
 }
 
 /* ============================================================
