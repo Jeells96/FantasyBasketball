@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Best Game League v2.4</title>
+<title>Best Game League v2.5</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500;600&display=swap');
 
@@ -717,7 +717,7 @@
 
 <!-- NAV -->
 <nav>
-  <div class="nav-brand" onclick="goto('home')">BGL<span style="font-size:.6rem;color:var(--muted);letter-spacing:1px;vertical-align:super;margin-left:.2rem">v2.4</span></div>
+  <div class="nav-brand" onclick="goto('home')">BGL<span style="font-size:.6rem;color:var(--muted);letter-spacing:1px;vertical-align:super;margin-left:.2rem">v2.5</span></div>
   <div class="nav-links">
     <button onclick="goto('home')" id="nav-home" class="active">Home</button>
     <button onclick="goto('standings')" id="nav-standings">Standings</button>
@@ -1548,10 +1548,15 @@ window.importFromESPN = async function(weekOverride, sportOverride) {
   }
 
   try {
-    // Secondary: no scoringPeriodId → real calendar period IDs in player.stats
-    const url2 = espnAPIUrl(sport, leagueId, season, `view=mRoster`);
+    // Secondary fetch: get per-game player.stats for THIS week's calendar days.
+    // Fetching with the week's END calendar period makes ESPN return that week's
+    // game-level stats (statSplitTypeId=5) with real calendar period IDs.
+    // Without this, ESPN only returns the *current* week's data, breaking history.
+    const { end: weekEndPeriod } = weekCalendarRange(week);
+    const url2 = espnAPIUrl(sport, leagueId, season,
+      `view=mRoster&scoringPeriodId=${weekEndPeriod}`);
     rosterData = await espnFetch(url2);
-    logImport(`Roster data OK — calendar period ${rosterData.scoringPeriodId}`, 'done');
+    logImport(`Roster data OK — fetched calendar period ${weekEndPeriod} (week ${week})`, 'done');
   } catch(e) {
     logImport('Roster fetch failed (will use fallback): ' + e.message, 'err');
     rosterData = null;
@@ -2584,11 +2589,15 @@ window.runDiagnostic = async function() {
 
   out.textContent = `Fetching ESPN raw data…\nSport: ${sport} | League: ${leagueId} | Season: ${season} | Week: ${week}\n\nTrying 6 API view combinations…`;
 
+  // Compute this week's calendar period range so we can test the history fetch
+  const calStart = 76 + (week - 11) * 7;
+  const calEnd   = calStart + 6;
+
   const results = {};
   const viewSets = [
     { label: 'mRoster+mMatchupScore',            params: `view=mRoster&view=mMatchupScore&scoringPeriodId=${week}` },
-    { label: 'mBoxscore+mMatchupScore',           params: `view=mBoxscore&view=mMatchupScore&scoringPeriodId=${week}` },
-    { label: 'mRoster+mScoreboard',              params: `view=mRoster&view=mScoreboard&scoringPeriodId=${week}` },
+    { label: `mRoster @calPeriod=${calEnd} (HISTORY TEST)`, params: `view=mRoster&scoringPeriodId=${calEnd}` },
+    { label: `mRoster @calPeriod=${calStart} (week start)`, params: `view=mRoster&scoringPeriodId=${calStart}` },
     { label: 'mMatchup+mMatchupScore',            params: `view=mMatchup&view=mMatchupScore&scoringPeriodId=${week}` },
     { label: 'mTeam+mRoster (no scoringPeriod)', params: `view=mTeam&view=mRoster` },
     { label: 'mSettings',                         params: `view=mSettings` },
