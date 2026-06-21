@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Best Game League v4.0</title>
+<title>Best Game League v4.1</title>
 <style>
 /* ============================================================
-   BGL v4.0 — Design System
+   BGL v4.1 — Design System
    Subject: competitive fantasy baseball; hook = best single game/week
    Palette: stadium-at-night
    ============================================================ */
@@ -278,7 +278,7 @@ body {
 <div class="topbar">
   <div class="brand" onclick="go('home')">
     <span>BGL<span class="mark">.</span></span>
-    <span class="ver">v4.0</span>
+    <span class="ver">v4.1</span>
   </div>
   <div class="topbar-right">
     <span class="week-pill">WK <b id="wk-label">—</b></span>
@@ -355,6 +355,29 @@ const SPORTS = {
       10:'NYY',11:'OAK',12:'SEA',13:'TEX',14:'TOR',15:'ATL',16:'CHC',17:'CIN',18:'HOU',19:'LAD',
       20:'WSH',21:'NYM',22:'PHI',23:'PIT',24:'STL',25:'SD',26:'SF',27:'COL',28:'MIA',29:'ARI',30:'TB'},
     posFilters: ['ALL','C','1B','2B','3B','SS','OF','DH','SP','RP'],
+    // Starting lineup slots (ESPN default). Each entry = {slot, eligible[]}.
+    // eligible lists which player positions can fill it. Edit to match your league.
+    lineupSlots: [
+      { slot: 'C',   eligible: ['C'] },
+      { slot: '1B',  eligible: ['1B'] },
+      { slot: '2B',  eligible: ['2B'] },
+      { slot: '3B',  eligible: ['3B'] },
+      { slot: 'SS',  eligible: ['SS'] },
+      { slot: 'MI',  eligible: ['2B','SS'] },
+      { slot: 'CI',  eligible: ['1B','3B'] },
+      { slot: 'OF',  eligible: ['OF'] },
+      { slot: 'OF',  eligible: ['OF'] },
+      { slot: 'OF',  eligible: ['OF'] },
+      { slot: 'OF',  eligible: ['OF'] },
+      { slot: 'OF',  eligible: ['OF'] },
+      { slot: 'UTIL',eligible: ['C','1B','2B','3B','SS','OF','DH'] },
+      { slot: 'SP',  eligible: ['SP'] },
+      { slot: 'SP',  eligible: ['SP'] },
+      { slot: 'RP',  eligible: ['RP'] },
+      { slot: 'RP',  eligible: ['RP'] },
+      { slot: 'P',   eligible: ['SP','RP'] },
+      { slot: 'P',   eligible: ['SP','RP'] },
+    ],
   },
   fba: {
     key: 'fba',
@@ -371,6 +394,18 @@ const SPORTS = {
     benchSlots: [12,13],
     proTeams: {}, // filled when basketball is activated
     posFilters: ['ALL','PG','SG','SF','PF','C','G','F'],
+    lineupSlots: [
+      { slot: 'PG',  eligible: ['PG'] },
+      { slot: 'SG',  eligible: ['SG'] },
+      { slot: 'SF',  eligible: ['SF'] },
+      { slot: 'PF',  eligible: ['PF'] },
+      { slot: 'C',   eligible: ['C'] },
+      { slot: 'G',   eligible: ['PG','SG'] },
+      { slot: 'F',   eligible: ['SF','PF'] },
+      { slot: 'UTIL',eligible: ['PG','SG','SF','PF','C'] },
+      { slot: 'UTIL',eligible: ['PG','SG','SF','PF','C'] },
+      { slot: 'UTIL',eligible: ['PG','SG','SF','PF','C'] },
+    ],
   },
 };
 
@@ -409,6 +444,7 @@ function blankLeague(name) {
     lineups: {},                // lineups[teamId][week] = { starters: [playerId,...] }
     gameLogs: {},               // cached MLB logs: gameLogs[mlbId] = [{date, group, stat}]
     viewWeek: null,             // week the user is viewing (null = auto current)
+    schedule: { opener: null, durations: {} },  // custom week schedule
   };
 }
 
@@ -683,17 +719,38 @@ function gameBreakdown(statObj, group) {
 }
 
 /* ============================================================
-   WEEK ↔ DATE LOGIC — week 1 starts Monday at season opener.
+   WEEK ↔ DATE LOGIC
+   Each week defaults to 7 days starting from the season opener
+   Monday. Users can override (a) the opener date and (b) any
+   week's duration in days. Weeks after a custom-duration week
+   shift automatically, then resume standard 7-day spacing.
+   Stored: LG().schedule = { opener: 'YYYY-MM-DD', durations: {week: days} }
    ============================================================ */
 const SEASON_OPENERS = { 2025: '2025-03-24', 2026: '2026-03-23', 2027: '2027-03-29' };
+
 function seasonOpenerMonday() {
+  // user override first
+  const custom = LG().schedule?.opener;
+  if (custom) return new Date(custom + 'T00:00:00');
   const iso = SEASON_OPENERS[SP().season] || `${SP().season}-03-30`;
   return new Date(iso + 'T00:00:00');
 }
-function weekDateRange(week) {
+/* duration (days) of a given week — custom or default 7 */
+function weekDuration(week) {
+  const d = LG().schedule?.durations?.[week];
+  return (d && d > 0) ? d : 7;
+}
+/* start date of a week = opener + sum of all prior weeks' durations */
+function weekStart(week) {
   const open = seasonOpenerMonday();
-  const start = new Date(open); start.setDate(open.getDate() + (week-1)*7);
-  const end = new Date(start);  end.setDate(start.getDate() + 6);
+  let offset = 0;
+  for (let w = 1; w < week; w++) offset += weekDuration(w);
+  const start = new Date(open); start.setDate(open.getDate() + offset);
+  return start;
+}
+function weekDateRange(week) {
+  const start = weekStart(week);
+  const end = new Date(start); end.setDate(start.getDate() + weekDuration(week) - 1);
   return { start, end };
 }
 function ymd(d) { return d.toISOString().slice(0,10); }
@@ -701,22 +758,53 @@ function dayLabel(d) {
   return ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getDay()] + ' ' + (d.getMonth()+1) + '/' + d.getDate();
 }
 function weekDays(week) {
-  const { start } = weekDateRange(week);
+  const start = weekStart(week);
+  const len = weekDuration(week);
   const days = [];
-  for (let i=0;i<7;i++) { const d = new Date(start); d.setDate(start.getDate()+i); days.push(d); }
+  for (let i=0;i<len;i++) { const d = new Date(start); d.setDate(start.getDate()+i); days.push(d); }
   return days;
 }
-/* Which fantasy week is "now" based on today's date and the season opener.
-   Clamped to 1..26. Used as the default week to display. */
+/* Which fantasy week is "now" — walk weeks until today falls inside one.
+   Accounts for custom week durations. Clamped to 1..26. */
 function currentWeekNow() {
-  const open = seasonOpenerMonday();
-  const today = new Date();
-  const diffDays = Math.floor((today - open) / (1000*60*60*24));
-  const wk = Math.floor(diffDays / 7) + 1;
-  return Math.max(1, Math.min(26, wk));
+  const today = new Date(); today.setHours(0,0,0,0);
+  for (let w = 1; w <= 26; w++) {
+    const { start, end } = weekDateRange(w);
+    if (today >= start && today <= end) return w;
+    if (today < start) return Math.max(1, w);  // before this week starts
+  }
+  return 26;
 }
 /* The week the UI should show: explicit viewWeek if set, else computed now. */
 function activeWeek() { return LG().viewWeek || currentWeekNow(); }
+
+/* ============================================================
+   LINEUP LOCK — lineups lock at 11:00 AM on the Sunday before
+   a week begins (i.e. the day before a Monday week start).
+   Returns the lock Date for a given week.
+   ============================================================ */
+const LOCK_HOUR = 11; // 11:00 AM local
+function weekLockTime(week) {
+  const start = weekStart(week);          // Monday (week start)
+  const lock = new Date(start);
+  lock.setDate(start.getDate() - 1);      // the Sunday before
+  lock.setHours(LOCK_HOUR, 0, 0, 0);
+  return lock;
+}
+function isWeekLocked(week) {
+  return new Date() >= weekLockTime(week);
+}
+/* human countdown string until a week locks, or 'Locked' */
+function lockCountdown(week) {
+  const ms = weekLockTime(week) - new Date();
+  if (ms <= 0) return 'Locked';
+  const d = Math.floor(ms/86400000);
+  const h = Math.floor((ms%86400000)/3600000);
+  const m = Math.floor((ms%3600000)/60000);
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
 
 function playerWeekGames(mlbId, week) {
   const logs = LG().gameLogs?.[mlbId] || [];
@@ -1002,6 +1090,16 @@ function viewMyTeam() {
       <div class="h1">My Team</div>
       <button class="btn btn-sm btn-ghost" onclick="editLineup()">Set lineup</button>
     </div>
+    <div class="card" style="padding:.5rem .75rem;margin-top:.5rem;${isWeekLocked(week)?'border-color:var(--bad)':'border-color:var(--line)'}">
+      <div class="row-between">
+        <span class="sub" style="font-size:.72rem">
+          ${isWeekLocked(week)
+            ? `<span class="cell-neg">🔒 Week ${week} lineup locked</span>`
+            : `⏳ Week ${week} locks in <b class="amber">${lockCountdown(week)}</b>`}
+        </span>
+        <span class="sub" style="font-size:.65rem">${isWeekLocked(week)?'':'Sun 11:00 AM'}</span>
+      </div>
+    </div>
 
     <div class="card mt" style="border-color:var(--amber)">
       <div class="row-between" style="margin-bottom:.5rem">
@@ -1050,16 +1148,21 @@ function teamRoster(teamId) {
 }
 
 /* starters for team+week — manual lineup, or default to first N if unset */
-function getStarters(teamId, week) {
+/* The lineup for team+week: {assignments: {slotIdx: playerId}}.
+   Carries forward from the most recent prior week if unset. */
+function getLineup(teamId, week) {
   const lu = LG().lineups?.[teamId]?.[week];
-  if (lu?.starters) return lu.starters;
-  // default: carry forward previous week's lineup, else first 9 (or roster)
+  if (lu?.assignments) return lu;
   for (let w = week-1; w >= 1; w--) {
     const prev = LG().lineups?.[teamId]?.[w];
-    if (prev?.starters) return prev.starters;
+    if (prev?.assignments) return { assignments: {...prev.assignments}, carried: true };
   }
-  // no lineup ever set → default to all (user will set)
-  return teamRoster(teamId).slice(0, 10).map(p => p.espnId);
+  return { assignments: {}, empty: true };
+}
+/* starters = the set of player IDs assigned to any slot */
+function getStarters(teamId, week) {
+  const lu = getLineup(teamId, week);
+  return Object.values(lu.assignments || {}).filter(Boolean).map(String);
 }
 
 window.pickMyTeam = function(teamId) {
@@ -1077,47 +1180,93 @@ window.confirmMyTeam = function(teamId) {
   save(); closeModal(); toast('Team locked in', 'ok'); renderActive();
 };
 
-/* navigate the viewed week */
 window.changeWeek = function(delta) {
   const w = activeWeek() + delta;
   LG().viewWeek = Math.max(1, Math.min(26, w));
   renderActive();
 };
 
-/* ---- lineup editor ---- */
+/* ---- SLOT-BASED LINEUP EDITOR ---- */
 window.editLineup = function() {
   const week = activeWeek();
+  const locked = isWeekLocked(week);
+  const slots = SP().lineupSlots || [];
   const roster = teamRoster(LG().myTeamId);
-  const starters = getStarters(LG().myTeamId, week).map(String);
-  window._lineupSel = new Set(starters);
-  const rows = roster.map(p => `
-    <div class="row-between" style="padding:.4rem 0;border-bottom:1px solid rgba(42,61,48,.4)">
-      <span><span class="plink">${esc(p.name)}</span>
-        <span class="sub" style="font-size:.7rem"> ${esc((p.eligible||[]).join('/'))}</span></span>
-      <label style="display:flex;align-items:center;gap:.4rem">
-        <input type="checkbox" ${starters.includes(String(p.espnId))?'checked':''}
-          onchange="toggleStarter('${p.espnId}',this.checked)">
-        <span class="sub" style="font-size:.65rem">Start</span>
-      </label>
-    </div>`).join('');
-  openModal(`
-    <div class="h2">Set lineup · Week ${week}</div>
-    <p class="sub mb">Check who starts. Only starters' best games count toward your weekly total.</p>
-    <div style="max-height:50vh;overflow-y:auto">${rows}</div>
-    <button class="btn btn-block mt" onclick="saveLineup()">Save lineup</button>
-    <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Cancel</button>
-  `);
+  const lu = getLineup(LG().myTeamId, week);
+  // working copy of assignments
+  window._lineupWork = {...(lu.assignments||{})};
+
+  openModal(renderLineupEditor(week, locked));
 };
-window.toggleStarter = function(pid, on) {
-  window._lineupSel = window._lineupSel || new Set();
-  if (on) window._lineupSel.add(String(pid)); else window._lineupSel.delete(String(pid));
+
+function renderLineupEditor(week, locked) {
+  const slots = SP().lineupSlots || [];
+  const roster = teamRoster(LG().myTeamId);
+  const assign = window._lineupWork || {};
+  const usedIds = new Set(Object.values(assign).filter(Boolean).map(String));
+
+  const slotRows = slots.map((s, idx) => {
+    const pid = assign[idx];
+    const p = pid ? roster.find(r => String(r.espnId)===String(pid)) : null;
+    // eligible players for this slot, not already used elsewhere
+    const opts = roster.filter(r => {
+      const elig = (r.eligible||[]);
+      const fits = s.eligible.some(e => elig.includes(e));
+      return fits && (!usedIds.has(String(r.espnId)) || String(r.espnId)===String(pid));
+    });
+    const optHtml = ['<option value="">— empty —</option>']
+      .concat(opts.map(r => `<option value="${r.espnId}" ${String(r.espnId)===String(pid)?'selected':''}>${esc(r.name)} (${esc((r.eligible||[]).join('/'))})</option>`))
+      .join('');
+    return `<div class="row-between" style="padding:.35rem 0;border-bottom:1px solid rgba(42,61,48,.4);gap:.5rem">
+      <span class="starter-badge s" style="min-width:42px;text-align:center">${esc(s.slot)}</span>
+      <select class="select" style="flex:1" ${locked?'disabled':''}
+        onchange="assignSlot(${idx},this.value)">${optHtml}</select>
+    </div>`;
+  }).join('');
+
+  // bench = rostered players not in any slot
+  const bench = roster.filter(r => !usedIds.has(String(r.espnId)));
+  const benchHtml = bench.length
+    ? bench.map(r => `<span class="starter-badge b" style="margin:.15rem">${esc(r.name)}</span>`).join('')
+    : '<span class="sub">none</span>';
+
+  return `
+    <div class="h2">Lineup · Week ${week}</div>
+    <div class="row-between mb">
+      <span class="sub">${locked ? '<span class="cell-neg">🔒 Locked</span>' : `Locks in ${lockCountdown(week)}`}</span>
+      <span class="sub" style="font-size:.7rem">${SP().label}</span>
+    </div>
+    ${locked ? `<p class="sub mb" style="font-size:.72rem">This week's lineup is locked. Edit a future week with the arrows.</p>` : ''}
+    <div style="max-height:48vh;overflow-y:auto">${slotRows}</div>
+    <div class="divlabel mt">Bench</div>
+    <div style="line-height:1.8">${benchHtml}</div>
+    ${!locked ? `<button class="btn btn-block mt" onclick="saveLineup()">Save lineup</button>` : ''}
+    <button class="btn btn-ghost btn-block mt" onclick="closeModal()">${locked?'Close':'Cancel'}</button>
+  `;
+}
+
+window.assignSlot = function(slotIdx, playerId) {
+  window._lineupWork = window._lineupWork || {};
+  // if this player is assigned to another slot, clear that one (swap)
+  if (playerId) {
+    for (const k of Object.keys(window._lineupWork)) {
+      if (String(window._lineupWork[k]) === String(playerId)) delete window._lineupWork[k];
+    }
+    window._lineupWork[slotIdx] = playerId;
+  } else {
+    delete window._lineupWork[slotIdx];
+  }
+  // re-render editor to refresh dropdowns (eligibility/used state)
+  const week = activeWeek();
+  $('modal-body').innerHTML = renderLineupEditor(week, isWeekLocked(week));
 };
 window.saveLineup = function() {
   const week = activeWeek();
+  if (isWeekLocked(week)) { toast('Week is locked', 'err'); return; }
   const tid = LG().myTeamId;
   LG().lineups = LG().lineups || {};
   LG().lineups[tid] = LG().lineups[tid] || {};
-  LG().lineups[tid][week] = { starters: [...(window._lineupSel||[])] };
+  LG().lineups[tid][week] = { assignments: {...(window._lineupWork||{})} };
   save(); closeModal(); toast('Lineup saved', 'ok'); renderActive();
 };
 
@@ -1350,6 +1499,13 @@ function viewSettings() {
     </div>
 
     <div class="card">
+      <div class="h2">Week schedule</div>
+      <p class="sub mb">Weeks default to Mon–Sun. Adjust the season start or any week's length
+        (e.g. a 2-week All-Star break). Later weeks shift automatically.</p>
+      <button class="btn btn-block" onclick="editSchedule()">Edit week schedule</button>
+    </div>
+
+    <div class="card">
       <div class="h2">3 · Teams</div>
       <p class="sub mb">Create the teams in your league. You'll draft players to them next.</p>
       <button class="btn btn-ghost" onclick="manageTeams()">Manage teams (${LG().teams.length})</button>
@@ -1481,6 +1637,58 @@ window.resetScoring = function() {
   save();
   toast('Reset to defaults', 'ok');
   editScoring();
+};
+
+/* ---- WEEK SCHEDULE EDITOR ---- */
+window.editSchedule = function() {
+  LG().schedule = LG().schedule || { opener: null, durations: {} };
+  const opener = LG().schedule.opener || ymd(seasonOpenerMonday());
+  // show weeks 1..20 with their computed ranges + duration override
+  const rows = [];
+  for (let w = 1; w <= 20; w++) {
+    const { start, end } = weekDateRange(w);
+    const dur = weekDuration(w);
+    const custom = LG().schedule.durations?.[w];
+    rows.push(`<div class="row-between" style="padding:.35rem 0;border-bottom:1px solid rgba(42,61,48,.4);gap:.5rem">
+      <span style="min-width:48px"><b>Wk ${w}</b></span>
+      <span class="sub" style="flex:1;font-size:.72rem">${dayLabel(start)}–${dayLabel(end)}</span>
+      <select class="select" style="width:90px" onchange="setWeekDur(${w},this.value)">
+        ${[7,8,9,10,11,12,13,14].map(d => `<option value="${d}" ${dur===d?'selected':''}>${d}d</option>`).join('')}
+      </select>
+    </div>`);
+  }
+  openModal(`
+    <div class="h2">Week schedule</div>
+    <div class="field mt">
+      <label>Season start (Week 1 Monday)</label>
+      <input class="input" type="date" value="${opener}" onchange="setOpener(this.value)">
+    </div>
+    <p class="sub mb" style="font-size:.72rem">Set any week's length below. Default is 7 days.
+      Changing one week shifts all later weeks.</p>
+    <div style="max-height:42vh;overflow-y:auto">${rows.join('')}</div>
+    <button class="btn btn-block mt" onclick="closeModal();renderActive()">Done</button>
+    <button class="btn btn-ghost btn-block mt" onclick="resetSchedule()">Reset to default</button>
+  `);
+};
+window.setOpener = function(dateStr) {
+  LG().schedule = LG().schedule || { opener: null, durations: {} };
+  LG().schedule.opener = dateStr || null;
+  save();
+  // refresh editor to show new dates
+  editSchedule();
+};
+window.setWeekDur = function(week, days) {
+  LG().schedule = LG().schedule || { opener: null, durations: {} };
+  LG().schedule.durations = LG().schedule.durations || {};
+  const d = parseInt(days);
+  if (d === 7) delete LG().schedule.durations[week]; // 7 = default, no override needed
+  else LG().schedule.durations[week] = d;
+  save();
+  editSchedule(); // refresh to show shifted dates
+};
+window.resetSchedule = function() {
+  LG().schedule = { opener: null, durations: {} };
+  save(); toast('Schedule reset', 'ok'); editSchedule();
 };
 
 window.doMapIds = async function() {
