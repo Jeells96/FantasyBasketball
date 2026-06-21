@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Best Game League v3.7</title>
+<title>Best Game League v3.8</title>
 <style>
 /* ============================================================
-   BGL v3.7 — Design System
+   BGL v3.8 — Design System
    Subject: competitive fantasy baseball; hook = best single game/week
    Palette: stadium-at-night
    ============================================================ */
@@ -257,7 +257,7 @@ body {
 <div class="topbar">
   <div class="brand" onclick="go('home')">
     <span>BGL<span class="mark">.</span></span>
-    <span class="ver">v3.7</span>
+    <span class="ver">v3.8</span>
   </div>
   <div class="topbar-right">
     <span class="week-pill">WK <b id="wk-label">—</b></span>
@@ -379,11 +379,10 @@ function blankLeague(name) {
     teams: [],
     draft: { started:false, complete:false, order:[], picks:[], currentPick:0 },
     playerPool: [],
-    scoringRules: null,
+    customScoring: {},          // our own scoring: {categoryId: pointValue} overrides
     stats: {},
     weekly: {},
     trades: [],                 // trade requests (players + future picks)
-    rawScoringItems: null,      // raw ESPN scoring items for inspection
   };
 }
 
@@ -514,30 +513,6 @@ function seasonPointsFromEspn(pl) {
   return any ? Math.round((any.appliedTotal || 0) * 10) / 10 : 0;
 }
 
-/* Pull scoring rules from ESPN league settings */
-async function fetchScoringRules(logFn) {
-  logFn?.('Fetching scoring rules…', 'run');
-  const data = await espnFetch('view=mSettings');
-  const items = data.settings?.scoringSettings?.scoringItems || [];
-  // stash the COMPLETE raw items so we can inspect exactly what ESPN sends
-  window._rawScoringItems = items;
-  LG().rawScoringItems = items;
-  const rules = {};
-  items.forEach(it => {
-    // ESPN stores the active value in pointsOverrides (keyed by scoring-period id).
-    // Prefer that over `points` (which is often a stale default). Take the LAST
-    // override value since that reflects the current settings.
-    let val = it.points || 0;
-    if (it.pointsOverrides && typeof it.pointsOverrides === 'object') {
-      const ov = Object.values(it.pointsOverrides);
-      if (ov.length) val = ov[ov.length - 1];
-    }
-    if (val) rules[it.statId] = val;
-  });
-  logFn?.(`Got ${Object.keys(rules).length} active scoring rules`, 'ok');
-  return rules;
-}
-
 /* ============================================================
    MLB STATS API — the source of truth for game stats
    (runs in browser; not testable from build env but API is stable)
@@ -557,65 +532,72 @@ async function mlbLookup(name) {
   return (exact || people[0]).id;
 }
 
-/* The current stat season. ESPN's `season` is the league year; MLB stats use
-   the same calendar year. Use the league season directly so it rolls over
-   automatically (2026 this year, 2027 next year). */
-function statSeasonNow() { return SP().season; }
-
 /* ============================================================
-   ESPN STAT ID DICTIONARY (baseball)
-   Maps ESPN's numeric statId → {label, mlb} where mlb is the
-   field name in MLB StatsAPI game-log "stat" objects.
-   These are the standard ESPN fantasy baseball stat IDs.
+   OUR OWN SCORING SYSTEM
+   We define categories + default point values ourselves (not ESPN).
+   Each category maps to a field in MLB StatsAPI game logs.
+   Users edit the point values in-app (Settings → Scoring).
    ============================================================ */
-const ESPN_STAT_DICT = {
-  // ---- hitting ----
-  0:  { label: 'At Bats',            mlb: 'atBats',        grp: 'hitting' },
-  1:  { label: 'Hits',               mlb: 'hits',          grp: 'hitting' },
-  2:  { label: 'Avg',                mlb: 'avg',           grp: 'hitting' },
-  3:  { label: 'Doubles (2B)',       mlb: 'doubles',       grp: 'hitting' },
-  4:  { label: 'Triples (3B)',       mlb: 'triples',       grp: 'hitting' },
-  5:  { label: 'Home Runs',          mlb: 'homeRuns',      grp: 'hitting' },
-  6:  { label: 'Total Bases',        mlb: 'totalBases',    grp: 'hitting' },
-  7:  { label: 'RBIs',               mlb: 'rbi',           grp: 'hitting' },
-  8:  { label: 'Runs',               mlb: 'runs',          grp: 'hitting' },
-  9:  { label: 'Walks (BB)',         mlb: 'baseOnBalls',   grp: 'hitting' },
-  10: { label: 'Intentional Walks',  mlb: 'intentionalWalks', grp: 'hitting' },
-  11: { label: 'Hit By Pitch',       mlb: 'hitByPitch',    grp: 'hitting' },
-  12: { label: 'Strikeouts (batter)',mlb: 'strikeOuts',    grp: 'hitting' },
-  13: { label: 'Stolen Bases',       mlb: 'stolenBases',   grp: 'hitting' },
-  14: { label: 'Caught Stealing',    mlb: 'caughtStealing',grp: 'hitting' },
-  15: { label: 'On-Base %',          mlb: 'obp',           grp: 'hitting' },
-  16: { label: 'Slugging %',         mlb: 'slg',           grp: 'hitting' },
-  17: { label: 'OPS',                mlb: 'ops',           grp: 'hitting' },
-  18: { label: 'GIDP',               mlb: 'groundIntoDoublePlay', grp: 'hitting' },
-  19: { label: 'Sac Flies',          mlb: 'sacFlies',      grp: 'hitting' },
-  // ---- pitching ----
-  32: { label: 'Outs (IP×3)',        mlb: 'outs',          grp: 'pitching' },
-  33: { label: 'Batters Faced',      mlb: 'battersFaced',  grp: 'pitching' },
-  34: { label: 'Pitches',            mlb: 'pitchesThrown', grp: 'pitching' },
-  35: { label: 'Wins',               mlb: 'wins',          grp: 'pitching' },
-  36: { label: 'Losses',             mlb: 'losses',        grp: 'pitching' },
-  37: { label: 'Saves',              mlb: 'saves',         grp: 'pitching' },
-  38: { label: 'Blown Saves',        mlb: 'blownSaves',    grp: 'pitching' },
-  39: { label: 'Holds',              mlb: 'holds',         grp: 'pitching' },
-  40: { label: 'Innings Pitched',    mlb: 'inningsPitched',grp: 'pitching' },
-  41: { label: 'Hits Allowed',       mlb: 'hits',          grp: 'pitching' },
-  42: { label: 'Earned Runs',        mlb: 'earnedRuns',    grp: 'pitching' },
-  43: { label: 'Runs Allowed',       mlb: 'runs',          grp: 'pitching' },
-  44: { label: 'Home Runs Allowed',  mlb: 'homeRuns',      grp: 'pitching' },
-  45: { label: 'Walks Allowed',      mlb: 'baseOnBalls',   grp: 'pitching' },
-  46: { label: 'Hit Batters',        mlb: 'hitBatsmen',    grp: 'pitching' },
-  47: { label: 'Strikeouts (pitcher)',mlb: 'strikeOuts',   grp: 'pitching' },
-  48: { label: 'Complete Games',     mlb: 'completeGames', grp: 'pitching' },
-  49: { label: 'Shutouts',           mlb: 'shutouts',      grp: 'pitching' },
-  53: { label: 'Quality Starts',     mlb: 'qualityStarts', grp: 'pitching' },
-  // ratios (display only)
-  50: { label: 'ERA',                mlb: 'era',           grp: 'pitching' },
-  51: { label: 'WHIP',               mlb: 'whip',          grp: 'pitching' },
+
+// Default scoring — common fantasy points values. Editable in-app.
+// grp: 'hitting' or 'pitching' (which MLB game-log group to read)
+// mlb: the field name in MLB StatsAPI stat object
+// derive: optional function(stat) for computed categories (XBH, net SB, etc.)
+const SCORING_CATALOG = {
+  flb: [
+    // ---- HITTING ----
+    { id: 'R',    label: 'Runs',              grp: 'hitting',  mlb: 'runs',                 def: 1 },
+    { id: '1B',   label: 'Singles',           grp: 'hitting',  derive: s => (s.hits||0)-(s.doubles||0)-(s.triples||0)-(s.homeRuns||0), def: 1 },
+    { id: '2B',   label: 'Doubles',           grp: 'hitting',  mlb: 'doubles',              def: 2 },
+    { id: '3B',   label: 'Triples',           grp: 'hitting',  mlb: 'triples',              def: 3 },
+    { id: 'HR',   label: 'Home Runs',         grp: 'hitting',  mlb: 'homeRuns',             def: 4 },
+    { id: 'RBI',  label: 'Runs Batted In',    grp: 'hitting',  mlb: 'rbi',                  def: 1 },
+    { id: 'BB',   label: 'Walks',             grp: 'hitting',  mlb: 'baseOnBalls',          def: 1 },
+    { id: 'K',    label: 'Strikeouts',        grp: 'hitting',  mlb: 'strikeOuts',           def: -1 },
+    { id: 'SB',   label: 'Stolen Bases',      grp: 'hitting',  mlb: 'stolenBases',          def: 2 },
+    { id: 'CS',   label: 'Caught Stealing',   grp: 'hitting',  mlb: 'caughtStealing',       def: -1 },
+    { id: 'HBP',  label: 'Hit By Pitch',      grp: 'hitting',  mlb: 'hitByPitch',           def: 1 },
+    { id: 'IBB',  label: 'Intentional Walks', grp: 'hitting',  mlb: 'intentionalWalks',     def: 0 },
+    { id: 'GIDP', label: 'Ground Into DP',    grp: 'hitting',  mlb: 'groundIntoDoublePlay', def: 0 },
+    // ---- PITCHING ----
+    { id: 'IP',   label: 'Innings (per out)', grp: 'pitching', mlb: 'outs',                 def: 1 },
+    { id: 'ER',   label: 'Earned Runs',       grp: 'pitching', mlb: 'earnedRuns',           def: -1 },
+    { id: 'KP',   label: 'Strikeouts (P)',    grp: 'pitching', mlb: 'strikeOuts',           def: 1 },
+    { id: 'W',    label: 'Wins',              grp: 'pitching', mlb: 'wins',                 def: 5 },
+    { id: 'L',    label: 'Losses',            grp: 'pitching', mlb: 'losses',               def: -3 },
+    { id: 'SV',   label: 'Saves',             grp: 'pitching', mlb: 'saves',                def: 5 },
+    { id: 'BS',   label: 'Blown Saves',       grp: 'pitching', mlb: 'blownSaves',           def: -3 },
+    { id: 'HD',   label: 'Holds',             grp: 'pitching', mlb: 'holds',                def: 2 },
+    { id: 'QS',   label: 'Quality Starts',    grp: 'pitching', mlb: 'qualityStarts',        def: 3 },
+    { id: 'HA',   label: 'Hits Allowed',      grp: 'pitching', mlb: 'hits',                 def: 0 },
+    { id: 'BBA',  label: 'Walks Allowed',     grp: 'pitching', mlb: 'baseOnBalls',          def: -1 },
+    { id: 'HRA',  label: 'HR Allowed',        grp: 'pitching', mlb: 'homeRuns',             def: 0 },
+    { id: 'CG',   label: 'Complete Games',    grp: 'pitching', mlb: 'completeGames',        def: 2 },
+    { id: 'SO',   label: 'Shutouts',          grp: 'pitching', mlb: 'shutouts',             def: 5 },
+  ],
+  fba: [
+    { id: 'PTS', label: 'Points',        grp: 'stats', mlb: 'points',        def: 1 },
+    { id: 'REB', label: 'Rebounds',      grp: 'stats', mlb: 'rebounds',      def: 1 },
+    { id: 'AST', label: 'Assists',       grp: 'stats', mlb: 'assists',       def: 1 },
+    { id: 'STL', label: 'Steals',        grp: 'stats', mlb: 'steals',        def: 2 },
+    { id: 'BLK', label: 'Blocks',        grp: 'stats', mlb: 'blocks',        def: 2 },
+    { id: 'TO',  label: 'Turnovers',     grp: 'stats', mlb: 'turnovers',     def: -1 },
+  ],
 };
 
-function statLabel(id) { return ESPN_STAT_DICT[id]?.label || `Stat ${id}`; }
+/* Get the active scoring values: user overrides if set, else defaults. */
+function scoringValues() {
+  const cat = SCORING_CATALOG[STATE.sport] || SCORING_CATALOG.flb;
+  const saved = LG().customScoring || {};
+  const out = {};
+  cat.forEach(c => { out[c.id] = (saved[c.id] != null) ? saved[c.id] : c.def; });
+  return out;
+}
+function scoringCatalog() { return SCORING_CATALOG[STATE.sport] || SCORING_CATALOG.flb; }
+
+/* The current stat season — league year, rolls over automatically. */
+function statSeasonNow() { return SP().season; }
+
 
 /* Fetch a player's game-by-game log from MLB StatsAPI for the current season.
    Returns [{date, gamePk, opp, stat:{...}}] for both hitting and pitching. */
@@ -635,33 +617,25 @@ async function mlbGameLog(mlbId, group, season) {
   }));
 }
 
-/* Convert one game's MLB stat line into fantasy points using ESPN rules.
-   rules = {statId: pointValue}. Returns the point total for that game. */
-function gamePoints(statObj, rules, group) {
-  if (!rules) return 0;
+/* Convert one game's MLB stat line into points using OUR scoring system.
+   Reads the active per-category values (user overrides or defaults). */
+function gamePoints(statObj, group) {
+  const vals = scoringValues();
+  const cat = scoringCatalog();
   let pts = 0;
-  for (const [statId, perUnit] of Object.entries(rules)) {
-    const def = ESPN_STAT_DICT[statId];
-    if (!def || !perUnit) continue;
-    if (def.grp !== group) continue;            // hitting rules to hitting games only
-    let val = statObj[def.mlb];
+  for (const c of cat) {
+    if (c.grp !== group) continue;          // hitting cats → hitting games only
+    const per = vals[c.id];
+    if (!per) continue;                      // zero-valued categories skipped
+    let val;
+    if (c.derive) val = c.derive(statObj);   // computed (singles, etc.)
+    else val = statObj[c.mlb];
     if (val == null) continue;
-    // innings pitched comes as "6.1" meaning 6⅓ — convert to outs-based decimal
-    if (def.mlb === 'inningsPitched') val = ipToFloat(val);
-    else val = parseFloat(val);
+    val = parseFloat(val);
     if (isNaN(val)) continue;
-    pts += val * perUnit;
+    pts += val * per;
   }
   return Math.round(pts * 100) / 100;
-}
-
-/* MLB reports IP as 6.1 / 6.2 (thirds). Convert to true decimal innings. */
-function ipToFloat(ip) {
-  const s = String(ip);
-  const [whole, frac] = s.split('.');
-  const w = parseInt(whole) || 0;
-  const f = frac === '1' ? 1/3 : frac === '2' ? 2/3 : 0;
-  return w + f;
 }
 
 
@@ -981,7 +955,6 @@ window.showPlayer = function(espnId) {
    ============================================================ */
 function viewSettings() {
   const havePool = LG().playerPool.length > 0;
-  const haveRules = LG().scoringRules && Object.keys(LG().scoringRules).length > 0;
   return `
     <div class="eyebrow">Control center</div>
     <div class="h1">Settings</div>
@@ -999,18 +972,16 @@ function viewSettings() {
 
     <div class="card">
       <div class="h2">1 · Connect ESPN</div>
-      <p class="sub mb">Pull the ${SP().label} player pool and scoring rules. League ID
-        <span class="num">${SP().leagueId||"(not set)"}</span>, season <span class="num">${SP().season}</span>.</p>
+      <p class="sub mb">Pull the ${SP().label} player pool. League ID
+        <span class="num">${SP().leagueId||"(not set)"}</span>, season <span class="num">${SP().season}</span>.
+        We use ESPN <b>only</b> for the player pool — scoring is our own.</p>
       <div class="row">
         <button class="btn" onclick="doPullPool()">Pull player pool</button>
-        <button class="btn btn-ghost" onclick="doPullRules()">Pull scoring rules</button>
       </div>
       <div class="row mt">
         <span class="sub">${havePool ? `✓ ${LG().playerPool.length} players` : '○ no pool yet'}</span>
-        <span class="sub">${haveRules ? `✓ ${Object.keys(LG().scoringRules).length} rules` : '○ no rules yet'}</span>
       </div>
       <button class="btn btn-ghost btn-sm mt" onclick="inspectRaw()">🔬 Inspect raw player data</button>
-      <button class="btn btn-ghost btn-sm mt" onclick="inspectScoring()">🔬 Inspect raw scoring rules</button>
     </div>
 
     <div class="card">
@@ -1020,9 +991,15 @@ function viewSettings() {
       <button class="btn ${havePool?'':'btn-ghost'}" onclick="doMapIds()" ${havePool?'':'disabled'}>
         Map players to ${SP().statsApi.toUpperCase()}</button>
       <button class="btn btn-amber btn-block mt" onclick="scoringDiag()">
-        🧪 Verify scoring (rules + game log)</button>
-      <p class="sub mt" style="font-size:.7rem">Shows ESPN's scoring rules next to a real player's
-        ${SP().statsApi.toUpperCase()} game log so you can confirm the points are right before we score everyone.</p>
+        🧪 Test scoring on a real player</button>
+      <p class="sub mt" style="font-size:.7rem">Pulls one player's ${SP().statsApi.toUpperCase()} game log and
+        applies your scoring so you can confirm points look right.</p>
+    </div>
+
+    <div class="card">
+      <div class="h2">Scoring system</div>
+      <p class="sub mb">Your own point values per stat. Edit any of them — defaults are loaded.</p>
+      <button class="btn btn-block" onclick="editScoring()">Edit scoring values</button>
     </div>
 
     <div class="card">
@@ -1110,13 +1087,53 @@ window.doPullPool = async function() {
   } catch(e) { slog('Pool fetch failed: ' + e.message, 'err'); toast(e.message, 'err'); }
 };
 
-window.doPullRules = async function() {
-  try {
-    LG().scoringRules = await fetchScoringRules(slog);
-    await save();
-    toast('Scoring rules loaded', 'ok');
-    renderActive();
-  } catch(e) { slog('Rules fetch failed: ' + e.message, 'err'); toast(e.message, 'err'); }
+/* ---- SCORING EDITOR — edit our own point values ---- */
+window.editScoring = function() {
+  const vals = scoringValues();
+  const cat = scoringCatalog();
+  const hitting = cat.filter(c => c.grp === 'hitting');
+  const pitching = cat.filter(c => c.grp === 'pitching');
+  const other = cat.filter(c => c.grp !== 'hitting' && c.grp !== 'pitching');
+
+  const rowFor = (c) => `
+    <div class="row-between" style="padding:.3rem 0;border-bottom:1px solid rgba(42,61,48,.4)">
+      <span style="font-size:.85rem">${esc(c.label)}</span>
+      <input class="input" style="width:90px;text-align:right" type="number" step="0.5"
+        value="${vals[c.id]}" data-score-id="${c.id}"
+        oninput="window._scoreEdits=window._scoreEdits||{};window._scoreEdits['${c.id}']=parseFloat(this.value)">
+    </div>`;
+
+  const section = (title, list) => list.length ? `
+    <div class="divlabel mt">${title}</div>${list.map(rowFor).join('')}` : '';
+
+  window._scoreEdits = {};
+  openModal(`
+    <div class="h2">Scoring values</div>
+    <div class="sub mb">Points awarded per stat. Negative is allowed. ${SP().label}.</div>
+    ${section('Hitting', hitting)}
+    ${section('Pitching', pitching)}
+    ${section('Stats', other)}
+    <button class="btn btn-block mt" onclick="saveScoring()">Save scoring</button>
+    <button class="btn btn-ghost btn-block mt" onclick="resetScoring()">Reset to defaults</button>
+    <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Cancel</button>
+  `);
+};
+window.saveScoring = function() {
+  const edits = window._scoreEdits || {};
+  LG().customScoring = LG().customScoring || {};
+  Object.entries(edits).forEach(([id,v]) => {
+    if (!isNaN(v)) LG().customScoring[id] = v;
+  });
+  save();
+  toast('Scoring saved', 'ok');
+  closeModal();
+  renderActive();
+};
+window.resetScoring = function() {
+  LG().customScoring = {};
+  save();
+  toast('Reset to defaults', 'ok');
+  editScoring();
 };
 
 window.doMapIds = async function() {
@@ -1174,91 +1191,27 @@ window.copyText = function(t) {
 };
 
 /* ============================================================
-   RAW SCORING INSPECTOR — shows ESPN's scoringItems exactly as
-   sent, every field, NO interpretation. This is ground truth for
-   building the correct stat-ID → stat mapping.
-   ============================================================ */
-window.inspectScoring = async function() {
-  openModal(`<div class="h2">Raw scoring rules</div><div class="spinner"></div>
-    <p class="sub" style="text-align:center">Pulling ESPN settings…</p>`);
-  try {
-    // ensure we have raw items
-    if (!LG().rawScoringItems) await (window.doPullRules ? doPullRules() : fetchScoringRules());
-    const items = LG().rawScoringItems || window._rawScoringItems || [];
-    if (!items.length) {
-      $('modal-body').innerHTML = `<div class="h2">No scoring items</div>
-        <p class="sub">ESPN returned no scoringItems. Your league may use category scoring, not points.</p>
-        <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Close</button>`;
-      return;
-    }
-    // build a table of EVERY field on each item
-    const rows = items.map(it => {
-      const ov = it.pointsOverrides ? JSON.stringify(it.pointsOverrides) : '—';
-      return `<tr>
-        <td class="num">${it.statId}</td>
-        <td class="num">${it.points ?? '—'}</td>
-        <td class="num sage" style="font-size:.66rem">${esc(ov)}</td>
-        <td class="num">${it.isReverseItem ? 'rev' : ''}</td>
-      </tr>`;
-    }).join('');
-    // full JSON for copy
-    window._inspectText = JSON.stringify(items, null, 1);
-    openModal(`
-      <div class="h2">Raw ESPN scoring (${items.length})</div>
-      <div class="sub mb">Exactly what ESPN sends — no labels added. This is the truth we map from.</div>
-      <div class="card card-tight" style="max-height:340px;overflow-y:auto">
-        <table class="tbl">
-          <thead><tr><th>statId</th><th>points</th><th>pointsOverrides</th><th></th></tr></thead>
-          <tbody>${rows}</tbody>
-        </table>
-      </div>
-      <button class="btn btn-block mt" onclick="copyText(window._inspectText)">📋 Copy full JSON — paste to me</button>
-      <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Close</button>
-    `);
-  } catch(e) {
-    $('modal-body').innerHTML = `<div class="h2">Inspect failed</div><p class="cell-neg">${esc(e.message)}</p>
-      <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Close</button>`;
-  }
-};
-
-
-/* ============================================================
-   PHASE 3 DIAGNOSTIC — ESPN scoring rules + one player's MLB
-   game log, side by side, so we can verify the mapping.
+   SCORING TEST — pull one player's MLB game log and apply our
+   scoring so the user can confirm points look right.
    ============================================================ */
 window.scoringDiag = async function() {
-  // need scoring rules + at least one mapped player
-  if (!LG().scoringRules || !Object.keys(LG().scoringRules).length) {
-    toast('Pull scoring rules first (step 1)', 'err'); return;
-  }
   const mapped = LG().playerPool.filter(p => p.mlbId);
   if (!mapped.length) { toast('Map players to MLB first (step 2)', 'err'); return; }
-
-  // pick a well-known hitter and pitcher if possible (highest ADP = best)
   const pick = mapped.slice().sort((a,b)=>a.adp-b.adp)[0];
 
-  openModal(`<div class="h2">Scoring check</div><div class="spinner"></div>
-    <p class="sub" style="text-align:center">Pulling ESPN rules + ${esc(pick.name)}'s MLB game log…</p>`);
-
-  // render the ESPN rules table (left half) immediately
-  const rules = LG().scoringRules;
-  const ruleRows = Object.entries(rules).map(([id,v]) =>
-    `<tr><td class="pos">${id}</td><td>${esc(statLabel(id))}</td>
-      <td class="sage" style="font-size:.7rem">${esc(ESPN_STAT_DICT[id]?.mlb||'—')}</td>
-      <td class="r num cell-best">${v}</td></tr>`).join('');
+  openModal(`<div class="h2">Scoring test</div><div class="spinner"></div>
+    <p class="sub" style="text-align:center">Pulling ${esc(pick.name)}'s MLB game log…</p>`);
 
   try {
-    // figure out if this player is a pitcher or hitter from eligibility
     const isPitcher = /SP|RP|P/.test((pick.eligible||[]).join('')) && !/1B|2B|3B|SS|OF|C|DH/.test((pick.eligible||[]).join(''));
     const group = isPitcher ? 'pitching' : 'hitting';
     const log = await mlbGameLog(pick.mlbId, group);
+    const recent = log.slice(-10).reverse();
 
-    const recent = log.slice(-8).reverse(); // last 8 games
     const logRows = recent.map(g => {
-      const pts = gamePoints(g.stat, rules, group);
-      // show a couple key raw stats for sanity
+      const pts = gamePoints(g.stat, group);
       const key = group === 'hitting'
-        ? `${g.stat.hits||0}H ${g.stat.homeRuns||0}HR ${g.stat.rbi||0}RBI`
+        ? `${g.stat.hits||0}H ${g.stat.homeRuns||0}HR ${g.stat.rbi||0}RBI ${g.stat.runs||0}R`
         : `${g.stat.inningsPitched||0}IP ${g.stat.strikeOuts||0}K ${g.stat.earnedRuns||0}ER`;
       return `<tr><td class="pos">${esc(g.date?.slice(5)||'')}</td>
         <td class="sage" style="font-size:.72rem">${esc(g.opp)}</td>
@@ -1266,40 +1219,31 @@ window.scoringDiag = async function() {
         <td class="r num cell-best">${pts}</td></tr>`;
     }).join('');
 
-    const seasonTotal = log.reduce((s,g)=>s+gamePoints(g.stat,rules,group),0);
+    const seasonTotal = log.reduce((s,g)=>s+gamePoints(g.stat,group),0);
+    const bestGame = log.reduce((m,g)=>Math.max(m,gamePoints(g.stat,group)),0);
 
     openModal(`
-      <div class="h2">Scoring check</div>
-      <div class="sub mb">${esc(pick.name)} · ${group} · ${log.length} games in ${statSeasonNow()}
-        · season total: <b class="amber">${seasonTotal.toFixed(1)} pts</b></div>
-
-      <div class="divlabel">ESPN scoring rules (${Object.keys(rules).length})</div>
-      <div class="card card-tight" style="max-height:200px;overflow-y:auto">
-        <table class="tbl"><thead><tr><th>ID</th><th>Stat</th><th>MLB field</th><th class="r">Pts</th></tr></thead>
-        <tbody>${ruleRows}</tbody></table>
+      <div class="h2">${esc(pick.name)}</div>
+      <div class="sub mb">${group} · ${log.length} games in ${statSeasonNow()}</div>
+      <div class="statrow mb">
+        <div class="stat"><div class="lbl">Season</div><div class="val amber">${seasonTotal.toFixed(0)}</div></div>
+        <div class="stat"><div class="lbl">Best game</div><div class="val amber">${bestGame.toFixed(1)}</div></div>
+        <div class="stat"><div class="lbl">Games</div><div class="val">${log.length}</div></div>
       </div>
-
-      <div class="divlabel mt">${esc(pick.name)} — last 8 games (MLB → points)</div>
-      <div class="card card-tight" style="max-height:240px;overflow-y:auto">
+      <div class="divlabel">Last 10 games — your scoring applied</div>
+      <div class="card card-tight" style="max-height:280px;overflow-y:auto">
         <table class="tbl"><thead><tr><th>Date</th><th>Opp</th><th>Key stats</th><th class="r">Pts</th></tr></thead>
         <tbody>${logRows || '<tr><td colspan="4" class="sub">No games found</td></tr>'}</tbody></table>
       </div>
-
-      <p class="sub mt" style="font-size:.72rem">Check: do the per-game points look right vs ESPN?
-        If a stat is off, tell me which one and I'll fix its mapping.</p>
+      <p class="sub mt" style="font-size:.72rem">Points off? Edit values in Settings → Scoring system.</p>
       <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Close</button>
     `);
   } catch(e) {
     openModal(`
-      <div class="h2">Scoring check</div>
-      <div class="divlabel">ESPN rules loaded OK (${Object.keys(rules).length})</div>
-      <div class="card card-tight" style="max-height:240px;overflow-y:auto">
-        <table class="tbl"><thead><tr><th>ID</th><th>Stat</th><th>MLB field</th><th class="r">Pts</th></tr></thead>
-        <tbody>${ruleRows}</tbody></table>
-      </div>
-      <p class="cell-neg mt">MLB game log failed: ${esc(e.message)}</p>
-      <p class="sub" style="font-size:.72rem">The ESPN side works. The MLB fetch errored — likely the
-        player has no ${statSeasonNow()} games yet, or the MLB API is unreachable.</p>
+      <div class="h2">Scoring test failed</div>
+      <p class="cell-neg mt">MLB game log error: ${esc(e.message)}</p>
+      <p class="sub" style="font-size:.72rem">Likely ${esc(pick.name)} has no ${statSeasonNow()} games yet,
+        or the MLB API is unreachable from your browser.</p>
       <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Close</button>
     `);
   }
