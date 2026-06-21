@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Best Game League v3.5</title>
+<title>Best Game League v3.6</title>
 <style>
 /* ============================================================
-   BGL v3.5 — Design System
+   BGL v3.6 — Design System
    Subject: competitive fantasy baseball; hook = best single game/week
    Palette: stadium-at-night
    ============================================================ */
@@ -257,7 +257,7 @@ body {
 <div class="topbar">
   <div class="brand" onclick="go('home')">
     <span>BGL<span class="mark">.</span></span>
-    <span class="ver">v3.5</span>
+    <span class="ver">v3.6</span>
   </div>
   <div class="topbar-right">
     <span class="week-pill">WK <b id="wk-label">—</b></span>
@@ -320,7 +320,7 @@ const SPORTS = {
     espnGame: 'flb',
     leagueId: '69029411',
     season: 2026,
-    statSeason: 2025,            // real-stat season (MLB)
+    statSeason: 2026,            // real-stat season (MLB) — current year; see CURRENT_YEAR
     rosterSize: 23,
     statsApi: 'mlb',
     // ESPN defaultPositionId -> position
@@ -520,10 +520,10 @@ async function fetchScoringRules(logFn) {
   const items = data.settings?.scoringSettings?.scoringItems || [];
   const rules = {};
   items.forEach(it => {
-    // points = the per-unit value for this stat
-    rules[it.statId] = it.points ?? (it.pointsOverrides ? Object.values(it.pointsOverrides)[0] : 0);
+    const val = it.points ?? (it.pointsOverrides ? Object.values(it.pointsOverrides)[0] : 0);
+    if (val) rules[it.statId] = val;   // only keep stats with a nonzero point value
   });
-  logFn?.(`Got ${items.length} scoring rules`, 'ok');
+  logFn?.(`Got ${Object.keys(rules).length} active scoring rules`, 'ok');
   return rules;
 }
 
@@ -541,11 +541,118 @@ async function mlbLookup(name) {
   const data = await res.json();
   const people = data.people || [];
   if (!people.length) return null;
-  // exact normalized match first
   const target = normName(name);
   const exact = people.find(p => normName(p.fullName) === target);
   return (exact || people[0]).id;
 }
+
+/* The current stat season. ESPN's `season` is the league year; MLB stats use
+   the same calendar year. Use the league season directly so it rolls over
+   automatically (2026 this year, 2027 next year). */
+function statSeasonNow() { return SP().season; }
+
+/* ============================================================
+   ESPN STAT ID DICTIONARY (baseball)
+   Maps ESPN's numeric statId → {label, mlb} where mlb is the
+   field name in MLB StatsAPI game-log "stat" objects.
+   These are the standard ESPN fantasy baseball stat IDs.
+   ============================================================ */
+const ESPN_STAT_DICT = {
+  // ---- hitting ----
+  0:  { label: 'At Bats',            mlb: 'atBats',        grp: 'hitting' },
+  1:  { label: 'Hits',               mlb: 'hits',          grp: 'hitting' },
+  2:  { label: 'Avg',                mlb: 'avg',           grp: 'hitting' },
+  3:  { label: 'Doubles (2B)',       mlb: 'doubles',       grp: 'hitting' },
+  4:  { label: 'Triples (3B)',       mlb: 'triples',       grp: 'hitting' },
+  5:  { label: 'Home Runs',          mlb: 'homeRuns',      grp: 'hitting' },
+  6:  { label: 'Total Bases',        mlb: 'totalBases',    grp: 'hitting' },
+  7:  { label: 'RBIs',               mlb: 'rbi',           grp: 'hitting' },
+  8:  { label: 'Runs',               mlb: 'runs',          grp: 'hitting' },
+  9:  { label: 'Walks (BB)',         mlb: 'baseOnBalls',   grp: 'hitting' },
+  10: { label: 'Intentional Walks',  mlb: 'intentionalWalks', grp: 'hitting' },
+  11: { label: 'Hit By Pitch',       mlb: 'hitByPitch',    grp: 'hitting' },
+  12: { label: 'Strikeouts (batter)',mlb: 'strikeOuts',    grp: 'hitting' },
+  13: { label: 'Stolen Bases',       mlb: 'stolenBases',   grp: 'hitting' },
+  14: { label: 'Caught Stealing',    mlb: 'caughtStealing',grp: 'hitting' },
+  15: { label: 'On-Base %',          mlb: 'obp',           grp: 'hitting' },
+  16: { label: 'Slugging %',         mlb: 'slg',           grp: 'hitting' },
+  17: { label: 'OPS',                mlb: 'ops',           grp: 'hitting' },
+  18: { label: 'GIDP',               mlb: 'groundIntoDoublePlay', grp: 'hitting' },
+  19: { label: 'Sac Flies',          mlb: 'sacFlies',      grp: 'hitting' },
+  // ---- pitching ----
+  32: { label: 'Outs (IP×3)',        mlb: 'outs',          grp: 'pitching' },
+  33: { label: 'Batters Faced',      mlb: 'battersFaced',  grp: 'pitching' },
+  34: { label: 'Pitches',            mlb: 'pitchesThrown', grp: 'pitching' },
+  35: { label: 'Wins',               mlb: 'wins',          grp: 'pitching' },
+  36: { label: 'Losses',             mlb: 'losses',        grp: 'pitching' },
+  37: { label: 'Saves',              mlb: 'saves',         grp: 'pitching' },
+  38: { label: 'Blown Saves',        mlb: 'blownSaves',    grp: 'pitching' },
+  39: { label: 'Holds',              mlb: 'holds',         grp: 'pitching' },
+  40: { label: 'Innings Pitched',    mlb: 'inningsPitched',grp: 'pitching' },
+  41: { label: 'Hits Allowed',       mlb: 'hits',          grp: 'pitching' },
+  42: { label: 'Earned Runs',        mlb: 'earnedRuns',    grp: 'pitching' },
+  43: { label: 'Runs Allowed',       mlb: 'runs',          grp: 'pitching' },
+  44: { label: 'Home Runs Allowed',  mlb: 'homeRuns',      grp: 'pitching' },
+  45: { label: 'Walks Allowed',      mlb: 'baseOnBalls',   grp: 'pitching' },
+  46: { label: 'Hit Batters',        mlb: 'hitBatsmen',    grp: 'pitching' },
+  47: { label: 'Strikeouts (pitcher)',mlb: 'strikeOuts',   grp: 'pitching' },
+  48: { label: 'Complete Games',     mlb: 'completeGames', grp: 'pitching' },
+  49: { label: 'Shutouts',           mlb: 'shutouts',      grp: 'pitching' },
+  53: { label: 'Quality Starts',     mlb: 'qualityStarts', grp: 'pitching' },
+  // ratios (display only)
+  50: { label: 'ERA',                mlb: 'era',           grp: 'pitching' },
+  51: { label: 'WHIP',               mlb: 'whip',          grp: 'pitching' },
+};
+
+function statLabel(id) { return ESPN_STAT_DICT[id]?.label || `Stat ${id}`; }
+
+/* Fetch a player's game-by-game log from MLB StatsAPI for the current season.
+   Returns [{date, gamePk, opp, stat:{...}}] for both hitting and pitching. */
+async function mlbGameLog(mlbId, group, season) {
+  const yr = season || statSeasonNow();
+  const url = `${MLB}/people/${mlbId}/stats?stats=gameLog&season=${yr}&group=${group}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`MLB gameLog HTTP ${res.status}`);
+  const data = await res.json();
+  const splits = data.stats?.[0]?.splits || [];
+  return splits.map(s => ({
+    date: s.date,
+    gamePk: s.game?.gamePk,
+    opp: s.opponent?.abbreviation || s.opponent?.name || '',
+    isHome: s.isHome,
+    stat: s.stat || {},
+  }));
+}
+
+/* Convert one game's MLB stat line into fantasy points using ESPN rules.
+   rules = {statId: pointValue}. Returns the point total for that game. */
+function gamePoints(statObj, rules, group) {
+  if (!rules) return 0;
+  let pts = 0;
+  for (const [statId, perUnit] of Object.entries(rules)) {
+    const def = ESPN_STAT_DICT[statId];
+    if (!def || !perUnit) continue;
+    if (def.grp !== group) continue;            // hitting rules to hitting games only
+    let val = statObj[def.mlb];
+    if (val == null) continue;
+    // innings pitched comes as "6.1" meaning 6⅓ — convert to outs-based decimal
+    if (def.mlb === 'inningsPitched') val = ipToFloat(val);
+    else val = parseFloat(val);
+    if (isNaN(val)) continue;
+    pts += val * perUnit;
+  }
+  return Math.round(pts * 100) / 100;
+}
+
+/* MLB reports IP as 6.1 / 6.2 (thirds). Convert to true decimal innings. */
+function ipToFloat(ip) {
+  const s = String(ip);
+  const [whole, frac] = s.split('.');
+  const w = parseInt(whole) || 0;
+  const f = frac === '1' ? 1/3 : frac === '2' ? 2/3 : 0;
+  return w + f;
+}
+
 
 /* ============================================================
    ID MAPPING — bridge ESPN players ↔ MLB players
@@ -900,6 +1007,10 @@ function viewSettings() {
         box scores. Runs after the pool is loaded.</p>
       <button class="btn ${havePool?'':'btn-ghost'}" onclick="doMapIds()" ${havePool?'':'disabled'}>
         Map players to ${SP().statsApi.toUpperCase()}</button>
+      <button class="btn btn-amber btn-block mt" onclick="scoringDiag()">
+        🧪 Verify scoring (rules + game log)</button>
+      <p class="sub mt" style="font-size:.7rem">Shows ESPN's scoring rules next to a real player's
+        ${SP().statsApi.toUpperCase()} game log so you can confirm the points are right before we score everyone.</p>
     </div>
 
     <div class="card">
@@ -1048,6 +1159,89 @@ window.inspectRaw = async function() {
 };
 window.copyText = function(t) {
   navigator.clipboard?.writeText(t).then(()=>toast('Copied','ok')).catch(()=>toast('Copy failed','err'));
+};
+
+/* ============================================================
+   PHASE 3 DIAGNOSTIC — ESPN scoring rules + one player's MLB
+   game log, side by side, so we can verify the mapping.
+   ============================================================ */
+window.scoringDiag = async function() {
+  // need scoring rules + at least one mapped player
+  if (!LG().scoringRules || !Object.keys(LG().scoringRules).length) {
+    toast('Pull scoring rules first (step 1)', 'err'); return;
+  }
+  const mapped = LG().playerPool.filter(p => p.mlbId);
+  if (!mapped.length) { toast('Map players to MLB first (step 2)', 'err'); return; }
+
+  // pick a well-known hitter and pitcher if possible (highest ADP = best)
+  const pick = mapped.slice().sort((a,b)=>a.adp-b.adp)[0];
+
+  openModal(`<div class="h2">Scoring check</div><div class="spinner"></div>
+    <p class="sub" style="text-align:center">Pulling ESPN rules + ${esc(pick.name)}'s MLB game log…</p>`);
+
+  // render the ESPN rules table (left half) immediately
+  const rules = LG().scoringRules;
+  const ruleRows = Object.entries(rules).map(([id,v]) =>
+    `<tr><td class="pos">${id}</td><td>${esc(statLabel(id))}</td>
+      <td class="sage" style="font-size:.7rem">${esc(ESPN_STAT_DICT[id]?.mlb||'—')}</td>
+      <td class="r num cell-best">${v}</td></tr>`).join('');
+
+  try {
+    // figure out if this player is a pitcher or hitter from eligibility
+    const isPitcher = /SP|RP|P/.test((pick.eligible||[]).join('')) && !/1B|2B|3B|SS|OF|C|DH/.test((pick.eligible||[]).join(''));
+    const group = isPitcher ? 'pitching' : 'hitting';
+    const log = await mlbGameLog(pick.mlbId, group);
+
+    const recent = log.slice(-8).reverse(); // last 8 games
+    const logRows = recent.map(g => {
+      const pts = gamePoints(g.stat, rules, group);
+      // show a couple key raw stats for sanity
+      const key = group === 'hitting'
+        ? `${g.stat.hits||0}H ${g.stat.homeRuns||0}HR ${g.stat.rbi||0}RBI`
+        : `${g.stat.inningsPitched||0}IP ${g.stat.strikeOuts||0}K ${g.stat.earnedRuns||0}ER`;
+      return `<tr><td class="pos">${esc(g.date?.slice(5)||'')}</td>
+        <td class="sage" style="font-size:.72rem">${esc(g.opp)}</td>
+        <td style="font-size:.72rem">${esc(key)}</td>
+        <td class="r num cell-best">${pts}</td></tr>`;
+    }).join('');
+
+    const seasonTotal = log.reduce((s,g)=>s+gamePoints(g.stat,rules,group),0);
+
+    openModal(`
+      <div class="h2">Scoring check</div>
+      <div class="sub mb">${esc(pick.name)} · ${group} · ${log.length} games in ${statSeasonNow()}
+        · season total: <b class="amber">${seasonTotal.toFixed(1)} pts</b></div>
+
+      <div class="divlabel">ESPN scoring rules (${Object.keys(rules).length})</div>
+      <div class="card card-tight" style="max-height:200px;overflow-y:auto">
+        <table class="tbl"><thead><tr><th>ID</th><th>Stat</th><th>MLB field</th><th class="r">Pts</th></tr></thead>
+        <tbody>${ruleRows}</tbody></table>
+      </div>
+
+      <div class="divlabel mt">${esc(pick.name)} — last 8 games (MLB → points)</div>
+      <div class="card card-tight" style="max-height:240px;overflow-y:auto">
+        <table class="tbl"><thead><tr><th>Date</th><th>Opp</th><th>Key stats</th><th class="r">Pts</th></tr></thead>
+        <tbody>${logRows || '<tr><td colspan="4" class="sub">No games found</td></tr>'}</tbody></table>
+      </div>
+
+      <p class="sub mt" style="font-size:.72rem">Check: do the per-game points look right vs ESPN?
+        If a stat is off, tell me which one and I'll fix its mapping.</p>
+      <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Close</button>
+    `);
+  } catch(e) {
+    openModal(`
+      <div class="h2">Scoring check</div>
+      <div class="divlabel">ESPN rules loaded OK (${Object.keys(rules).length})</div>
+      <div class="card card-tight" style="max-height:240px;overflow-y:auto">
+        <table class="tbl"><thead><tr><th>ID</th><th>Stat</th><th>MLB field</th><th class="r">Pts</th></tr></thead>
+        <tbody>${ruleRows}</tbody></table>
+      </div>
+      <p class="cell-neg mt">MLB game log failed: ${esc(e.message)}</p>
+      <p class="sub" style="font-size:.72rem">The ESPN side works. The MLB fetch errored — likely the
+        player has no ${statSeasonNow()} games yet, or the MLB API is unreachable.</p>
+      <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Close</button>
+    `);
+  }
 };
 
 window.dumpState = function() {
