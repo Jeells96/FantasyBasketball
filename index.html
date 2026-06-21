@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Best Game League v3.8</title>
+<title>Best Game League v3.9</title>
 <style>
 /* ============================================================
-   BGL v3.8 — Design System
+   BGL v3.9 — Design System
    Subject: competitive fantasy baseball; hook = best single game/week
    Palette: stadium-at-night
    ============================================================ */
@@ -85,18 +85,39 @@ body {
   backdrop-filter: blur(12px);
   border-top: 1px solid var(--line);
   display: flex; justify-content: space-around;
-  padding: .4rem .25rem calc(.4rem + env(safe-area-inset-bottom));
+  padding: .55rem .25rem calc(.55rem + env(safe-area-inset-bottom));
 }
 .botnav button {
   background: none; border: none; cursor: pointer;
-  display: flex; flex-direction: column; align-items: center; gap: .15rem;
-  color: var(--sage-dim); font-size: .62rem; font-weight: 500;
-  padding: .3rem .5rem; border-radius: var(--r-sm);
-  transition: color .15s;
-  font-family: var(--body);
+  display: flex; flex-direction: column; align-items: center; gap: .25rem;
+  color: var(--sage-dim); font-size: .72rem; font-weight: 600;
+  padding: .5rem .65rem; border-radius: var(--r-sm);
+  transition: color .15s, background .15s;
+  font-family: var(--body); min-width: 60px;
 }
-.botnav button .ic { font-size: 1.15rem; line-height: 1; }
+.botnav button .ic { font-size: 1.5rem; line-height: 1; }
 .botnav button.active { color: var(--amber); }
+.botnav button.active .ic { transform: scale(1.05); }
+
+/* daily scoring grid */
+.daygrid { display: grid; gap: 2px; font-family: var(--mono); }
+.daygrid .dcell {
+  text-align: center; padding: .35rem .2rem; border-radius: 4px;
+  background: var(--field-2); font-size: .8rem; cursor: pointer;
+  border: 1px solid transparent;
+}
+.daygrid .dcell.best { background: var(--amber-bg); border-color: var(--amber); color: var(--amber); font-weight: 700; }
+.daygrid .dcell.dnf { color: var(--sage-dim); opacity: .5; }
+.daygrid .dcell.neg { color: var(--bad); }
+.daygrid .dhead { text-align: center; font-size: .58rem; color: var(--sage-dim);
+  text-transform: uppercase; padding: .2rem 0; }
+.pcard { background: var(--field-3); border: 1px solid var(--line);
+  border-radius: var(--r); padding: .75rem; margin-bottom: .6rem; }
+.pcard.bench { opacity: .72; border-style: dashed; }
+.starter-badge { font-size: .55rem; font-family: var(--mono); letter-spacing: 1px;
+  padding: .1rem .4rem; border-radius: 3px; text-transform: uppercase; }
+.starter-badge.s { background: var(--amber); color: #1a1305; }
+.starter-badge.b { background: var(--field); color: var(--sage); border: 1px solid var(--line); }
 
 /* ---- page container ---- */
 .page { padding: 1rem; max-width: 980px; margin: 0 auto; display: none; }
@@ -257,7 +278,7 @@ body {
 <div class="topbar">
   <div class="brand" onclick="go('home')">
     <span>BGL<span class="mark">.</span></span>
-    <span class="ver">v3.8</span>
+    <span class="ver">v3.9</span>
   </div>
   <div class="topbar-right">
     <span class="week-pill">WK <b id="wk-label">—</b></span>
@@ -271,6 +292,7 @@ body {
 <div id="page-standings" class="page"></div>
 <div id="page-matchups" class="page"></div>
 <div id="page-teams" class="page"></div>
+<div id="page-myteam" class="page"></div>
 <div id="page-players" class="page"></div>
 <div id="page-settings" class="page"></div>
 
@@ -280,7 +302,7 @@ body {
   <button data-nav="standings" onclick="go('standings')"><span class="ic">▦</span>Standings</button>
   <button data-nav="matchups" onclick="go('matchups')"><span class="ic">⚔</span>Matchups</button>
   <button data-nav="players" onclick="go('players')"><span class="ic">◎</span>Players</button>
-  <button data-nav="teams" onclick="go('teams')"><span class="ic">⛨</span>Teams</button>
+  <button data-nav="myteam" onclick="go('myteam')"><span class="ic">★</span>My Team</button>
 </div>
 
 <div class="toast-wrap" id="toasts"></div>
@@ -383,6 +405,9 @@ function blankLeague(name) {
     stats: {},
     weekly: {},
     trades: [],                 // trade requests (players + future picks)
+    myTeamId: null,             // user's chosen team (permanent once set)
+    lineups: {},                // lineups[teamId][week] = { starters: [playerId,...] }
+    gameLogs: {},               // cached MLB logs: gameLogs[mlbId] = [{date, group, stat}]
   };
 }
 
@@ -638,6 +663,64 @@ function gamePoints(statObj, group) {
   return Math.round(pts * 100) / 100;
 }
 
+/* Per-category breakdown of a game's points (for tap-to-see detail). */
+function gameBreakdown(statObj, group) {
+  const vals = scoringValues();
+  const cat = scoringCatalog();
+  const out = [];
+  for (const c of cat) {
+    if (c.grp !== group) continue;
+    const per = vals[c.id];
+    if (!per) continue;
+    let raw = c.derive ? c.derive(statObj) : statObj[c.mlb];
+    if (raw == null) continue;
+    raw = parseFloat(raw);
+    if (isNaN(raw) || raw === 0) continue;
+    out.push({ label: c.label, raw, per, pts: Math.round(raw*per*100)/100 });
+  }
+  return out;
+}
+
+/* ============================================================
+   WEEK ↔ DATE LOGIC — week 1 starts Monday at season opener.
+   ============================================================ */
+const SEASON_OPENERS = { 2025: '2025-03-24', 2026: '2026-03-23', 2027: '2027-03-29' };
+function seasonOpenerMonday() {
+  const iso = SEASON_OPENERS[SP().season] || `${SP().season}-03-30`;
+  return new Date(iso + 'T00:00:00');
+}
+function weekDateRange(week) {
+  const open = seasonOpenerMonday();
+  const start = new Date(open); start.setDate(open.getDate() + (week-1)*7);
+  const end = new Date(start);  end.setDate(start.getDate() + 6);
+  return { start, end };
+}
+function ymd(d) { return d.toISOString().slice(0,10); }
+function dayLabel(d) {
+  return ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getDay()] + ' ' + (d.getMonth()+1) + '/' + d.getDate();
+}
+function weekDays(week) {
+  const { start } = weekDateRange(week);
+  const days = [];
+  for (let i=0;i<7;i++) { const d = new Date(start); d.setDate(start.getDate()+i); days.push(d); }
+  return days;
+}
+function playerWeekGames(mlbId, week) {
+  const logs = LG().gameLogs?.[mlbId] || [];
+  const days = weekDays(week).map(ymd);
+  const out = [];
+  logs.forEach(g => {
+    const idx = days.indexOf(g.date);
+    if (idx >= 0) out.push({ ...g, dayIdx: idx, pts: gamePoints(g.stat, g.group) });
+  });
+  return out.sort((a,b)=>a.date.localeCompare(b.date));
+}
+function playerBestGame(mlbId, week) {
+  const games = playerWeekGames(mlbId, week);
+  if (!games.length) return null;
+  return games.reduce((best,g)=> g.pts > best.pts ? g : best, games[0]);
+}
+
 
 /* ============================================================
    ID MAPPING — bridge ESPN players ↔ MLB players
@@ -668,7 +751,7 @@ async function resolveMlbIds(logFn) {
 /* ============================================================
    NAVIGATION
    ============================================================ */
-const PAGES = ['home','draft','standings','matchups','teams','players','settings'];
+const PAGES = ['home','draft','standings','matchups','teams','myteam','players','settings'];
 let activePage = 'home';
 
 window.go = function(page) {
@@ -691,6 +774,7 @@ function renderPage(page) {
     case 'standings': el.innerHTML = viewStandings(); break;
     case 'matchups':  el.innerHTML = viewMatchups(); break;
     case 'teams':     el.innerHTML = viewTeams(); break;
+    case 'myteam':    el.innerHTML = viewMyTeam(); break;
     case 'players':   el.innerHTML = viewPlayers(); break;
     case 'settings':  el.innerHTML = viewSettings(); break;
   }
@@ -825,6 +909,239 @@ window.showTeam = function(teamId) {
   `);
 };
 function viewPlayers()   { return viewPlayersReal(); }
+
+/* ============================================================
+   MY TEAM — pick once (permanent), then see roster + daily scoring
+   ============================================================ */
+function viewMyTeam() {
+  if (!LG().teams.length) {
+    return `<div class="h1">My Team</div>
+      <div class="empty"><div class="big">★</div>
+      <div class="msg">No teams yet. Set up the league first.</div>
+      <button class="btn" onclick="go('settings')">Open Settings</button></div>`;
+  }
+  // not chosen yet → prompt selection
+  if (!LG().myTeamId) {
+    const opts = LG().teams.map(t =>
+      `<button class="btn btn-ghost btn-block mt" onclick="pickMyTeam('${t.id}')"
+        style="text-align:left">${esc(t.name)} <span class="sub">· ${esc(t.owner||'')}</span></button>`).join('');
+    return `<div class="eyebrow">One-time choice</div>
+      <div class="h1">Pick your team</div>
+      <p class="sub mt mb">Choose which team is yours. <b>This is permanent</b> — it can't be changed later.</p>
+      ${opts}`;
+  }
+
+  const t = teamById(LG().myTeamId);
+  const week = LG().currentWeek || 1;
+  const roster = teamRoster(LG().myTeamId);
+  const starters = getStarters(LG().myTeamId, week);
+  const haveLogs = Object.keys(LG().gameLogs||{}).length > 0;
+
+  // team weekly total = sum of STARTERS' best game
+  let teamTotal = 0;
+  starters.forEach(pid => {
+    const p = roster.find(r => String(r.espnId)===String(pid));
+    if (p?.mlbId) { const bg = playerBestGame(p.mlbId, week); if (bg) teamTotal += bg.pts; }
+  });
+
+  const { start, end } = weekDateRange(week);
+  const dayHeads = weekDays(week).map(d =>
+    `<div class="dhead">${['Su','M','Tu','W','Th','F','Sa'][d.getDay()]}<br>${d.getMonth()+1}/${d.getDate()}</div>`).join('');
+
+  // build a card per player
+  const cardFor = (p) => {
+    const isStarter = starters.map(String).includes(String(p.espnId));
+    const games = p.mlbId ? playerWeekGames(p.mlbId, week) : [];
+    const best = p.mlbId ? playerBestGame(p.mlbId, week) : null;
+    // 7 day cells
+    const cells = weekDays(week).map((d,i) => {
+      const g = games.find(x => x.dayIdx === i);
+      if (!g) return `<div class="dcell dnf">·</div>`;
+      const isBest = best && g.date === best.date && isStarter;
+      const cls = 'dcell' + (isBest?' best':'') + (g.pts<0?' neg':'');
+      return `<div class="${cls}" onclick="showGameBreakdown('${p.mlbId}',${week},${i})">${g.pts}</div>`;
+    }).join('');
+
+    return `<div class="pcard ${isStarter?'':'bench'}">
+      <div class="row-between" style="margin-bottom:.4rem">
+        <div>
+          <span class="starter-badge ${isStarter?'s':'b'}">${isStarter?'Starter':'Bench'}</span>
+          <span class="plink" style="margin-left:.4rem" onclick="showPlayer('${p.espnId}')">${esc(p.name)}</span>
+          <span class="sub" style="font-size:.7rem"> ${esc((p.eligible||[]).join('/'))}</span>
+        </div>
+        <div style="text-align:right">
+          <div class="num amber" style="font-weight:700">${best?best.pts:'—'}</div>
+          <div class="sub" style="font-size:.55rem">BEST</div>
+        </div>
+      </div>
+      <div class="daygrid" style="grid-template-columns:repeat(7,1fr)">
+        ${dayHeads}${cells}
+      </div>
+    </div>`;
+  };
+
+  const starterCards = roster.filter(p => starters.map(String).includes(String(p.espnId))).map(cardFor).join('');
+  const benchCards = roster.filter(p => !starters.map(String).includes(String(p.espnId))).map(cardFor).join('');
+
+  return `
+    <div class="eyebrow">★ ${esc(t.name)}</div>
+    <div class="row-between">
+      <div class="h1">My Team</div>
+      <button class="btn btn-sm btn-ghost" onclick="editLineup()">Set lineup</button>
+    </div>
+
+    <div class="card mt" style="border-color:var(--amber)">
+      <div class="row-between">
+        <div>
+          <div class="sub" style="font-size:.65rem">WEEK ${week} · ${dayLabel(start)}–${dayLabel(end)}</div>
+          <div class="display" style="font-size:.9rem;color:var(--sage)">Starters' best games</div>
+        </div>
+        <div style="text-align:right">
+          <div class="num amber display" style="font-size:2rem">${teamTotal.toFixed(1)}</div>
+          <div class="sub" style="font-size:.6rem">WEEK TOTAL</div>
+        </div>
+      </div>
+    </div>
+
+    ${!haveLogs ? `<div class="card"><p class="sub">No game data yet. Pull stats in Settings to see daily scoring.
+      <button class="btn btn-sm btn-block mt" onclick="pullAllStats()">Pull MLB stats for my roster</button></p></div>` : ''}
+
+    <div class="divlabel">Starters · ${starters.length}</div>
+    ${starterCards || '<p class="sub">No starters set. Tap "Set lineup".</p>'}
+
+    ${benchCards ? `<div class="divlabel mt">Bench</div>${benchCards}` : ''}
+
+    <p class="sub mt" style="font-size:.7rem;text-align:center">
+      Tap any daily score for a breakdown. Amber = kept (best) game.
+      Lineups lock Sundays 11:00 AM.</p>
+  `;
+}
+
+/* roster (array of player objects) for a team */
+function teamRoster(teamId) {
+  return LG().draft.picks
+    .filter(pk => String(pk.teamId) === String(teamId))
+    .map(pk => { const p = LG().playerPool.find(x => String(x.espnId)===String(pk.playerId));
+      return p ? {...p, pick: pk.pick} : null; })
+    .filter(Boolean);
+}
+
+/* starters for team+week — manual lineup, or default to first N if unset */
+function getStarters(teamId, week) {
+  const lu = LG().lineups?.[teamId]?.[week];
+  if (lu?.starters) return lu.starters;
+  // default: carry forward previous week's lineup, else first 9 (or roster)
+  for (let w = week-1; w >= 1; w--) {
+    const prev = LG().lineups?.[teamId]?.[w];
+    if (prev?.starters) return prev.starters;
+  }
+  // no lineup ever set → default to all (user will set)
+  return teamRoster(teamId).slice(0, 10).map(p => p.espnId);
+}
+
+window.pickMyTeam = function(teamId) {
+  const t = teamById(teamId);
+  openModal(`
+    <div class="h2">Confirm your team</div>
+    <p class="sub mt mb">You're choosing <b class="amber">${esc(t.name)}</b>.
+      This is permanent and can't be undone. Continue?</p>
+    <button class="btn btn-amber btn-block" onclick="confirmMyTeam('${teamId}')">Yes, this is my team</button>
+    <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Cancel</button>
+  `);
+};
+window.confirmMyTeam = function(teamId) {
+  LG().myTeamId = teamId;
+  save(); closeModal(); toast('Team locked in', 'ok'); renderActive();
+};
+
+/* ---- lineup editor ---- */
+window.editLineup = function() {
+  const week = LG().currentWeek || 1;
+  const roster = teamRoster(LG().myTeamId);
+  const starters = getStarters(LG().myTeamId, week).map(String);
+  window._lineupSel = new Set(starters);
+  const rows = roster.map(p => `
+    <div class="row-between" style="padding:.4rem 0;border-bottom:1px solid rgba(42,61,48,.4)">
+      <span><span class="plink">${esc(p.name)}</span>
+        <span class="sub" style="font-size:.7rem"> ${esc((p.eligible||[]).join('/'))}</span></span>
+      <label style="display:flex;align-items:center;gap:.4rem">
+        <input type="checkbox" ${starters.includes(String(p.espnId))?'checked':''}
+          onchange="toggleStarter('${p.espnId}',this.checked)">
+        <span class="sub" style="font-size:.65rem">Start</span>
+      </label>
+    </div>`).join('');
+  openModal(`
+    <div class="h2">Set lineup · Week ${week}</div>
+    <p class="sub mb">Check who starts. Only starters' best games count toward your weekly total.</p>
+    <div style="max-height:50vh;overflow-y:auto">${rows}</div>
+    <button class="btn btn-block mt" onclick="saveLineup()">Save lineup</button>
+    <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Cancel</button>
+  `);
+};
+window.toggleStarter = function(pid, on) {
+  window._lineupSel = window._lineupSel || new Set();
+  if (on) window._lineupSel.add(String(pid)); else window._lineupSel.delete(String(pid));
+};
+window.saveLineup = function() {
+  const week = LG().currentWeek || 1;
+  const tid = LG().myTeamId;
+  LG().lineups = LG().lineups || {};
+  LG().lineups[tid] = LG().lineups[tid] || {};
+  LG().lineups[tid][week] = { starters: [...(window._lineupSel||[])] };
+  save(); closeModal(); toast('Lineup saved', 'ok'); renderActive();
+};
+
+/* ---- game breakdown modal ---- */
+window.showGameBreakdown = function(mlbId, week, dayIdx) {
+  const games = playerWeekGames(mlbId, week);
+  const g = games.find(x => x.dayIdx === dayIdx);
+  if (!g) return;
+  const p = LG().playerPool.find(x => String(x.mlbId)===String(mlbId));
+  const bd = gameBreakdown(g.stat, g.group);
+  const rows = bd.map(b =>
+    `<tr><td>${esc(b.label)}</td><td class="r num">${b.raw}</td>
+      <td class="r num sage">×${b.per}</td>
+      <td class="r num ${b.pts<0?'cell-neg':'cell-best'}">${b.pts>0?'+':''}${b.pts}</td></tr>`).join('');
+  const d = weekDays(week)[dayIdx];
+  openModal(`
+    <div class="h2">${esc(p?.name||'Player')}</div>
+    <div class="sub mb">${dayLabel(d)} vs ${esc(g.opp)} · ${g.group}</div>
+    <table class="tbl">
+      <thead><tr><th>Stat</th><th class="r">#</th><th class="r">Pts ea</th><th class="r">Total</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="4" class="sub">No scoring stats</td></tr>'}</tbody>
+      <tfoot><tr style="border-top:2px solid var(--line)">
+        <td colspan="3" class="display">GAME TOTAL</td>
+        <td class="r num amber display" style="font-size:1.1rem">${g.pts}</td></tr></tfoot>
+    </table>
+    <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Close</button>
+  `);
+};
+
+/* ---- pull MLB stats for the user's roster ---- */
+window.pullAllStats = async function() {
+  const roster = teamRoster(LG().myTeamId).filter(p => p.mlbId);
+  if (!roster.length) { toast('No mapped players on your roster', 'err'); return; }
+  toast(`Pulling stats for ${roster.length} players…`);
+  LG().gameLogs = LG().gameLogs || {};
+  let ok = 0, fail = 0;
+  for (const p of roster) {
+    try {
+      const isPitcher = /SP|RP|P/.test((p.eligible||[]).join('')) && !/1B|2B|3B|SS|OF|C|DH/.test((p.eligible||[]).join(''));
+      const groups = isPitcher ? ['pitching'] : ['hitting'];
+      const all = [];
+      for (const grp of groups) {
+        const log = await mlbGameLog(p.mlbId, grp);
+        log.forEach(g => all.push({ ...g, group: grp }));
+      }
+      LG().gameLogs[p.mlbId] = all;
+      ok++;
+    } catch(e) { fail++; }
+    await new Promise(r=>setTimeout(r,60));
+  }
+  await save();
+  toast(`Stats loaded: ${ok} ok${fail?`, ${fail} failed`:''}`, fail?'err':'ok');
+  renderActive();
+};
 
 function placeholderView(title, msg) {
   return `<div class="eyebrow">Coming together</div>
