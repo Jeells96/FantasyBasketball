@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Best Game League v4.3</title>
+<title>Best Game League v4.4</title>
 <style>
 /* ============================================================
-   BGL v4.3 — Design System
+   BGL v4.4 — Design System
    Subject: competitive fantasy baseball; hook = best single game/week
    Palette: stadium-at-night
    ============================================================ */
@@ -278,7 +278,7 @@ body {
 <div class="topbar">
   <div class="brand" onclick="go('home')">
     <span>BGL<span class="mark">.</span></span>
-    <span class="ver">v4.3</span>
+    <span class="ver">v4.4</span>
   </div>
   <div class="topbar-right">
     <span class="week-pill">WK <b id="wk-label">—</b></span>
@@ -372,21 +372,20 @@ const SPORTS = {
       { slot: '2B',  eligible: ['2B'] },
       { slot: '3B',  eligible: ['3B'] },
       { slot: 'SS',  eligible: ['SS'] },
-      { slot: 'MI',  eligible: ['2B','SS'] },
-      { slot: 'CI',  eligible: ['1B','3B'] },
       { slot: 'OF',  eligible: ['OF'] },
       { slot: 'OF',  eligible: ['OF'] },
       { slot: 'OF',  eligible: ['OF'] },
-      { slot: 'OF',  eligible: ['OF'] },
-      { slot: 'OF',  eligible: ['OF'] },
+      { slot: 'P',   eligible: ['SP','RP'] },
+      { slot: 'P',   eligible: ['SP','RP'] },
+      { slot: 'P',   eligible: ['SP','RP'] },
+      { slot: 'P',   eligible: ['SP','RP'] },
+      { slot: 'P',   eligible: ['SP','RP'] },
+      { slot: 'P',   eligible: ['SP','RP'] },
+      { slot: 'P',   eligible: ['SP','RP'] },
       { slot: 'UTIL',eligible: ['C','1B','2B','3B','SS','OF','DH'] },
-      { slot: 'SP',  eligible: ['SP'] },
-      { slot: 'SP',  eligible: ['SP'] },
-      { slot: 'RP',  eligible: ['RP'] },
-      { slot: 'RP',  eligible: ['RP'] },
-      { slot: 'P',   eligible: ['SP','RP'] },
-      { slot: 'P',   eligible: ['SP','RP'] },
     ],
+    benchCount: 5,
+    irCount: 5,
   },
   fba: {
     key: 'fba',
@@ -413,12 +412,10 @@ const SPORTS = {
       { slot: 'SF',  eligible: ['SF'] },
       { slot: 'PF',  eligible: ['PF'] },
       { slot: 'C',   eligible: ['C'] },
-      { slot: 'G',   eligible: ['PG','SG'] },
-      { slot: 'F',   eligible: ['SF','PF'] },
-      { slot: 'UTIL',eligible: ['PG','SG','SF','PF','C'] },
-      { slot: 'UTIL',eligible: ['PG','SG','SF','PF','C'] },
       { slot: 'UTIL',eligible: ['PG','SG','SF','PF','C'] },
     ],
+    benchCount: 10,
+    irCount: 0,
   },
 };
 
@@ -458,6 +455,7 @@ function blankLeague(name) {
     gameLogs: {},               // cached MLB logs: gameLogs[mlbId] = [{date, group, stat}]
     viewWeek: null,             // week the user is viewing (null = auto current)
     schedule: { opener: null, durations: {} },  // custom week schedule
+    rosterOverride: null,       // commissioner roster slot override (null = use sport default)
   };
 }
 
@@ -560,13 +558,18 @@ function initFirebase() {
 /* save LOCAL always; save MASTER only when unlocked (commissioner) */
 async function save(opts = {}) {
   saveLocal();  // always persist device state
-  if (opts.master) await saveMaster();
+  if (opts.master) {
+    await saveMaster();
+  } else if (!opts.silent) {
+    toast('💾 Saved locally (this device)', 'ok');
+  }
 }
 
 async function saveMaster() {
-  if (!fbReady) { toast('Master not saved — Firebase offline', 'err'); return; }
+  if (!fbReady) { toast('⚠ Master not saved — Firebase offline', 'err'); return; }
   try {
     await setDoc(doc(db, 'leagues', MASTER_DOC), { master: masterPayload(), ts: Date.now() });
+    toast(`☁️ Saved to Firebase: ${FB_CONFIG.projectId}`, 'ok');
   } catch(e) { toast('Master save failed: ' + e.message, 'err'); }
 }
 
@@ -911,26 +914,46 @@ function playerBestGame(mlbId, week) {
    ID MAPPING — bridge ESPN players ↔ MLB players
    Strategy: name match + override table; cache results
    ============================================================ */
-async function resolveMlbIds(logFn) {
-  logFn?.('Mapping ESPN players to MLB IDs…', 'run');
-  let mapped = 0, failed = 0;
+async function resolveMlbIds(logFn, progressFn) {
+  const api = SP().statsApi;
+  if (api === 'mlb') return resolveIds(logFn, progressFn, mlbLookup, 'MLB');
+  if (api === 'nba') return resolveIds(logFn, progressFn, nbaLookup, 'NBA');
+  logFn?.(`No stat provider for ${SP().label}`, 'err');
+  return { mapped: 0, failed: 0, failures: [] };
+}
+
+/* generic resolver — sport provides the lookup fn */
+async function resolveIds(logFn, progressFn, lookupFn, apiName) {
+  logFn?.(`Mapping ${SP().label} players to ${apiName} IDs…`, 'run');
+  let mapped = 0, failed = 0, done = 0;
   const failures = [];
-  for (const p of LG().playerPool) {
-    if (p.mlbId) { mapped++; continue; }          // already mapped
-    if (STATE.idOverrides[normName(p.name)]) {     // manual override
+  const pool = LG().playerPool;
+  const total = pool.length;
+  for (const p of pool) {
+    done++;
+    if (p.mlbId) { mapped++; progressFn?.(done, total, mapped, failed); continue; }
+    if (STATE.idOverrides[normName(p.name)]) {
       p.mlbId = STATE.idOverrides[normName(p.name)];
-      mapped++; continue;
+      mapped++; progressFn?.(done, total, mapped, failed); continue;
     }
     try {
-      const id = await mlbLookup(p.name);
+      const id = await lookupFn(p.name);
       if (id) { p.mlbId = id; mapped++; }
       else { failed++; failures.push(p.name); }
     } catch { failed++; failures.push(p.name); }
-    await new Promise(r => setTimeout(r, 40)); // be gentle on MLB API
+    progressFn?.(done, total, mapped, failed);
+    await new Promise(r => setTimeout(r, 35));
   }
   logFn?.(`Mapped ${mapped}, failed ${failed}`, failed ? 'err' : 'ok');
   if (failures.length) logFn?.('Unmapped: ' + failures.slice(0,10).join(', ') + (failures.length>10?'…':''), 'pending');
   return { mapped, failed, failures };
+}
+
+/* NBA player lookup via stats.nba.com is CORS-blocked; use a name-search
+   against the balldontlie-style shape. Placeholder until NBA stats wired. */
+async function nbaLookup(name) {
+  // NBA stat provider not yet integrated — return null so it's flagged unmapped
+  return null;
 }
 
 /* ============================================================
@@ -1138,7 +1161,7 @@ function viewMyTeam() {
   const assign = lu.assignments || {};
   const slotOf = {}; // espnId -> {idx, label}
   Object.entries(assign).forEach(([idx, pid]) => {
-    if (pid) slotOf[String(pid)] = { idx: +idx, label: SP().lineupSlots[idx]?.slot || '?' };
+    if (pid) slotOf[String(pid)] = { idx: +idx, label: activeLineupSlots()[idx]?.slot || '?' };
   });
   const locked = isWeekLocked(week);
 
@@ -1271,7 +1294,7 @@ function getLineup(teamId, week) {
 /* Auto-build a valid default lineup: greedily fill each slot with the
    best-ADP eligible un-used player. Ensures unset/locked weeks still score. */
 function defaultLineup(teamId) {
-  const slots = SP().lineupSlots || [];
+  const slots = activeLineupSlots() || [];
   const roster = teamRoster(teamId).slice().sort((a,b)=>a.adp-b.adp); // best first
   const used = new Set();
   const assign = {};
@@ -1323,7 +1346,7 @@ window.pickPosition = function(espnId) {
   ensureLineupExists(week);
   const lu = LG().lineups[LG().myTeamId][week];
   const assign = lu.assignments;
-  const slots = SP().lineupSlots || [];
+  const slots = activeLineupSlots() || [];
   const curSlot = Object.entries(assign).find(([i,pid]) => String(pid)===String(espnId))?.[0];
 
   // which slots is this player eligible for?
@@ -1382,7 +1405,7 @@ window.moveToSlot = function(espnId, slotIdx) {
 window.editLineup = function() {
   const week = activeWeek();
   const locked = isWeekLocked(week);
-  const slots = SP().lineupSlots || [];
+  const slots = activeLineupSlots() || [];
   const roster = teamRoster(LG().myTeamId);
   const lu = getLineup(LG().myTeamId, week);
   // working copy of assignments
@@ -1392,7 +1415,7 @@ window.editLineup = function() {
 };
 
 function renderLineupEditor(week, locked) {
-  const slots = SP().lineupSlots || [];
+  const slots = activeLineupSlots() || [];
   const roster = teamRoster(LG().myTeamId);
   const assign = window._lineupWork || {};
   const usedIds = new Set(Object.values(assign).filter(Boolean).map(String));
@@ -1704,25 +1727,6 @@ function viewSettings() {
       <p class="sub mb">Weeks default Mon–Sun. Adjust season start or any week's length.</p>
       <button class="btn btn-block" onclick="editSchedule()">Edit week schedule</button>
     </div>
-    ` : ''}
-
-    <div class="card">
-      <div class="h2">3 · Teams</div>
-      <p class="sub mb">Create the teams in your league. You'll draft players to them next.</p>
-      <button class="btn btn-ghost" onclick="manageTeams()">Manage teams (${LG().teams.length})</button>
-    </div>
-
-    <div class="card" style="border-color:var(--clay)">
-      <div class="h2">⚡ Quick test</div>
-      <p class="sub mb">Spin up a full league instantly to check functionality. Wipe anytime.</p>
-      <div class="row">
-        <button class="btn btn-sm" onclick="autogenTeams()">Autogen 8 teams</button>
-        <button class="btn btn-amber btn-sm" onclick="autodraft()" ${havePool && LG().teams.length?'':'disabled'}>Autodraft</button>
-        <button class="btn btn-ghost btn-sm" onclick="wipeDraft()">Wipe draft</button>
-      </div>
-      <p class="sub mt" style="font-size:.7rem">
-        ${LG().draft.complete ? `✓ Draft done — ${LG().draft.picks.length} picks across ${LG().teams.length} teams` : '○ No draft yet'}</p>
-    </div>
 
     <div class="card">
       <div class="h2">Activity</div>
@@ -1732,11 +1736,45 @@ function viewSettings() {
     <div class="card">
       <div class="h2">Data</div>
       <div class="row">
-        <button class="btn btn-ghost btn-sm" onclick="save().then(()=>toast('Saved','ok'))">Force save</button>
         <button class="btn btn-ghost btn-sm" onclick="dumpState()">Export JSON</button>
       </div>
       <p class="sub mt" style="font-size:.72rem">
-        Firebase: ${fbReady ? '<span class="amber">connected</span>' : esc(fbErr||'offline')}</p>
+        Firebase: ${fbReady ? `<span class="amber">${FB_CONFIG.projectId}</span>` : esc(fbErr||'offline')}</p>
+    </div>
+    ` : ''}
+
+    <div class="card" style="border-color:var(--clay)">
+      <div class="row-between">
+        <div class="h2" style="margin:0">⚙ Commissioner settings</div>
+      </div>
+      <p class="sub mt" style="font-size:.72rem">League management: roster structure, teams, and setup.
+        Some of these override master defaults for your league.</p>
+    </div>
+
+    <div class="card">
+      <div class="h2">Roster structure</div>
+      <p class="sub mb">Starting slots + bench/IR for ${SP().label}. Overrides the default.</p>
+      <button class="btn btn-block" onclick="editRosterSlots()">Edit roster slots</button>
+      <p class="sub mt" style="font-size:.68rem">
+        ${(activeLineupSlots()||[]).length} starters · ${rosterBenchCount()} bench · ${rosterIrCount()} IR</p>
+    </div>
+
+    <div class="card">
+      <div class="h2">Teams</div>
+      <p class="sub mb">Generate generic teams (Team 1, Team 2…). Owners name them when they join.</p>
+      <button class="btn btn-block" onclick="generateTeamsPrompt()">Generate teams</button>
+      <button class="btn btn-ghost btn-block mt" onclick="manageTeams()">Manage teams (${LG().teams.length})</button>
+    </div>
+
+    <div class="card" style="border-color:var(--clay)">
+      <div class="h2">⚡ Quick test</div>
+      <p class="sub mb">Spin up a full draft instantly to check functionality.</p>
+      <div class="row">
+        <button class="btn btn-amber btn-sm" onclick="autodraft()" ${havePool && LG().teams.length?'':'disabled'}>Autodraft</button>
+        <button class="btn btn-ghost btn-sm" onclick="wipeDraft()">Wipe draft</button>
+      </div>
+      <p class="sub mt" style="font-size:.7rem">
+        ${LG().draft.complete ? `✓ Draft done — ${LG().draft.picks.length} picks` : '○ No draft yet'}</p>
     </div>
   `;
 }
@@ -1865,14 +1903,18 @@ window.doPullPool = async function() {
       (pl.eligibleSlots||[]).forEach(slotId => {
         (eligMap[slotId]||[]).forEach(pos => atomic.add(pos));
       });
+      // always include the player's default position so eligibility is never empty/wrong
+      const defPos = posName(pl.defaultPositionId);
+      if (defPos && defPos !== '?') atomic.add(defPos);
       const eligible = [...atomic].sort((a,b) => order.indexOf(a) - order.indexOf(b));
       const adpRaw = pl.ownership?.averageDraftPosition || 0;
       const adp = (adpRaw > 0) ? adpRaw : 9999;
       return {
         espnId: pl.id,
         name: pl.fullName || `${pl.firstName||''} ${pl.lastName||''}`.trim(),
-        pos: posName(pl.defaultPositionId),
-        eligible: eligible.length ? eligible : [posName(pl.defaultPositionId)],
+        pos: defPos,
+        defPosId: pl.defaultPositionId,
+        eligible: eligible.length ? eligible : [defPos],
         proTeam: proTeamAbbr(pl.proTeamId),
         eligSlots: pl.eligibleSlots || [],   // raw, for re-deriving eligibility later
         adp: Math.round(adp * 10) / 10,
@@ -1996,12 +2038,28 @@ window.resetSchedule = function() {
 };
 
 window.doMapIds = async function() {
+  // live progress modal
+  openModal(`
+    <div class="h2">Mapping to ${SP().statsApi.toUpperCase()}</div>
+    <div class="spinner"></div>
+    <p class="sub" style="text-align:center" id="map-progress">Starting…</p>
+    <div style="background:var(--field-2);border-radius:6px;height:8px;overflow:hidden;margin-top:.5rem">
+      <div id="map-bar" style="height:100%;width:0%;background:var(--amber);transition:width .2s"></div>
+    </div>
+  `);
+  const progress = (done, total, mapped, failed) => {
+    const pct = Math.round(done/total*100);
+    const pe = $('map-progress'), bar = $('map-bar');
+    if (pe) pe.innerHTML = `${done} / ${total} &nbsp;·&nbsp; <span class="amber">${mapped} mapped</span>${failed?` · <span class="cell-neg">${failed} failed</span>`:''}`;
+    if (bar) bar.style.width = pct + '%';
+  };
   try {
-    const r = await resolveMlbIds(slog);
+    const r = await resolveMlbIds(slog, progress);
     await save({master:true});
+    closeModal();
     toast(`Mapped ${r.mapped}, ${r.failed} failed`, r.failed ? 'err' : 'ok');
     renderActive();
-  } catch(e) { slog('Mapping failed: ' + e.message, 'err'); toast(e.message, 'err'); }
+  } catch(e) { closeModal(); slog('Mapping failed: ' + e.message, 'err'); toast(e.message, 'err'); }
 };
 
 /* Inspect raw ESPN player data — fetches one player and dumps the stat splits
@@ -2145,24 +2203,132 @@ window.removeTeam = function(id) {
 };
 
 /* ---- AUTOGEN teams (testing) ---- */
-window.autogenTeams = function() {
-  const sets = {
-    flb: [['The Sandlot','Benny'],['Dinger City','Marcus'],['Foul Territory','Dana'],
-          ['Bronx Bombers','Reggie'],['Wrigley Wind','Sam'],['Bay Bombers','Alex'],
-          ['Rally Caps','Jordan'],['Walk-Off Kings','Chris']],
-    fba: [['Court Vision','Magic'],['Rim Rockers','Dunk'],['Splash Bros','Curry'],
-          ['Paint Patrol','Shaq'],['Fast Break','Iso'],['Buzzer Beaters','Ray'],
-          ['Triple Doubles','Russ'],['Bench Mob','Sixth']],
-  };
-  const names = sets[STATE.sport] || sets.flb;
-  LG().teams = names.map((n,i) => ({
-    id: 't'+(i+1), name: n[0], owner: n[1],
-    abbrev: n[0].split(' ').map(w=>w[0]).join('').slice(0,3).toUpperCase(),
-  }));
-  save(); toast('8 teams created', 'ok'); renderActive();
+/* ---- ROSTER STRUCTURE (commissioner override) ---- */
+// Active lineup slots: commissioner override if set, else sport default.
+function activeLineupSlots() {
+  return LG().rosterOverride?.lineupSlots || SP().lineupSlots || [];
+}
+function rosterBenchCount() {
+  return LG().rosterOverride?.benchCount ?? SP().benchCount ?? 5;
+}
+function rosterIrCount() {
+  return LG().rosterOverride?.irCount ?? SP().irCount ?? 0;
+}
+
+window.editRosterSlots = function() {
+  const slots = activeLineupSlots();
+  const counts = {};
+  slots.forEach(s => counts[s.slot] = (counts[s.slot]||0)+1);
+  const summary = Object.entries(counts).map(([s,n]) => `${s}×${n}`).join(', ');
+  // simple editor: adjust count of each position type + bench/IR
+  const allPos = SP().posFilters.filter(p => p!=='ALL');
+  const posRows = allPos.map(pos => {
+    const n = slots.filter(s => s.slot===pos || (s.eligible.length===1 && s.eligible[0]===pos)).length;
+    return `<div class="row-between" style="padding:.3rem 0;border-bottom:1px solid rgba(42,61,48,.4)">
+      <span>${esc(pos)}</span>
+      <input class="input" type="number" min="0" max="10" value="${n}" style="width:70px;text-align:right"
+        onchange="setSlotCount('${pos}',this.value)">
+    </div>`;
+  }).join('');
+  // UTIL and P (multi-eligible) handled specially
+  const utilN = slots.filter(s=>s.slot==='UTIL').length;
+  const pN = slots.filter(s=>s.slot==='P').length;
+  openModal(`
+    <div class="h2">Roster structure · ${SP().label}</div>
+    <p class="sub mb">Current: ${esc(summary)}</p>
+    <div class="divlabel">Position slots</div>
+    ${posRows}
+    ${SP().key==='flb' ? `<div class="row-between" style="padding:.3rem 0;border-bottom:1px solid rgba(42,61,48,.4)">
+      <span>P (any pitcher)</span>
+      <input class="input" type="number" min="0" max="12" value="${pN}" style="width:70px;text-align:right"
+        onchange="setMultiSlot('P',this.value)"></div>` : ''}
+    <div class="row-between" style="padding:.3rem 0;border-bottom:1px solid rgba(42,61,48,.4)">
+      <span>UTIL (any)</span>
+      <input class="input" type="number" min="0" max="6" value="${utilN}" style="width:70px;text-align:right"
+        onchange="setMultiSlot('UTIL',this.value)"></div>
+    <div class="divlabel mt">Reserve</div>
+    <div class="row-between" style="padding:.3rem 0;border-bottom:1px solid rgba(42,61,48,.4)">
+      <span>Bench</span>
+      <input class="input" type="number" min="0" max="15" value="${rosterBenchCount()}" style="width:70px;text-align:right"
+        onchange="setReserve('bench',this.value)"></div>
+    <div class="row-between" style="padding:.3rem 0;border-bottom:1px solid rgba(42,61,48,.4)">
+      <span>Injured Reserve</span>
+      <input class="input" type="number" min="0" max="10" value="${rosterIrCount()}" style="width:70px;text-align:right"
+        onchange="setReserve('ir',this.value)"></div>
+    <button class="btn btn-block mt" onclick="closeModal();renderActive()">Done</button>
+    <button class="btn btn-ghost btn-block mt" onclick="resetRosterSlots()">Reset to default</button>
+  `);
+};
+// helpers to mutate the override slot list
+function ensureRosterOverride() {
+  if (!LG().rosterOverride) {
+    LG().rosterOverride = {
+      lineupSlots: JSON.parse(JSON.stringify(SP().lineupSlots||[])),
+      benchCount: SP().benchCount ?? 5,
+      irCount: SP().irCount ?? 0,
+    };
+  }
+}
+window.setSlotCount = function(pos, n) {
+  ensureRosterOverride();
+  n = Math.max(0, parseInt(n)||0);
+  let slots = LG().rosterOverride.lineupSlots.filter(s => !(s.slot===pos && s.eligible.length===1 && s.eligible[0]===pos));
+  for (let i=0;i<n;i++) slots.push({ slot: pos, eligible: [pos] });
+  // keep a sensible order
+  LG().rosterOverride.lineupSlots = reorderSlots(slots);
+  save({master:false});
+};
+window.setMultiSlot = function(slotName, n) {
+  ensureRosterOverride();
+  n = Math.max(0, parseInt(n)||0);
+  const eligible = slotName==='P' ? ['SP','RP'] : SP().posFilters.filter(p=>p!=='ALL'&&p!=='SP'&&p!=='RP');
+  let slots = LG().rosterOverride.lineupSlots.filter(s => s.slot!==slotName);
+  for (let i=0;i<n;i++) slots.push({ slot: slotName, eligible: [...eligible] });
+  LG().rosterOverride.lineupSlots = reorderSlots(slots);
+  save({master:false});
+};
+window.setReserve = function(kind, n) {
+  ensureRosterOverride();
+  n = Math.max(0, parseInt(n)||0);
+  if (kind==='bench') LG().rosterOverride.benchCount = n;
+  else LG().rosterOverride.irCount = n;
+  save({master:false});
+};
+function reorderSlots(slots) {
+  const ord = ['C','1B','2B','3B','SS','OF','DH','P','SP','RP','PG','SG','SF','PF','G','F','UTIL'];
+  return slots.slice().sort((a,b)=> ord.indexOf(a.slot)-ord.indexOf(b.slot));
+}
+window.resetRosterSlots = function() {
+  delete LG().rosterOverride;
+  save({master:false}); toast('Roster reset to default','ok'); editRosterSlots();
 };
 
-/* ---- AUTODRAFT — snake, best available by season pts ---- */
+/* ---- GENERATE GENERIC TEAMS ---- */
+window.generateTeamsPrompt = function() {
+  openModal(`
+    <div class="h2">Generate teams</div>
+    <p class="sub mt mb">How many teams in the league? They'll be created as generic
+      (Team 1, Team 2…). Owners rename them when they join.</p>
+    <div class="field"><label>Number of teams</label>
+      <input class="input" id="gen-count" type="number" min="2" max="20" value="${LG().teams.length||10}"
+        style="text-align:center;font-size:1.2rem"></div>
+    <button class="btn btn-block" onclick="doGenerateTeams()">Generate</button>
+    ${LG().teams.length?`<p class="sub mt" style="font-size:.7rem">⚠ This replaces the current ${LG().teams.length} teams and clears the draft.</p>`:''}
+    <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Cancel</button>
+  `);
+};
+window.doGenerateTeams = function() {
+  const n = Math.max(2, Math.min(20, parseInt($('gen-count')?.value)||10));
+  LG().teams = [];
+  for (let i=1;i<=n;i++) {
+    LG().teams.push({ id:'t'+i, name:`Team ${i}`, owner:'', abbrev:`T${i}`, claimed:false });
+  }
+  LG().draft = { started:false, complete:false, order:[], picks:[], currentPick:0 };
+  save();
+  closeModal(); toast(`${n} teams generated`, 'ok'); renderActive();
+};
+
+/* ---- AUTODRAFT — snake, best available by ADP ---- */
 window.autodraft = function() {
   if (LG().teams.length < 2) { toast('Need at least 2 teams', 'err'); return; }
   if (!LG().playerPool.length) { toast('No player pool', 'err'); return; }
