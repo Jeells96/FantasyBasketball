@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Best Game League v4.4</title>
+<title>Best Game League v4.5</title>
 <style>
 /* ============================================================
-   BGL v4.4 — Design System
+   BGL v4.5 — Design System
    Subject: competitive fantasy baseball; hook = best single game/week
    Palette: stadium-at-night
    ============================================================ */
@@ -108,6 +108,8 @@ body {
 }
 .daygrid .dcell.best { background: var(--amber-bg); border-color: var(--amber); color: var(--amber); font-weight: 700; }
 .daygrid .dcell.dnf { color: var(--sage-dim); opacity: .5; }
+.daygrid .dcell.upcoming { background: var(--field); border: 1px dashed var(--line);
+  display: flex; flex-direction: column; justify-content: center; padding: .2rem 0; }
 .daygrid .dcell.neg { color: var(--bad); }
 .daygrid .dhead { text-align: center; font-size: .58rem; color: var(--sage-dim);
   text-transform: uppercase; padding: .2rem 0; }
@@ -118,6 +120,12 @@ body {
   padding: .1rem .4rem; border-radius: 3px; text-transform: uppercase; }
 .starter-badge.s { background: var(--amber); color: #1a1305; }
 .starter-badge.b { background: var(--field); color: var(--sage); border: 1px solid var(--line); }
+.il-badge { font-size: .55rem; font-family: var(--mono); letter-spacing: 1px;
+  padding: .1rem .35rem; border-radius: 3px; background: var(--bad); color: #fff;
+  font-weight: 700; margin-left: .3rem; }
+.ps-tag { font-size: .5rem; font-family: var(--mono); color: var(--good);
+  font-weight: 700; display: block; margin-top: 1px; }
+.opp-tag { font-size: .5rem; color: var(--sage-dim); display: block; }
 
 /* ---- page container ---- */
 .page { padding: 1rem; max-width: 980px; margin: 0 auto; display: none; }
@@ -278,7 +286,7 @@ body {
 <div class="topbar">
   <div class="brand" onclick="go('home')">
     <span>BGL<span class="mark">.</span></span>
-    <span class="ver">v4.4</span>
+    <span class="ver">v4.5</span>
   </div>
   <div class="topbar-right">
     <span class="week-pill">WK <b id="wk-label">—</b></span>
@@ -340,7 +348,6 @@ const SPORTS = {
     label: 'Baseball',
     icon: '⚾',
     espnGame: 'flb',
-    leagueId: '69029411',
     season: 2026,
     statSeason: 2026,            // real-stat season (MLB) — current year; see CURRENT_YEAR
     rosterSize: 23,
@@ -350,15 +357,19 @@ const SPORTS = {
     // ESPN lineupSlotId -> slot label (null = bench/IL, not scored)
     slotMap: {0:'C',1:'1B',2:'2B',3:'3B',4:'SS',5:'OF',6:'2B/SS',7:'1B/3B',8:'OF',9:'OF',
               10:'DH',11:'UTIL',12:'SP',13:'RP',14:'P'},
-    // ESPN eligibleSlot ID -> the ATOMIC positions it confers (for lineup eligibility).
-    // Combo slots expand to multiple. Generic slots (UTIL/Bench/P) confer nothing
-    // specific so they're omitted — eligibility comes only from real position slots.
+    // ESPN eligibleSlot ID -> ATOMIC positions it confers, using ESPN's REAL
+    // baseball lineupSlotId scheme:
+    //  0=C 1=1B 2=2B 3=3B 4=SS 5=OF 6=2B/SS 7=1B/3B 8=LF 9=CF 10=RF
+    //  11=DH 12=UTIL 13=P(any) 14=SP 15=RP 16=BE 17=IL 19=IF(corner+middle)
+    // Generic slots (UTIL/P/BE/IL) confer NO specific position and are omitted —
+    // otherwise every hitter eligible for UTIL would wrongly gain 'SP'.
     eligMap: {
       0:['C'], 1:['1B'], 2:['2B'], 3:['3B'], 4:['SS'], 5:['OF'],
-      6:['2B','SS'], 7:['1B','3B'], 8:['OF'], 9:['OF'],
-      10:['DH'], 12:['SP'], 13:['RP'],
-      // 11 (UTIL), 14 (P generic), 16/17 (bench/IL) intentionally omitted
+      6:['2B','SS'], 7:['1B','3B'], 8:['OF'], 9:['OF'], 10:['OF'],
+      11:['DH'], 14:['SP'], 15:['RP'], 19:['1B','2B','3B','SS'],
+      // 12 (UTIL), 13 (P generic), 16 (bench), 17 (IL) intentionally omitted
     },
+    irSlots: [17],              // IL slot id(s)
     benchSlots: [16,17],
     proTeams: {0:'FA',1:'BAL',2:'BOS',3:'LAA',4:'CWS',5:'CLE',6:'DET',7:'KC',8:'MIL',9:'MIN',
       10:'NYY',11:'OAK',12:'SEA',13:'TEX',14:'TOR',15:'ATL',16:'CHC',17:'CIN',18:'HOU',19:'LAD',
@@ -392,7 +403,6 @@ const SPORTS = {
     label: 'Basketball',
     icon: '🏀',
     espnGame: 'fba',
-    leagueId: '',                // set when you create the NBA league
     season: 2026,
     statSeason: 2025,            // real-stat season (NBA)
     rosterSize: 13,
@@ -491,13 +501,16 @@ function masterPayload() {
     };
   }
   out.idOverrides = STATE.idOverrides;
+  out.approvals = STATE.approvals || {};   // commissioner approval list
   return out;
 }
 
 function applyMaster(master) {
   if (!master) return;
+  if (master.approvals) STATE.approvals = master.approvals;
   for (const sk of Object.keys(master)) {
     if (sk === 'idOverrides') { STATE.idOverrides = master.idOverrides || {}; continue; }
+    if (sk === 'approvals') continue;
     if (!STATE.leagues[sk]) continue;
     const m = master[sk];
     if (m.playerPool) STATE.leagues[sk].playerPool = m.playerPool;
@@ -605,17 +618,9 @@ function normName(name) {
 }
 
 /* ============================================================
-   ESPN API — player pool + scoring rules ONLY
+   ESPN API — player pool ONLY (no league ID needed; the /players
+   endpoint is global per game+season, not league-scoped)
    ============================================================ */
-function espnUrl(params) {
-  return `https://lm-api-reads.fantasy.espn.com/apis/v3/games/${SP().espnGame}/seasons/${SP().season}/segments/0/leagues/${SP().leagueId}?${params}`;
-}
-
-async function espnFetch(params) {
-  const res = await fetch(espnUrl(params), { headers: { 'X-Fantasy-Filter': '{}' } });
-  if (!res.ok) throw new Error('ESPN HTTP ' + res.status);
-  return res.json();
-}
 
 /* Pull the full draftable player pool from ESPN's player info endpoint */
 async function fetchPlayerPool(logFn) {
@@ -764,6 +769,57 @@ async function mlbGameLog(mlbId, group, season) {
     isHome: s.isHome,
     stat: s.stat || {},
   }));
+}
+
+/* ============================================================
+   SCHEDULE + PROBABLE PITCHERS (for the week lookahead)
+   Fetches the MLB schedule for a date range with probable pitchers,
+   then lets us answer: for player X on day D, who do they play, and
+   (for pitchers) are they the probable starter? Cached per week.
+   ============================================================ */
+async function fetchSchedule(startYmd, endYmd) {
+  // hydrate=probablePitcher gives us the listed starters
+  const url = `${MLB}/schedule?sportId=1&startDate=${startYmd}&endDate=${endYmd}&hydrate=probablePitcher,team`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`MLB schedule HTTP ${res.status}`);
+  const data = await res.json();
+  // flatten into per-date game records keyed by team id
+  const byDate = {}; // 'YYYY-MM-DD' -> [{homeId,awayId,homeAbbr,awayAbbr,homeProb,awayProb}]
+  (data.dates||[]).forEach(d => {
+    const games = (d.games||[]).map(g => ({
+      homeId: g.teams?.home?.team?.id, awayId: g.teams?.away?.team?.id,
+      homeAbbr: g.teams?.home?.team?.abbreviation, awayAbbr: g.teams?.away?.team?.abbreviation,
+      homeProb: g.teams?.home?.probablePitcher?.id, awayProb: g.teams?.away?.probablePitcher?.id,
+    }));
+    byDate[d.date] = games;
+  });
+  return byDate;
+}
+
+/* cache schedule for a fantasy week in LG().scheduleCache[weekKey] */
+async function getWeekSchedule(week) {
+  const days = weekDays(week);
+  const startYmd = ymd(days[0]), endYmd = ymd(days[days.length-1]);
+  const key = `${SP().season}_${startYmd}_${endYmd}`;
+  LG().scheduleCache = LG().scheduleCache || {};
+  if (LG().scheduleCache[key]) return LG().scheduleCache[key];
+  try {
+    const sched = await fetchSchedule(startYmd, endYmd);
+    LG().scheduleCache[key] = sched;
+    return sched;
+  } catch(e) { return {}; }
+}
+
+/* For a player on a given calendar date, return {opp, isProbable} or null.
+   Needs the player's MLB team id (we resolve it lazily and cache on the player). */
+function playerDayMatchup(player, dateYmd, sched) {
+  const teamId = player.mlbTeamId;
+  if (!teamId || !sched || !sched[dateYmd]) return null;
+  for (const g of sched[dateYmd]) {
+    if (g.homeId === teamId) return { opp: 'vs ' + (g.awayAbbr||''), isProbable: g.homeProb === player.mlbId };
+    if (g.awayId === teamId) return { opp: '@ ' + (g.homeAbbr||''), isProbable: g.awayProb === player.mlbId };
+  }
+  return null;
 }
 
 /* Convert one game's MLB stat line into points using OUR scoring system.
@@ -1165,6 +1221,14 @@ function viewMyTeam() {
   });
   const locked = isWeekLocked(week);
 
+  // schedule for this week (from cache; autoPull populates it)
+  const weekSched = (() => {
+    const days0 = weekDays(week);
+    const key = `${SP().season}_${ymd(days0[0])}_${ymd(days0[days0.length-1])}`;
+    return LG().scheduleCache?.[key] || null;
+  })();
+  const todayYmd = ymd(new Date());
+
   // build a card per player
   const cardFor = (p) => {
     const slot = slotOf[String(p.espnId)];
@@ -1173,10 +1237,23 @@ function viewMyTeam() {
     const best = p.mlbId ? playerBestGame(p.mlbId, week) : null;
     const cells = weekDays(week).map((d,i) => {
       const g = games.find(x => x.dayIdx === i);
-      if (!g) return `<div class="dcell dnf">·</div>`;
-      const isBest = best && g.date === best.date && isStarter;
-      const cls = 'dcell' + (isBest?' best':'') + (g.pts<0?' neg':'');
-      return `<div class="${cls}" onclick="showGameBreakdown('${p.mlbId}',${week},${i})">${g.pts}</div>`;
+      if (g) {
+        const isBest = best && g.date === best.date && isStarter;
+        const cls = 'dcell' + (isBest?' best':'') + (g.pts<0?' neg':'');
+        return `<div class="${cls}" onclick="showGameBreakdown('${p.mlbId}',${week},${i})">${g.pts}</div>`;
+      }
+      // no game logged → if it's today/future and we have schedule, show matchup
+      const dYmd = ymd(d);
+      if (dYmd >= todayYmd && weekSched) {
+        const m = playerDayMatchup(p, dYmd, weekSched);
+        if (m) {
+          return `<div class="dcell upcoming">
+            <span class="opp-tag">${esc(m.opp)}</span>
+            ${m.isProbable?'<span class="ps-tag">PROB</span>':''}
+          </div>`;
+        }
+      }
+      return `<div class="dcell dnf">·</div>`;
     }).join('');
 
     // tappable slot badge → opens position picker for this player
@@ -1190,6 +1267,7 @@ function viewMyTeam() {
       <div class="row-between" style="margin-bottom:.4rem">
         <div>
           ${badge}
+          ${p.injured?`<span class="il-badge" title="On injured list">IL</span>`:''}
           <span class="plink" style="margin-left:.4rem" onclick="showPlayer('${p.espnId}')">${esc(p.name)}</span>
           <span class="sub" style="font-size:.7rem"> ${esc((p.eligible||[]).join('/'))}</span>
         </div>
@@ -1215,7 +1293,10 @@ function viewMyTeam() {
     <div class="eyebrow">★ ${esc(t.name)}</div>
     <div class="row-between">
       <div class="h1">My Team</div>
-      <button class="btn btn-sm btn-ghost" onclick="editLineup()">Lineup ⛶</button>
+      <div class="row" style="gap:.4rem">
+        <button class="btn btn-sm btn-ghost" onclick="openAddDrop()">+/− Players</button>
+        <button class="btn btn-sm btn-ghost" onclick="editLineup()">Lineup ⛶</button>
+      </div>
     </div>
     <div class="card" style="padding:.5rem .75rem;margin-top:.5rem;${isWeekLocked(week)?'border-color:var(--bad)':'border-color:var(--line)'}">
       <div class="row-between">
@@ -1274,6 +1355,94 @@ function teamRoster(teamId) {
       return p ? {...p, pick: pk.pick} : null; })
     .filter(Boolean);
 }
+
+/* Max roster size = starting slots + bench. IL players don't count. */
+function rosterCap() {
+  return (activeLineupSlots()||[]).length + rosterBenchCount();
+}
+/* count of a team's roster excluding IL-stashed players */
+function rosterActiveCount(teamId) {
+  const ir = LG().irStash?.[teamId] || [];
+  return teamRoster(teamId).filter(p => !ir.includes(String(p.espnId))).length;
+}
+
+/* ADD a free-agent player to my team (respects cap; changes apply to upcoming week only) */
+window.openAddDrop = function() {
+  const tid = LG().myTeamId;
+  const cap = rosterCap();
+  const count = rosterActiveCount(tid);
+  const roster = teamRoster(tid);
+  const rosterIds = new Set(roster.map(p => String(p.espnId)));
+  // free agents = pool players not on ANY team
+  const allRostered = new Set(LG().draft.picks.map(pk => String(pk.playerId)));
+  const freeAgents = LG().playerPool.filter(p => !allRostered.has(String(p.espnId)))
+    .sort((a,b)=>a.adp-b.adp).slice(0, 100);
+
+  const faRows = freeAgents.map(p => `
+    <div class="row-between" style="padding:.35rem 0;border-bottom:1px solid rgba(42,61,48,.4)">
+      <span><b>${esc(p.name)}</b> <span class="sub" style="font-size:.7rem">${esc((p.eligible||[]).join('/'))} · ${esc(p.proTeam||'')} · ADP ${p.adp<9999?p.adp:'—'}</span></span>
+      <button class="btn btn-sm ${count>=cap?'btn-ghost':''}" ${count>=cap?'disabled':''}
+        onclick="addPlayer('${p.espnId}')">Add</button>
+    </div>`).join('');
+
+  openModal(`
+    <div class="h2">Add / Drop</div>
+    <div class="row-between mb">
+      <span class="sub">Roster: <b class="${count>=cap?'cell-neg':'amber'}">${count}/${cap}</b> (IL doesn't count)</span>
+    </div>
+    ${count>=cap ? `<p class="sub mb" style="font-size:.72rem;color:var(--bad)">Roster full — drop a player before adding.</p>` : ''}
+    <div class="divlabel">My roster — tap to drop</div>
+    <div style="max-height:25vh;overflow-y:auto">
+      ${roster.map(p => `<div class="row-between" style="padding:.3rem 0;border-bottom:1px solid rgba(42,61,48,.4)">
+        <span>${esc(p.name)} <span class="sub" style="font-size:.7rem">${esc((p.eligible||[]).join('/'))}</span>${p.injured?' <span class="il-badge">IL</span>':''}</span>
+        <button class="btn btn-sm btn-ghost" onclick="dropPlayer('${p.espnId}')">Drop</button>
+      </div>`).join('')}
+    </div>
+    <div class="divlabel mt">Free agents (top 100 by ADP)</div>
+    <div style="max-height:30vh;overflow-y:auto">${faRows}</div>
+    <button class="btn btn-block mt" onclick="closeModal()">Done</button>
+  `);
+};
+
+window.addPlayer = function(espnId) {
+  const tid = LG().myTeamId;
+  if (rosterActiveCount(tid) >= rosterCap()) { toast('Roster full — drop someone first', 'err'); return; }
+  // add as a "pick" so it shows on the roster (pick number after current max)
+  const maxPick = LG().draft.picks.reduce((m,pk)=>Math.max(m,pk.pick||0), 0);
+  LG().draft.picks.push({ teamId: tid, playerId: espnId, pick: maxPick+1, addedFA: true });
+  save();
+  const p = LG().playerPool.find(x=>String(x.espnId)===String(espnId));
+  toast(`Added ${p?.name||'player'}`, 'ok');
+  openAddDrop(); // refresh
+};
+
+window.dropPlayer = function(espnId) {
+  const tid = LG().myTeamId;
+  const p = LG().playerPool.find(x=>String(x.espnId)===String(espnId));
+  openModal(`
+    <div class="h2">Drop ${esc(p?.name||'player')}?</div>
+    <p class="sub mt mb">They'll return to free agency. This affects your upcoming roster only.</p>
+    <button class="btn btn-amber btn-block" onclick="confirmDrop('${espnId}')">Drop player</button>
+    <button class="btn btn-ghost btn-block mt" onclick="openAddDrop()">Cancel</button>
+  `);
+};
+window.confirmDrop = function(espnId) {
+  const tid = LG().myTeamId;
+  // remove from draft picks
+  LG().draft.picks = LG().draft.picks.filter(pk =>
+    !(String(pk.teamId)===String(tid) && String(pk.playerId)===String(espnId)));
+  // remove from any lineup assignment in the upcoming (active) week
+  const wk = activeWeek();
+  const lu = LG().lineups?.[tid]?.[wk];
+  if (lu?.assignments) {
+    for (const k of Object.keys(lu.assignments)) {
+      if (String(lu.assignments[k])===String(espnId)) delete lu.assignments[k];
+    }
+  }
+  save();
+  toast('Player dropped', 'ok');
+  openAddDrop();
+};
 
 /* starters for team+week — manual lineup, or default to first N if unset */
 /* The lineup for team+week: {assignments: {slotIdx: playerId}}.
@@ -1700,8 +1869,8 @@ function viewSettings() {
     ${unlocked ? `
     <div class="card">
       <div class="h2">Player pool</div>
-      <p class="sub mb">Pull the ${SP().label} player pool from ESPN. League ID
-        <span class="num">${SP().leagueId||"(not set)"}</span>, season <span class="num">${SP().season}</span>.</p>
+      <p class="sub mb">Pull the ${SP().label} player pool from ESPN for season
+        <span class="num">${SP().season}</span>. No league ID needed — this is ESPN's global player list.</p>
       <button class="btn" onclick="doPullPool()">Pull player pool</button>
       <button class="btn btn-ghost btn-sm mt" onclick="inspectRaw()">🔬 Inspect raw player data</button>
     </div>
@@ -1720,6 +1889,13 @@ function viewSettings() {
       <div class="h2">Scoring system</div>
       <p class="sub mb">Point values per stat. Shared league-wide.</p>
       <button class="btn btn-block" onclick="editScoring()">Edit scoring values</button>
+    </div>
+
+    <div class="card">
+      <div class="h2">Commissioner log</div>
+      <p class="sub mb">Approve leagues and manage their access. Each league shares this Firebase —
+        toggle access off for non-payment.</p>
+      <button class="btn btn-block" onclick="openCommishLog()">Manage approvals (${Object.keys(STATE.approvals||{}).length})</button>
     </div>
 
     <div class="card">
@@ -1815,6 +1991,125 @@ window.lockMaster = function() {
   toast('Master settings locked', 'ok'); renderActive();
 };
 
+/* ============================================================
+   COMMISSIONER LOG (master settings)
+   You approve leagues here. Each entry: commissioner name, league
+   name, and an approved toggle. Stored in master Firebase. When a
+   user launches and enters their league name, we check this list;
+   approved leagues sync to their own doc (leagues/league_<id>).
+   Toggle approved=false to cut off access (e.g. non-payment).
+   ============================================================ */
+function normLeague(name) {
+  return String(name||'').trim().toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'');
+}
+window.openCommishLog = function() {
+  const approvals = STATE.approvals || {};
+  const rows = Object.entries(approvals).map(([key, a]) => `
+    <div class="card" style="padding:.6rem;margin-bottom:.5rem;border-color:${a.approved?'var(--good)':'var(--bad)'}">
+      <div class="row-between">
+        <div>
+          <b>${esc(a.leagueName)}</b><br>
+          <span class="sub" style="font-size:.7rem">${esc(a.commish||'—')} · <span class="num">${esc(key)}</span></span>
+        </div>
+        <div style="text-align:right">
+          <button class="btn btn-sm ${a.approved?'btn-amber':'btn-ghost'}" onclick="toggleApproval('${key}')">
+            ${a.approved?'✓ Approved':'○ Off'}</button>
+        </div>
+      </div>
+      <button class="btn btn-ghost btn-sm mt" style="font-size:.65rem" onclick="removeApproval('${key}')">Remove</button>
+    </div>`).join('') || '<p class="sub">No approved leagues yet.</p>';
+  openModal(`
+    <div class="h2">Commissioner log</div>
+    <p class="sub mb">Approve leagues to give them access. Toggle off to cut access (non-payment).
+      All share this one Firebase — no separate projects needed.</p>
+    <button class="btn btn-block mb" onclick="addApprovalPrompt()">+ Add league</button>
+    <div style="max-height:50vh;overflow-y:auto">${rows}</div>
+    <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Close</button>
+  `);
+};
+window.addApprovalPrompt = function() {
+  openModal(`
+    <div class="h2">Approve a league</div>
+    <div class="field mt"><label>Commissioner name</label>
+      <input class="input" id="ap-commish" placeholder="e.g. Dustin"></div>
+    <div class="field"><label>League name (they'll type this to join)</label>
+      <input class="input" id="ap-league" placeholder="e.g. Dustin's Dynasty"></div>
+    <button class="btn btn-block" onclick="saveApproval()">Add & approve</button>
+    <button class="btn btn-ghost btn-block mt" onclick="openCommishLog()">Cancel</button>
+  `);
+};
+window.saveApproval = function() {
+  const commish = $('ap-commish')?.value.trim();
+  const leagueName = $('ap-league')?.value.trim();
+  if (!leagueName) { toast('League name required', 'err'); return; }
+  const key = normLeague(leagueName);
+  STATE.approvals = STATE.approvals || {};
+  STATE.approvals[key] = {
+    commish, leagueName, approved: true,
+    leagueDocId: 'league_' + key,
+    created: Date.now(),
+  };
+  save({master:true});
+  toast(`Approved: ${leagueName}`, 'ok');
+  openCommishLog();
+};
+window.toggleApproval = function(key) {
+  if (!STATE.approvals?.[key]) return;
+  STATE.approvals[key].approved = !STATE.approvals[key].approved;
+  save({master:true});
+  toast(STATE.approvals[key].approved?'Approved':'Access turned off', 'ok');
+  openCommishLog();
+};
+window.removeApproval = function(key) {
+  if (!STATE.approvals) return;
+  delete STATE.approvals[key];
+  save({master:true});
+  toast('Removed', 'ok');
+  openCommishLog();
+};
+
+/* ---- LAUNCH: league-name gate ----
+   After choosing a sport, the user enters their league name. If it's
+   on the approved list (and toggled on), their data syncs to that
+   league's own doc. Otherwise they're denied. The commissioner (you)
+   bypasses this — your master PIN unlocks everything. ---- */
+window.promptLeagueName = function() {
+  const saved = LG().leagueName && LG().leagueName !== 'My League' ? LG().leagueName : '';
+  openModal(`
+    <div class="h2">Enter your league</div>
+    <p class="sub mt mb">Type your league name exactly as your commissioner gave it to you.</p>
+    <input class="input" id="ln-input" placeholder="League name" value="${esc(saved)}"
+      style="text-align:center;font-size:1.05rem">
+    <button class="btn btn-block mt" onclick="submitLeagueName()">Join league</button>
+    <p class="sub mt" style="font-size:.65rem;text-align:center">Don't have one? Ask your commissioner,
+      or use Settings to set up a new league if you're the commissioner.</p>
+  `);
+  setTimeout(()=>$('ln-input')?.focus(), 100);
+};
+window.submitLeagueName = function() {
+  const name = $('ln-input')?.value.trim();
+  if (!name) { toast('Enter a league name', 'err'); return; }
+  const key = normLeague(name);
+  const appr = STATE.approvals?.[key];
+  if (!appr) {
+    toast('League not found. Check the name with your commissioner.', 'err');
+    return;
+  }
+  if (!appr.approved) {
+    openModal(`<div class="h2">Access paused</div>
+      <p class="sub mt">This league's access is currently turned off. Please contact your commissioner.</p>
+      <button class="btn btn-ghost btn-block mt" onclick="promptLeagueName()">← Back</button>`);
+    return;
+  }
+  // approved → bind this device to that league's doc
+  LG().leagueName = appr.leagueName;
+  STATE.activeLeagueDoc = appr.leagueDocId;
+  saveLocal();
+  closeModal();
+  toast(`Joined ${appr.leagueName}`, 'ok');
+  renderActive();
+};
+
 /* ---- FAILED MAPPINGS — see & fix unmapped players ---- */
 window.showFailedMappings = function() {
   const unmapped = LG().playerPool.filter(p => !p.mlbId);
@@ -1906,6 +2201,18 @@ window.doPullPool = async function() {
       // always include the player's default position so eligibility is never empty/wrong
       const defPos = posName(pl.defaultPositionId);
       if (defPos && defPos !== '?') atomic.add(defPos);
+      // GUARD (baseball): a player is either a pitcher or a hitter, never both.
+      // defaultPositionId 1=SP, 11=RP are the pitcher ids. Use that as truth and
+      // strip cross-contamination (prevents "every hitter eligible for SP").
+      if (SP().key === 'flb') {
+        const isPitcher = pl.defaultPositionId === 1 || pl.defaultPositionId === 11;
+        if (isPitcher) {
+          ['C','1B','2B','3B','SS','OF','DH'].forEach(h => atomic.delete(h));
+          if (!atomic.has('SP') && !atomic.has('RP')) atomic.add(defPos); // ensure has one
+        } else {
+          atomic.delete('SP'); atomic.delete('RP');
+        }
+      }
       const eligible = [...atomic].sort((a,b) => order.indexOf(a) - order.indexOf(b));
       const adpRaw = pl.ownership?.averageDraftPosition || 0;
       const adp = (adpRaw > 0) ? adpRaw : 9999;
@@ -2405,6 +2712,40 @@ async function autoPullStats(force) {
     await new Promise(r=>setTimeout(r,50));
   }
   LG().lastStatPull = Date.now();
+  saveLocal();
+  renderActive();
+  // background: resolve team ids + injuries + schedule (non-blocking for the grid)
+  refreshTeamMeta();
+}
+
+/* resolve each rostered player's MLB team id + current injury status, then
+   fetch this week's schedule so the lookahead can show opponents/probables.
+   Injury status here is the LIVE source (updates when a player returns). */
+async function refreshTeamMeta() {
+  if (!LG().myTeamId) return;
+  const roster = teamRoster(LG().myTeamId).filter(p => p.mlbId);
+  // batch people lookup for team id + injury status
+  try {
+    const ids = roster.map(p => p.mlbId).join(',');
+    const res = await fetch(`${MLB}/people?personIds=${ids}&hydrate=currentTeam`);
+    if (res.ok) {
+      const data = await res.json();
+      const byId = {}; (data.people||[]).forEach(person => byId[person.id] = person);
+      // update the master pool entries (team id + injury) for these players
+      LG().playerPool.forEach(pl => {
+        const person = byId[pl.mlbId];
+        if (person) {
+          pl.mlbTeamId = person.currentTeam?.id || pl.mlbTeamId;
+          // MLB marks active roster status; 'active' code is 'A'
+          const statusCode = person.currentTeam ? (person.active === false ? 'IL' : '') : '';
+          // injury comes from ESPN pull; keep it but let MLB clear obvious returns
+          if (person.active === true && pl.injured) pl.injured = false;
+        }
+      });
+    }
+  } catch(e) {}
+  // fetch schedule for the viewed week
+  try { await getWeekSchedule(activeWeek()); } catch(e) {}
   saveLocal();
   renderActive();
 }
