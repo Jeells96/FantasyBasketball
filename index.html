@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Best Game League v4.1</title>
+<title>Best Game League v4.3</title>
 <style>
 /* ============================================================
-   BGL v4.1 — Design System
+   BGL v4.3 — Design System
    Subject: competitive fantasy baseball; hook = best single game/week
    Palette: stadium-at-night
    ============================================================ */
@@ -278,7 +278,7 @@ body {
 <div class="topbar">
   <div class="brand" onclick="go('home')">
     <span>BGL<span class="mark">.</span></span>
-    <span class="ver">v4.1</span>
+    <span class="ver">v4.3</span>
   </div>
   <div class="topbar-right">
     <span class="week-pill">WK <b id="wk-label">—</b></span>
@@ -321,12 +321,12 @@ import { getFirestore, doc, getDoc, setDoc, onSnapshot }
    CONFIG
    ============================================================ */
 const FB_CONFIG = {
-  apiKey: "REPLACE_WITH_YOUR_API_KEY",
-  authDomain: "REPLACE.firebaseapp.com",
-  projectId: "REPLACE",
-  storageBucket: "REPLACE.appspot.com",
-  messagingSenderId: "REPLACE",
-  appId: "REPLACE"
+  apiKey: "AIzaSyCMx3JkbkOQg3krv5P7Usixp7RFmGcpwYM",
+  authDomain: "best-ball-master-settings.firebaseapp.com",
+  projectId: "best-ball-master-settings",
+  storageBucket: "best-ball-master-settings.firebasestorage.app",
+  messagingSenderId: "961404685458",
+  appId: "1:961404685458:web:81d6a6002bce84640baa4b"
 };
 
 /* ============================================================
@@ -350,6 +350,15 @@ const SPORTS = {
     // ESPN lineupSlotId -> slot label (null = bench/IL, not scored)
     slotMap: {0:'C',1:'1B',2:'2B',3:'3B',4:'SS',5:'OF',6:'2B/SS',7:'1B/3B',8:'OF',9:'OF',
               10:'DH',11:'UTIL',12:'SP',13:'RP',14:'P'},
+    // ESPN eligibleSlot ID -> the ATOMIC positions it confers (for lineup eligibility).
+    // Combo slots expand to multiple. Generic slots (UTIL/Bench/P) confer nothing
+    // specific so they're omitted — eligibility comes only from real position slots.
+    eligMap: {
+      0:['C'], 1:['1B'], 2:['2B'], 3:['3B'], 4:['SS'], 5:['OF'],
+      6:['2B','SS'], 7:['1B','3B'], 8:['OF'], 9:['OF'],
+      10:['DH'], 12:['SP'], 13:['RP'],
+      // 11 (UTIL), 14 (P generic), 16/17 (bench/IL) intentionally omitted
+    },
     benchSlots: [16,17],
     proTeams: {0:'FA',1:'BAL',2:'BOS',3:'LAA',4:'CWS',5:'CLE',6:'DET',7:'KC',8:'MIL',9:'MIN',
       10:'NYY',11:'OAK',12:'SEA',13:'TEX',14:'TOR',15:'ATL',16:'CHC',17:'CIN',18:'HOU',19:'LAD',
@@ -391,6 +400,10 @@ const SPORTS = {
     statsApi: 'nba',
     posMap: {1:'PG',2:'SG',3:'SF',4:'PF',5:'C',6:'G',7:'F'},
     slotMap: {0:'PG',1:'SG',2:'SF',3:'PF',4:'C',5:'G',6:'F',7:'F/C',8:'G/F',9:'UTIL',10:'BE'},
+    eligMap: {
+      0:['PG'], 1:['SG'], 2:['SF'], 3:['PF'], 4:['C'],
+      5:['PG','SG'], 6:['SF','PF'], 7:['PF','C'], 8:['SF','SG'],
+    },
     benchSlots: [12,13],
     proTeams: {}, // filled when basketball is activated
     posFilters: ['ALL','PG','SG','SF','PF','C','G','F'],
@@ -456,21 +469,87 @@ let db = null, fbReady = false, fbErr = null;
 /* ============================================================
    FIREBASE
    ============================================================ */
-function initFirebase() {
-  if (FB_CONFIG.apiKey.startsWith('REPLACE')) {
-    fbErr = 'Firebase not configured';
-    return;
+/* ============================================================
+   STORAGE ARCHITECTURE
+   - MASTER settings (shared Firebase doc 'master/<sportleague>'):
+     player pool, ID mapping, scoring, schedule. Commissioner-level,
+     PIN-protected to edit. Everyone reads these.
+   - LOCAL settings (this device, localStorage): teams, draft, my team,
+     lineups, view state, and any local overrides.
+   ============================================================ */
+const MASTER_KEYS = ['playerPool', 'idMapping', 'customScoring', 'schedule', 'masterMeta'];
+const MASTER_DOC = 'master';        // firestore: leagues/master
+const LOCAL_LS_KEY = 'bgl_local_v1';
+
+function masterPayload() {
+  // pull the master-owned slices out of each sport's league
+  const out = {};
+  for (const sk of Object.keys(STATE.leagues)) {
+    const lg = STATE.leagues[sk];
+    out[sk] = {
+      playerPool: lg.playerPool,
+      customScoring: lg.customScoring,
+      schedule: lg.schedule,
+    };
   }
+  out.idOverrides = STATE.idOverrides;
+  return out;
+}
+
+function applyMaster(master) {
+  if (!master) return;
+  for (const sk of Object.keys(master)) {
+    if (sk === 'idOverrides') { STATE.idOverrides = master.idOverrides || {}; continue; }
+    if (!STATE.leagues[sk]) continue;
+    const m = master[sk];
+    if (m.playerPool) STATE.leagues[sk].playerPool = m.playerPool;
+    if (m.customScoring) STATE.leagues[sk].customScoring = m.customScoring;
+    if (m.schedule) STATE.leagues[sk].schedule = m.schedule;
+  }
+}
+
+function saveLocal() {
+  try {
+    const local = {};
+    for (const sk of Object.keys(STATE.leagues)) {
+      const lg = STATE.leagues[sk];
+      local[sk] = {
+        leagueName: lg.leagueName, currentWeek: lg.currentWeek,
+        teams: lg.teams, draft: lg.draft, weekly: lg.weekly,
+        trades: lg.trades, myTeamId: lg.myTeamId, lineups: lg.lineups,
+        gameLogs: lg.gameLogs, viewWeek: lg.viewWeek,
+        localOverrides: lg.localOverrides || {},
+      };
+    }
+    local.sport = STATE.sport;
+    localStorage.setItem(LOCAL_LS_KEY, JSON.stringify(local));
+  } catch(e) { /* localStorage may be unavailable */ }
+}
+
+function loadLocal() {
+  try {
+    const raw = localStorage.getItem(LOCAL_LS_KEY);
+    if (!raw) return;
+    const local = JSON.parse(raw);
+    if (local.sport) STATE.sport = local.sport;
+    for (const sk of Object.keys(local)) {
+      if (sk === 'sport' || !STATE.leagues[sk]) continue;
+      Object.assign(STATE.leagues[sk], local[sk]);
+    }
+  } catch(e) {}
+}
+
+function initFirebase() {
+  loadLocal();  // device data first, instant
+  if (FB_CONFIG.apiKey.startsWith('REPLACE')) { fbErr = 'Firebase not configured'; return; }
   try {
     const app = initializeApp(FB_CONFIG);
     db = getFirestore(app);
     fbReady = true;
-    // live sync
-    onSnapshot(doc(db, 'leagues', FB_DOC_ID), (snap) => {
-      if (snap.exists() && snap.data().state) {
-        const incoming = snap.data().state;
-        // shallow-merge to avoid clobbering local-only fields mid-edit
-        Object.assign(STATE, incoming);
+    // live sync of MASTER settings only
+    onSnapshot(doc(db, 'leagues', MASTER_DOC), (snap) => {
+      if (snap.exists() && snap.data().master) {
+        applyMaster(snap.data().master);
         STATE._loaded = true;
         renderActive();
       }
@@ -478,12 +557,17 @@ function initFirebase() {
   } catch(e) { fbErr = e.message; }
 }
 
-async function save() {
-  if (!fbReady) { toast('Not saved — Firebase offline', 'err'); return; }
+/* save LOCAL always; save MASTER only when unlocked (commissioner) */
+async function save(opts = {}) {
+  saveLocal();  // always persist device state
+  if (opts.master) await saveMaster();
+}
+
+async function saveMaster() {
+  if (!fbReady) { toast('Master not saved — Firebase offline', 'err'); return; }
   try {
-    const payload = {...STATE}; delete payload._loaded;
-    await setDoc(doc(db, 'leagues', FB_DOC_ID), { state: payload, ts: Date.now() });
-  } catch(e) { toast('Save failed: ' + e.message, 'err'); }
+    await setDoc(doc(db, 'leagues', MASTER_DOC), { master: masterPayload(), ts: Date.now() });
+  } catch(e) { toast('Master save failed: ' + e.message, 'err'); }
 }
 
 /* ============================================================
@@ -1049,12 +1133,21 @@ function viewMyTeam() {
   const dayHeads = weekDays(week).map(d =>
     `<div class="dhead">${['Su','M','Tu','W','Th','F','Sa'][d.getDay()]}<br>${d.getMonth()+1}/${d.getDate()}</div>`).join('');
 
+  // reverse lookup: playerId -> assigned slot index + label
+  const lu = getLineup(LG().myTeamId, week);
+  const assign = lu.assignments || {};
+  const slotOf = {}; // espnId -> {idx, label}
+  Object.entries(assign).forEach(([idx, pid]) => {
+    if (pid) slotOf[String(pid)] = { idx: +idx, label: SP().lineupSlots[idx]?.slot || '?' };
+  });
+  const locked = isWeekLocked(week);
+
   // build a card per player
   const cardFor = (p) => {
-    const isStarter = starters.map(String).includes(String(p.espnId));
+    const slot = slotOf[String(p.espnId)];
+    const isStarter = !!slot;
     const games = p.mlbId ? playerWeekGames(p.mlbId, week) : [];
     const best = p.mlbId ? playerBestGame(p.mlbId, week) : null;
-    // 7 day cells
     const cells = weekDays(week).map((d,i) => {
       const g = games.find(x => x.dayIdx === i);
       if (!g) return `<div class="dcell dnf">·</div>`;
@@ -1063,10 +1156,17 @@ function viewMyTeam() {
       return `<div class="${cls}" onclick="showGameBreakdown('${p.mlbId}',${week},${i})">${g.pts}</div>`;
     }).join('');
 
+    // tappable slot badge → opens position picker for this player
+    const badge = isStarter
+      ? `<span class="starter-badge s" style="cursor:${locked?'default':'pointer'}"
+          ${locked?'':`onclick="pickPosition('${p.espnId}')"`}>${esc(slot.label)} ${locked?'':'▾'}</span>`
+      : `<span class="starter-badge b" style="cursor:${locked?'default':'pointer'}"
+          ${locked?'':`onclick="pickPosition('${p.espnId}')"`}>BENCH ${locked?'':'▾'}</span>`;
+
     return `<div class="pcard ${isStarter?'':'bench'}">
       <div class="row-between" style="margin-bottom:.4rem">
         <div>
-          <span class="starter-badge ${isStarter?'s':'b'}">${isStarter?'Starter':'Bench'}</span>
+          ${badge}
           <span class="plink" style="margin-left:.4rem" onclick="showPlayer('${p.espnId}')">${esc(p.name)}</span>
           <span class="sub" style="font-size:.7rem"> ${esc((p.eligible||[]).join('/'))}</span>
         </div>
@@ -1081,14 +1181,18 @@ function viewMyTeam() {
     </div>`;
   };
 
-  const starterCards = roster.filter(p => starters.map(String).includes(String(p.espnId))).map(cardFor).join('');
-  const benchCards = roster.filter(p => !starters.map(String).includes(String(p.espnId))).map(cardFor).join('');
+  // order: starters by slot order, then bench
+  const starterList = roster.filter(p => slotOf[String(p.espnId)])
+    .sort((a,b)=> slotOf[String(a.espnId)].idx - slotOf[String(b.espnId)].idx);
+  const benchList = roster.filter(p => !slotOf[String(p.espnId)]);
+  const starterCards = starterList.map(cardFor).join('');
+  const benchCards = benchList.map(cardFor).join('');
 
   return `
     <div class="eyebrow">★ ${esc(t.name)}</div>
     <div class="row-between">
       <div class="h1">My Team</div>
-      <button class="btn btn-sm btn-ghost" onclick="editLineup()">Set lineup</button>
+      <button class="btn btn-sm btn-ghost" onclick="editLineup()">Lineup ⛶</button>
     </div>
     <div class="card" style="padding:.5rem .75rem;margin-top:.5rem;${isWeekLocked(week)?'border-color:var(--bad)':'border-color:var(--line)'}">
       <div class="row-between">
@@ -1133,6 +1237,7 @@ function viewMyTeam() {
     ${benchCards ? `<div class="divlabel mt">Bench</div>${benchCards}` : ''}
 
     <p class="sub mt" style="font-size:.7rem;text-align:center">
+      Tap a player's <b>position badge</b> to move them or bench them.
       Tap any daily score for a breakdown. Amber = kept (best) game.
       Lineups lock Sundays 11:00 AM.</p>
   `;
@@ -1152,12 +1257,31 @@ function teamRoster(teamId) {
    Carries forward from the most recent prior week if unset. */
 function getLineup(teamId, week) {
   const lu = LG().lineups?.[teamId]?.[week];
-  if (lu?.assignments) return lu;
+  if (lu?.assignments && Object.keys(lu.assignments).length) return lu;
+  // carry forward most recent prior week's lineup
   for (let w = week-1; w >= 1; w--) {
     const prev = LG().lineups?.[teamId]?.[w];
-    if (prev?.assignments) return { assignments: {...prev.assignments}, carried: true };
+    if (prev?.assignments && Object.keys(prev.assignments).length)
+      return { assignments: {...prev.assignments}, carried: true };
   }
-  return { assignments: {}, empty: true };
+  // never set → build a sensible default lineup so scoring still works
+  return { assignments: defaultLineup(teamId), isDefault: true };
+}
+
+/* Auto-build a valid default lineup: greedily fill each slot with the
+   best-ADP eligible un-used player. Ensures unset/locked weeks still score. */
+function defaultLineup(teamId) {
+  const slots = SP().lineupSlots || [];
+  const roster = teamRoster(teamId).slice().sort((a,b)=>a.adp-b.adp); // best first
+  const used = new Set();
+  const assign = {};
+  slots.forEach((s, idx) => {
+    const pick = roster.find(r =>
+      !used.has(String(r.espnId)) &&
+      s.eligible.some(e => (r.eligible||[]).includes(e)));
+    if (pick) { assign[idx] = pick.espnId; used.add(String(pick.espnId)); }
+  });
+  return assign;
 }
 /* starters = the set of player IDs assigned to any slot */
 function getStarters(teamId, week) {
@@ -1177,12 +1301,80 @@ window.pickMyTeam = function(teamId) {
 };
 window.confirmMyTeam = function(teamId) {
   LG().myTeamId = teamId;
-  save(); closeModal(); toast('Team locked in', 'ok'); renderActive();
+  save(); closeModal(); toast('Team locked in', 'ok');
+  renderActive();
+  autoPullStats(true);  // pull this team's stats now
 };
 
 window.changeWeek = function(delta) {
   const w = activeWeek() + delta;
   LG().viewWeek = Math.max(1, Math.min(26, w));
+  renderActive();
+};
+
+/* ---- TAP-TO-MOVE LINEUP (from roster page) ----
+   Tapping a player's slot badge opens this. Choose a new slot or bench.
+   If the chosen slot is occupied, that player is bumped to bench. ---- */
+window.pickPosition = function(espnId) {
+  const week = activeWeek();
+  if (isWeekLocked(week)) { toast('Week is locked', 'err'); return; }
+  const p = teamRoster(LG().myTeamId).find(x => String(x.espnId)===String(espnId));
+  if (!p) return;
+  ensureLineupExists(week);
+  const lu = LG().lineups[LG().myTeamId][week];
+  const assign = lu.assignments;
+  const slots = SP().lineupSlots || [];
+  const curSlot = Object.entries(assign).find(([i,pid]) => String(pid)===String(espnId))?.[0];
+
+  // which slots is this player eligible for?
+  const eligibleSlotIdxs = slots.map((s,i)=>({s,i}))
+    .filter(({s}) => s.eligible.some(e => (p.eligible||[]).includes(e)));
+
+  const slotBtns = eligibleSlotIdxs.map(({s,i}) => {
+    const occupant = assign[i] ? teamRoster(LG().myTeamId).find(r=>String(r.espnId)===String(assign[i])) : null;
+    const isCur = String(curSlot)===String(i);
+    return `<button class="btn ${isCur?'btn-amber':'btn-ghost'} btn-block mt" style="text-align:left"
+      onclick="moveToSlot('${espnId}',${i})">
+      <b>${esc(s.slot)}</b>${occupant&&!isCur?`<span class="sub"> · bumps ${esc(occupant.name)}</span>`:''}${isCur?' <span class="sub">· current</span>':''}
+    </button>`;
+  }).join('');
+
+  openModal(`
+    <div class="h2">${esc(p.name)}</div>
+    <div class="sub mb">${esc((p.eligible||[]).join('/'))} · move to:</div>
+    ${slotBtns}
+    ${curSlot!=null ? `<button class="btn btn-ghost btn-block mt" onclick="moveToSlot('${espnId}','bench')">Bench</button>` : ''}
+    <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Cancel</button>
+  `);
+};
+
+/* materialize the current (possibly default/carried) lineup into storage so edits stick */
+function ensureLineupExists(week) {
+  const tid = LG().myTeamId;
+  LG().lineups = LG().lineups || {};
+  LG().lineups[tid] = LG().lineups[tid] || {};
+  if (!LG().lineups[tid][week]?.assignments || !Object.keys(LG().lineups[tid][week].assignments).length) {
+    const cur = getLineup(tid, week);  // default or carried
+    LG().lineups[tid][week] = { assignments: {...cur.assignments} };
+  }
+}
+
+window.moveToSlot = function(espnId, slotIdx) {
+  const week = activeWeek();
+  if (isWeekLocked(week)) { toast('Week is locked', 'err'); return; }
+  ensureLineupExists(week);
+  const assign = LG().lineups[LG().myTeamId][week].assignments;
+  // remove player from any current slot
+  for (const k of Object.keys(assign)) {
+    if (String(assign[k])===String(espnId)) delete assign[k];
+  }
+  if (slotIdx !== 'bench') {
+    // bump whoever is in the target slot
+    if (assign[slotIdx]) delete assign[slotIdx];  // bumped player → bench (just unassigned)
+    assign[slotIdx] = espnId;
+  }
+  save();  // local save (lineups are device-level)
+  closeModal();
   renderActive();
 };
 
@@ -1451,6 +1643,7 @@ window.showPlayer = function(espnId) {
    ============================================================ */
 function viewSettings() {
   const havePool = LG().playerPool.length > 0;
+  const unlocked = window._masterUnlocked;
   return `
     <div class="eyebrow">Control center</div>
     <div class="h1">Settings</div>
@@ -1463,47 +1656,55 @@ function viewSettings() {
           `<button class="btn btn-sm ${STATE.sport===sp.key?'btn-amber':'btn-ghost'}" onclick="switchSport('${sp.key}')">${sp.icon} ${sp.label}</button>`
         ).join('')}
       </div>
-      ${!SP().leagueId ? `<p class="sub mt" style="font-size:.72rem">⚠ ${SP().label} has no ESPN league ID yet — set it to pull its pool.</p>` : ''}
     </div>
 
+    <div class="card" style="border-color:${unlocked?'var(--amber)':'var(--line)'}">
+      <div class="row-between">
+        <div class="h2" style="margin:0">${unlocked?'🔓':'🔒'} Master settings</div>
+        ${unlocked
+          ? `<button class="btn btn-sm btn-ghost" onclick="lockMaster()">Lock</button>`
+          : `<button class="btn btn-sm" onclick="unlockMaster()">Unlock</button>`}
+      </div>
+      <p class="sub mt" style="font-size:.72rem">
+        League-wide settings shared with everyone: player pool, ${SP().statsApi.toUpperCase()} mapping,
+        scoring, and schedule. ${unlocked?'You can edit these now.':'PIN required to edit.'}</p>
+      <p class="sub" style="font-size:.68rem">
+        Pool: ${havePool?`✓ ${LG().playerPool.length}`:'○ none'} ·
+        Mapped: ${LG().playerPool.filter(p=>p.mlbId).length} ·
+        Firebase: ${fbReady?'<span class="amber">live</span>':esc(fbErr||'offline')}</p>
+    </div>
+
+    ${unlocked ? `
     <div class="card">
-      <div class="h2">1 · Connect ESPN</div>
-      <p class="sub mb">Pull the ${SP().label} player pool. League ID
-        <span class="num">${SP().leagueId||"(not set)"}</span>, season <span class="num">${SP().season}</span>.
-        We use ESPN <b>only</b> for the player pool — scoring is our own.</p>
-      <div class="row">
-        <button class="btn" onclick="doPullPool()">Pull player pool</button>
-      </div>
-      <div class="row mt">
-        <span class="sub">${havePool ? `✓ ${LG().playerPool.length} players` : '○ no pool yet'}</span>
-      </div>
+      <div class="h2">Player pool</div>
+      <p class="sub mb">Pull the ${SP().label} player pool from ESPN. League ID
+        <span class="num">${SP().leagueId||"(not set)"}</span>, season <span class="num">${SP().season}</span>.</p>
+      <button class="btn" onclick="doPullPool()">Pull player pool</button>
       <button class="btn btn-ghost btn-sm mt" onclick="inspectRaw()">🔬 Inspect raw player data</button>
     </div>
 
     <div class="card">
-      <div class="h2">2 · Link ${SP().statsApi.toUpperCase()} stats</div>
-      <p class="sub mb">Match each ESPN player to their ${SP().statsApi.toUpperCase()} ID so we can pull real
-        box scores. Runs after the pool is loaded.</p>
+      <div class="h2">${SP().statsApi.toUpperCase()} mapping</div>
+      <p class="sub mb">Match ESPN players to ${SP().statsApi.toUpperCase()} IDs for real stats.</p>
       <button class="btn ${havePool?'':'btn-ghost'}" onclick="doMapIds()" ${havePool?'':'disabled'}>
         Map players to ${SP().statsApi.toUpperCase()}</button>
-      <button class="btn btn-amber btn-block mt" onclick="scoringDiag()">
-        🧪 Test scoring on a real player</button>
-      <p class="sub mt" style="font-size:.7rem">Pulls one player's ${SP().statsApi.toUpperCase()} game log and
-        applies your scoring so you can confirm points look right.</p>
+      <button class="btn btn-ghost btn-block mt" onclick="showFailedMappings()">
+        View unmapped players (${LG().playerPool.filter(p=>!p.mlbId).length})</button>
+      <button class="btn btn-amber btn-block mt" onclick="scoringDiag()">🧪 Test scoring on a real player</button>
     </div>
 
     <div class="card">
       <div class="h2">Scoring system</div>
-      <p class="sub mb">Your own point values per stat. Edit any of them — defaults are loaded.</p>
+      <p class="sub mb">Point values per stat. Shared league-wide.</p>
       <button class="btn btn-block" onclick="editScoring()">Edit scoring values</button>
     </div>
 
     <div class="card">
       <div class="h2">Week schedule</div>
-      <p class="sub mb">Weeks default to Mon–Sun. Adjust the season start or any week's length
-        (e.g. a 2-week All-Star break). Later weeks shift automatically.</p>
+      <p class="sub mb">Weeks default Mon–Sun. Adjust season start or any week's length.</p>
       <button class="btn btn-block" onclick="editSchedule()">Edit week schedule</button>
     </div>
+    ` : ''}
 
     <div class="card">
       <div class="h2">3 · Teams</div>
@@ -1552,17 +1753,119 @@ function slog(msg, kind='pending') {
 }
 
 /* ---- settings actions ---- */
+/* ---- MASTER SETTINGS PIN GATE ---- */
+window.unlockMaster = function() {
+  openModal(`
+    <div class="h2">🔒 Master settings</div>
+    <p class="sub mt mb">Enter the commissioner PIN to edit league-wide settings.</p>
+    <input class="input" id="master-pin" type="tel" inputmode="numeric" placeholder="PIN"
+      style="text-align:center;letter-spacing:.3em;font-size:1.2rem" maxlength="6">
+    <button class="btn btn-block mt" onclick="tryMaster()">Unlock</button>
+    <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Cancel</button>
+  `);
+  setTimeout(()=>$('master-pin')?.focus(), 100);
+};
+window.tryMaster = function() {
+  const pin = $('master-pin')?.value;
+  if (pin === ADMIN_PIN) {
+    window._masterUnlocked = true;
+    closeModal(); toast('Master settings unlocked', 'ok'); renderActive();
+  } else { toast('Wrong PIN', 'err'); }
+};
+window.lockMaster = function() {
+  window._masterUnlocked = false;
+  toast('Master settings locked', 'ok'); renderActive();
+};
+
+/* ---- FAILED MAPPINGS — see & fix unmapped players ---- */
+window.showFailedMappings = function() {
+  const unmapped = LG().playerPool.filter(p => !p.mlbId);
+  if (!unmapped.length) {
+    openModal(`<div class="h2">All mapped ✓</div>
+      <p class="sub mt">Every player in the pool has an ${SP().statsApi.toUpperCase()} ID.</p>
+      <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Close</button>`);
+    return;
+  }
+  const rows = unmapped.map(p => `
+    <div class="row-between" style="padding:.4rem 0;border-bottom:1px solid rgba(42,61,48,.4)">
+      <span><b>${esc(p.name)}</b> <span class="sub" style="font-size:.7rem">${esc((p.eligible||[]).join('/'))} · ${esc(p.proTeam||'')}</span></span>
+      <button class="btn btn-sm btn-ghost" onclick="manualMap('${p.espnId}')">Fix</button>
+    </div>`).join('');
+  openModal(`
+    <div class="h2">Unmapped players (${unmapped.length})</div>
+    <p class="sub mb">These couldn't be matched to ${SP().statsApi.toUpperCase()} automatically.
+      Tap Fix to search and link manually.</p>
+    <div style="max-height:50vh;overflow-y:auto">${rows}</div>
+    <button class="btn btn-block mt" onclick="retryMapping()">Retry auto-map all</button>
+    <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Close</button>
+  `);
+};
+window.manualMap = async function(espnId) {
+  const p = LG().playerPool.find(x => String(x.espnId)===String(espnId));
+  if (!p) return;
+  openModal(`<div class="h2">Find ${esc(p.name)}</div><div class="spinner"></div>
+    <p class="sub" style="text-align:center">Searching ${SP().statsApi.toUpperCase()}…</p>`);
+  try {
+    // search MLB by name, show candidates
+    const res = await fetch(`${MLB}/people/search?names=${encodeURIComponent(p.name)}`);
+    const data = await res.json();
+    let people = data.people || [];
+    // if no results, try last name only
+    if (!people.length) {
+      const res2 = await fetch(`${MLB}/people/search?names=${encodeURIComponent(p.name.split(' ').pop())}`);
+      people = (await res2.json()).people || [];
+    }
+    window._mapCandidates = people.slice(0,10);
+    const opts = window._mapCandidates.map((person, ci) =>
+      `<button class="btn btn-ghost btn-block mt" style="text-align:left"
+        onclick="linkMapByIdx('${espnId}',${ci})">
+        ${esc(person.fullName)} <span class="sub">· ${esc(person.primaryPosition?.abbreviation||'')} · ${esc(person.currentTeam?.name||'FA')}</span>
+      </button>`).join('') || '<p class="sub">No matches found. This player may be retired or not in MLB.</p>';
+    openModal(`
+      <div class="h2">Link ${esc(p.name)}</div>
+      <p class="sub mb">Pick the correct ${SP().statsApi.toUpperCase()} player:</p>
+      ${opts}
+      <button class="btn btn-ghost btn-block mt" onclick="showFailedMappings()">← Back</button>
+    `);
+  } catch(e) {
+    openModal(`<div class="h2">Search failed</div><p class="cell-neg">${esc(e.message)}</p>
+      <button class="btn btn-ghost btn-block mt" onclick="showFailedMappings()">← Back</button>`);
+  }
+};
+window.linkMapByIdx = function(espnId, ci) {
+  const person = (window._mapCandidates||[])[ci];
+  if (!person) return;
+  window.linkMap(espnId, person.id, person.fullName);
+};
+window.linkMap = function(espnId, mlbId, name) {
+  const p = LG().playerPool.find(x => String(x.espnId)===String(espnId));
+  if (p) {
+    p.mlbId = parseInt(mlbId);
+    STATE.idOverrides[normName(p.name)] = parseInt(mlbId);  // remember for next pull
+    save({master:true});
+    toast(`Linked ${p.name} → ${name}`, 'ok');
+  }
+  showFailedMappings();
+};
+window.retryMapping = async function() {
+  closeModal();
+  await doMapIds();
+  showFailedMappings();
+};
+
 window.doPullPool = async function() {
   try {
     const raw = await fetchPlayerPool(slog);
     LG().playerPool = raw.map(pp => {
       const pl = pp.player || pp;
-      const order = ['C','1B','2B','3B','SS','OF','DH','SP','RP','UTIL','P'];
-      const eligRaw = (pl.eligibleSlots||[]).map(slotName).filter(Boolean);
-      const eligible = [...new Set(eligRaw)]
-        .filter(x => x !== 'UTIL' && x !== 'P')
-        .sort((a,b) => order.indexOf(a) - order.indexOf(b));
-      // ADP = averageDraftPosition. 0 or missing means undrafted/filler → treat as huge.
+      const order = ['C','1B','2B','3B','SS','OF','DH','SP','RP'];
+      const eligMap = SP().eligMap || {};
+      // expand each ESPN eligibleSlot to atomic positions, dedupe, order
+      const atomic = new Set();
+      (pl.eligibleSlots||[]).forEach(slotId => {
+        (eligMap[slotId]||[]).forEach(pos => atomic.add(pos));
+      });
+      const eligible = [...atomic].sort((a,b) => order.indexOf(a) - order.indexOf(b));
       const adpRaw = pl.ownership?.averageDraftPosition || 0;
       const adp = (adpRaw > 0) ? adpRaw : 9999;
       return {
@@ -1571,6 +1874,7 @@ window.doPullPool = async function() {
         pos: posName(pl.defaultPositionId),
         eligible: eligible.length ? eligible : [posName(pl.defaultPositionId)],
         proTeam: proTeamAbbr(pl.proTeamId),
+        eligSlots: pl.eligibleSlots || [],   // raw, for re-deriving eligibility later
         adp: Math.round(adp * 10) / 10,
         seasonPts: seasonPointsFromEspn(pl),   // 0 until MLB stats are pulled
         owned: Math.round((pl.ownership?.percentOwned || 0) * 10) / 10,
@@ -1584,7 +1888,7 @@ window.doPullPool = async function() {
     LG().playerPool = LG().playerPool.slice(0, 600);
     const ranked = LG().playerPool.filter(p => p.adp < 9999).length;
     slog(`Stored top ${LG().playerPool.length} players (${ranked} with real ADP)`, 'ok');
-    await save();
+    await save({master:true});
     toast('Player pool loaded', 'ok');
     renderActive();
   } catch(e) { slog('Pool fetch failed: ' + e.message, 'err'); toast(e.message, 'err'); }
@@ -1627,14 +1931,14 @@ window.saveScoring = function() {
   Object.entries(edits).forEach(([id,v]) => {
     if (!isNaN(v)) LG().customScoring[id] = v;
   });
-  save();
+  save({master:true});
   toast('Scoring saved', 'ok');
   closeModal();
   renderActive();
 };
 window.resetScoring = function() {
   LG().customScoring = {};
-  save();
+  save({master:true});
   toast('Reset to defaults', 'ok');
   editScoring();
 };
@@ -1673,7 +1977,7 @@ window.editSchedule = function() {
 window.setOpener = function(dateStr) {
   LG().schedule = LG().schedule || { opener: null, durations: {} };
   LG().schedule.opener = dateStr || null;
-  save();
+  save({master:true});
   // refresh editor to show new dates
   editSchedule();
 };
@@ -1683,18 +1987,18 @@ window.setWeekDur = function(week, days) {
   const d = parseInt(days);
   if (d === 7) delete LG().schedule.durations[week]; // 7 = default, no override needed
   else LG().schedule.durations[week] = d;
-  save();
+  save({master:true});
   editSchedule(); // refresh to show shifted dates
 };
 window.resetSchedule = function() {
   LG().schedule = { opener: null, durations: {} };
-  save(); toast('Schedule reset', 'ok'); editSchedule();
+  save({master:true}); toast('Schedule reset', 'ok'); editSchedule();
 };
 
 window.doMapIds = async function() {
   try {
     const r = await resolveMlbIds(slog);
-    await save();
+    await save({master:true});
     toast(`Mapped ${r.mapped}, ${r.failed} failed`, r.failed ? 'err' : 'ok');
     renderActive();
   } catch(e) { slog('Mapping failed: ' + e.message, 'err'); toast(e.message, 'err'); }
@@ -1913,8 +2217,33 @@ function proTeamAbbr(id) {
    ============================================================ */
 initFirebase();
 go('home');
-// if firebase is offline, still render so the app is usable
 if (!fbReady) setTimeout(() => { if (!STATE._loaded) renderActive(); }, 300);
+
+/* Auto-pull MLB stats on load (once per ~6h) and when a team is chosen.
+   Runs silently in the background; refreshes the view when done. */
+async function autoPullStats(force) {
+  if (!LG().myTeamId) return;                 // only if user has a team
+  const last = LG().lastStatPull || 0;
+  const sixHrs = 6*60*60*1000;
+  if (!force && (Date.now() - last) < sixHrs) return;  // recently pulled
+  const roster = teamRoster(LG().myTeamId).filter(p => p.mlbId);
+  if (!roster.length) return;
+  LG().gameLogs = LG().gameLogs || {};
+  for (const p of roster) {
+    try {
+      const isPitcher = /SP|RP/.test((p.eligible||[]).join('')) && !/1B|2B|3B|SS|OF|C|DH/.test((p.eligible||[]).join(''));
+      const grp = isPitcher ? 'pitching' : 'hitting';
+      const log = await mlbGameLog(p.mlbId, grp);
+      LG().gameLogs[p.mlbId] = log.map(g => ({...g, group: grp}));
+    } catch(e) {}
+    await new Promise(r=>setTimeout(r,50));
+  }
+  LG().lastStatPull = Date.now();
+  saveLocal();
+  renderActive();
+}
+// kick off shortly after load
+setTimeout(() => autoPullStats(false), 800);
 </script>
 </body>
 </html>
