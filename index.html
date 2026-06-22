@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Best Game League v5.0</title>
+<title>Best Game League v5.1</title>
 <style>
 /* ============================================================
-   BGL v5.0 — Design System
+   BGL v5.1 — Design System
    Subject: competitive fantasy baseball; hook = best single game/week
    Palette: stadium-at-night
    ============================================================ */
@@ -320,7 +320,7 @@ body {
 <div class="topbar">
   <div class="brand" onclick="go('home')">
     <span>BGL<span class="mark">.</span></span>
-    <span class="ver">v5.0</span>
+    <span class="ver">v5.1</span>
   </div>
   <div class="topbar-right">
     <button class="league-chip" id="league-chip" onclick="openLeagueSwitcher()" title="Change league or sport"></button>
@@ -1105,6 +1105,58 @@ function playerBestGame(mlbId, week) {
   const games = playerWeekGames(mlbId, week);
   if (!games.length) return null;
   return games.reduce((best,g)=> g.pts > best.pts ? g : best, games[0]);
+}
+
+/* ============================================================
+   PLAYER POOL POINTS — fetch game logs for the top 200 by ADP and
+   roll them into season + last-7/14/30-day totals using league scoring.
+   Stored on each player: ptsSeason, pts7, pts14, pts30.
+   ============================================================ */
+let _poolPtsRunning = false;
+async function computePoolPoints(force, progressFn) {
+  if (_poolPtsRunning) return;
+  _poolPtsRunning = true;
+  try {
+    const pool = LG().playerPool.slice().sort((a,b)=>a.adp-b.adp).slice(0, 200);
+    const mapped = pool.filter(p => p.mlbId);
+    const today = new Date(); today.setHours(0,0,0,0);
+    const cut = (days) => { const d = new Date(today); d.setDate(today.getDate()-days); return ymd(d); };
+    const c7 = cut(7), c14 = cut(14), c30 = cut(30);
+    LG().gameLogs = LG().gameLogs || {};
+    let done = 0;
+    for (const p of mapped) {
+      done++;
+      try {
+        // reuse cached log if present and not forcing
+        let log = LG().gameLogs[p.mlbId];
+        if (!log || force) {
+          const isPitcher = /SP|RP/.test((p.eligible||[]).join('')) && !/1B|2B|3B|SS|OF|C|DH/.test((p.eligible||[]).join(''));
+          const grp = isPitcher ? 'pitching' : 'hitting';
+          const raw = await mlbGameLog(p.mlbId, grp);
+          log = raw.map(g => ({...g, group: grp}));
+          LG().gameLogs[p.mlbId] = log;
+          await new Promise(r=>setTimeout(r,40));
+        }
+        // roll up
+        let season=0, w7=0, w14=0, w30=0;
+        log.forEach(g => {
+          const pts = gamePoints(g.stat, g.group);
+          season += pts;
+          if (g.date >= c7) w7 += pts;
+          if (g.date >= c14) w14 += pts;
+          if (g.date >= c30) w30 += pts;
+        });
+        p.ptsSeason = Math.round(season*10)/10;
+        p.pts7 = Math.round(w7*10)/10;
+        p.pts14 = Math.round(w14*10)/10;
+        p.pts30 = Math.round(w30*10)/10;
+        p.seasonPts = p.ptsSeason;  // keep legacy field in sync
+      } catch(e) {}
+      progressFn?.(done, mapped.length);
+    }
+    // persist to league doc (shared cache benefits everyone)
+    if (STATE.activeLeagueDoc) saveLeague({silent:true}); else saveLocal();
+  } finally { _poolPtsRunning = false; }
 }
 
 
@@ -1908,7 +1960,7 @@ function placeholderView(title, msg) {
 }
 
 /* Players view works in Phase 1 once pool is loaded — proves the data layer */
-const playerView = { sort: 'adp', dir: 1, posFilter: 'ALL', search: '', avail: 'all' };
+const playerView = { sort: 'adp', dir: 1, posFilter: 'ALL', search: '', avail: 'all', ptsWindow: 'season' };
 
 function viewPlayersReal() {
   if (!LG().playerPool.length) {
@@ -1932,26 +1984,34 @@ function viewPlayersReal() {
     return true;
   });
 
+  // which points field is active based on the window toggle
+  const ptsField = { season:'ptsSeason', '7':'pts7', '14':'pts14', '30':'pts30' }[playerView.ptsWindow];
+  const ptsLabel = { season:'Season', '7':'7d', '14':'14d', '30':'30d' }[playerView.ptsWindow];
+
   const s = playerView.sort, dir = playerView.dir;
   list.sort((a,b) => {
     if (s === 'name') return dir * a.name.localeCompare(b.name);
+    if (s === 'pts')  return dir * ((a[ptsField] ?? -Infinity) - (b[ptsField] ?? -Infinity));
     return dir * ((a[s] ?? 0) - (b[s] ?? 0));
   });
 
+  const havePoints = LG().playerPool.some(p => p.ptsSeason != null);
   const shown = list.slice(0, 150);
   const rows = shown.map(p => {
     const drafted = draftedIds.has(String(p.espnId));
     const pk = LG().draft.picks.find(x => String(x.playerId) === String(p.espnId));
     const ownerTeam = pk ? teamById(pk.teamId).abbrev : '';
     const adpTxt = p.adp < 9999 ? p.adp.toFixed(0) : '—';
+    const ptsVal = p[ptsField];
+    const ptsTxt = (ptsVal != null) ? ptsVal.toFixed(0) : '—';
     return `<tr style="${drafted?'opacity:.45':''}">
       <td><span class="plink" onclick="showPlayer('${p.espnId}')">${esc(p.name)}</span>
-        ${p.injured?'<span class="cell-neg" style="font-size:.6rem"> ⚕</span>':''}
+        ${p.injured?'<span class="il-badge">IL</span>':''}
         ${drafted?`<span class="sub" style="font-size:.6rem"> · ${esc(ownerTeam)}</span>`:''}</td>
       <td class="pos">${esc((p.eligible||[]).join('/') || p.pos || '?')}</td>
       <td class="pos">${esc(p.proTeam||'')}</td>
       <td class="r num cell-best" style="${p.adp>=9999?'color:var(--sage-dim)':''}">${adpTxt}</td>
-      <td class="r num sage" style="font-size:.72rem;${p.seasonPts<=0?'color:var(--sage-dim)':'color:var(--chalk)'}">${p.seasonPts>0?p.seasonPts.toFixed(0):'—'}</td>
+      <td class="r num" style="font-size:.72rem;${(ptsVal==null||ptsVal<=0)?'color:var(--sage-dim)':'color:var(--chalk);font-weight:600'}">${ptsTxt}</td>
     </tr>`;
   }).join('');
 
@@ -1959,30 +2019,63 @@ function viewPlayersReal() {
     `<button class="btn btn-sm ${playerView.sort===key?'':'btn-ghost'}" onclick="setSort('${key}')">${label}${playerView.sort===key?(dir<0?' ▼':' ▲'):''}</button>`;
   const posBtn = (pos) =>
     `<button class="btn btn-sm ${playerView.posFilter===pos?'btn-amber':'btn-ghost'}" onclick="setPosFilter('${pos}')">${pos}</button>`;
+  const winBtn = (w,label) =>
+    `<button class="btn btn-sm ${playerView.ptsWindow===w?'btn-amber':'btn-ghost'}" onclick="setPtsWindow('${w}')">${label}</button>`;
 
   return `
     <div class="eyebrow">${SP().label} pool · ${LG().playerPool.length} players · ${mappedCount} linked</div>
     <div class="h1">Players</div>
+
+    ${!havePoints ? `<div class="card card-tight mt" style="border-color:var(--amber)">
+      <p class="sub mb" style="font-size:.78rem">Points aren't loaded yet. Pull game logs for the top 200 by ADP
+        to see season and recent scoring.</p>
+      <button class="btn btn-amber btn-block" onclick="loadPoolPoints()">Load player points (top 200)</button>
+    </div>` : ''}
+
     <div class="field mt">
       <input class="input" placeholder="Search players…" value="${esc(playerView.search)}" oninput="setSearch(this.value)">
     </div>
     <div class="row" style="gap:.35rem;overflow-x:auto;padding-bottom:.4rem">${allPos.map(posBtn).join('')}</div>
-    <div class="row" style="gap:.35rem;margin-top:.4rem">
+    <div class="row" style="gap:.35rem;margin-top:.4rem;flex-wrap:wrap">
       <span class="sub" style="align-self:center;font-size:.68rem">Sort:</span>
-      ${sortBtn('adp','ADP')} ${sortBtn('seasonPts','Pts')} ${sortBtn('owned','Owned')} ${sortBtn('name','Name')}
-      <span class="sub" style="align-self:center;font-size:.68rem;margin-left:.5rem">Show:</span>
+      ${sortBtn('adp','ADP')} ${sortBtn('pts','Pts')} ${sortBtn('owned','Owned')} ${sortBtn('name','Name')}
+    </div>
+    <div class="row" style="gap:.35rem;margin-top:.4rem;flex-wrap:wrap">
+      <span class="sub" style="align-self:center;font-size:.68rem">Points window:</span>
+      ${winBtn('season','Season')} ${winBtn('30','30d')} ${winBtn('14','14d')} ${winBtn('7','7d')}
+    </div>
+    <div class="row" style="gap:.35rem;margin-top:.4rem">
+      <span class="sub" style="align-self:center;font-size:.68rem">Show:</span>
       <button class="btn btn-sm ${playerView.avail==='all'?'btn-amber':'btn-ghost'}" onclick="setAvail('all')">All</button>
       <button class="btn btn-sm ${playerView.avail==='avail'?'btn-amber':'btn-ghost'}" onclick="setAvail('avail')">Available</button>
     </div>
     <div class="card card-tight mt">
       <table class="tbl">
-        <thead><tr><th>Player</th><th>Pos</th><th>Tm</th><th class="r">ADP</th><th class="r">Pts</th></tr></thead>
+        <thead><tr><th>Player</th><th>Pos</th><th>Tm</th><th class="r">ADP</th><th class="r">${ptsLabel}</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
       ${list.length > 150 ? `<div class="divlabel">showing 150 of ${list.length} matches</div>` :
         `<div class="divlabel">${list.length} player${list.length!==1?'s':''}</div>`}
-    </div>`;
+    </div>
+    <p class="sub mt" style="font-size:.7rem;text-align:center">Tap a player's name to view details and add them to your team.</p>`;
 }
+
+window.setPtsWindow = function(w) { playerView.ptsWindow = w; if (playerView.sort==='pts') {} renderActive(); };
+window.loadPoolPoints = async function() {
+  if (!LG().playerPool.some(p=>p.mlbId)) { toast('Map players to MLB first (Settings)', 'err'); return; }
+  openModal(`<div class="h2">Loading points</div><div class="spinner"></div>
+    <p class="sub" style="text-align:center" id="pp-prog">Fetching game logs…</p>
+    <div style="background:var(--field-2);border-radius:6px;height:8px;overflow:hidden;margin-top:.5rem">
+      <div id="pp-bar" style="height:100%;width:0%;background:var(--amber);transition:width .2s"></div></div>`);
+  await computePoolPoints(false, (done,total) => {
+    const pe=$('pp-prog'), bar=$('pp-bar');
+    if (pe) pe.textContent = `${done} / ${total} players`;
+    if (bar) bar.style.width = Math.round(done/total*100)+'%';
+  });
+  closeModal();
+  toast('Player points loaded', 'ok');
+  renderActive();
+};
 
 window.setSort = function(key) {
   if (playerView.sort === key) playerView.dir *= -1;
@@ -2005,24 +2098,51 @@ window.showPlayer = function(espnId) {
   const p = LG().playerPool.find(x => String(x.espnId) === String(espnId));
   if (!p) return;
   const pk = LG().draft.picks.find(x => String(x.playerId) === String(espnId));
+  const onMyTeam = pk && String(pk.teamId) === String(myTeamId());
+  const isFreeAgent = !pk;
+  const havePts = p.ptsSeason != null;
+  const cap = rosterCap(), count = myTeamId() ? rosterActiveCount(myTeamId()) : 0;
+  const full = count >= cap;
+
   openModal(`
     <div class="h2">${esc(p.name)}</div>
     <div class="sub mb">${esc((p.eligible||[]).join(', '))} · ${esc(p.proTeam||'')}
-      ${p.injured?'· <span class="cell-neg">injured</span>':''}</div>
+      ${p.injured?'· <span class="cell-neg">IL</span>':''}</div>
     <div class="statrow mt mb">
       <div class="stat"><div class="lbl">ADP</div><div class="val amber">${p.adp<9999?p.adp.toFixed(0):'—'}</div></div>
-      <div class="stat"><div class="lbl">Season pts</div><div class="val">${p.seasonPts>0?p.seasonPts.toFixed(0):'—'}</div></div>
-      <div class="stat"><div class="lbl">Status</div><div class="val" style="font-size:1rem">${pk?'Drafted':'Free'}</div></div>
+      <div class="stat"><div class="lbl">Season</div><div class="val">${havePts?p.ptsSeason.toFixed(0):'—'}</div></div>
+      <div class="stat"><div class="lbl">Status</div><div class="val" style="font-size:1rem">${pk?(onMyTeam?'Yours':'Rostered'):'Free'}</div></div>
     </div>
-    ${pk ? `<p class="sub">On <b>${esc(teamById(pk.teamId).name)}</b> — pick #${pk.pick}</p>` : ''}
-    <table class="tbl mt">
-      <tr><td class="sage">Owned</td><td class="r num">${p.owned?.toFixed(0)??0}%</td></tr>
-      <tr><td class="sage">ESPN ID</td><td class="r num">${esc(p.espnId)}</td></tr>
-      <tr><td class="sage">${SP().statsApi.toUpperCase()} ID</td><td class="r num">${p.mlbId ? esc(p.mlbId) : '<span class="cell-neg">not linked</span>'}</td></tr>
-    </table>
-    <p class="sub mt">Season points fill in once MLB game stats are pulled (Phase 3).</p>
+    ${havePts ? `<div class="statrow mb">
+      <div class="stat"><div class="lbl">Last 7d</div><div class="val">${p.pts7?.toFixed(0)??'0'}</div></div>
+      <div class="stat"><div class="lbl">Last 14d</div><div class="val">${p.pts14?.toFixed(0)??'0'}</div></div>
+      <div class="stat"><div class="lbl">Last 30d</div><div class="val">${p.pts30?.toFixed(0)??'0'}</div></div>
+    </div>` : ''}
+    ${pk && !onMyTeam ? `<p class="sub">On <b>${esc(teamById(pk.teamId).name)}</b> — pick #${pk.pick}</p>` : ''}
+
+    ${isFreeAgent && myTeamId() ? (
+      full
+        ? `<div class="card" style="border-color:var(--bad);padding:.6rem"><p class="sub" style="font-size:.75rem;color:var(--bad)">
+            Your roster is full (${count}/${cap}). Drop someone first (My Page → +/− Players).</p></div>`
+        : `<button class="btn btn-amber btn-block" onclick="addPlayerFromPool('${p.espnId}')">+ Add to my team (${count}/${cap})</button>`
+    ) : ''}
+    ${onMyTeam ? `<button class="btn btn-ghost btn-block" onclick="closeModal();go('home')">View on my team →</button>` : ''}
+
+    ${!havePts ? `<p class="sub mt" style="font-size:.72rem">Load player points on the Players page to see scoring.</p>` : ''}
     <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Close</button>
   `);
+};
+/* add a free agent straight from the player modal */
+window.addPlayerFromPool = function(espnId) {
+  if (!myTeamId()) { toast('Claim your team first', 'err'); return; }
+  if (rosterActiveCount(myTeamId()) >= rosterCap()) { toast('Roster full — drop someone first', 'err'); return; }
+  const maxPick = LG().draft.picks.reduce((m,pk)=>Math.max(m,pk.pick||0), 0);
+  LG().draft.picks.push({ teamId: myTeamId(), playerId: espnId, pick: maxPick+1, addedFA: true });
+  save();
+  const p = LG().playerPool.find(x=>String(x.espnId)===String(espnId));
+  toast(`Added ${p?.name||'player'} to your team`, 'ok');
+  closeModal();
+  renderActive();
 };
 
 /* ============================================================
