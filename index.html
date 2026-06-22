@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Best Game League v4.9</title>
+<title>Best Game League v5.0</title>
 <style>
 /* ============================================================
-   BGL v4.9 — Design System
+   BGL v5.0 — Design System
    Subject: competitive fantasy baseball; hook = best single game/week
    Palette: stadium-at-night
    ============================================================ */
@@ -73,6 +73,14 @@ body {
   padding: .25rem .7rem;
 }
 .week-pill b { color: var(--amber); }
+.league-chip {
+  font-family: var(--body); font-size: .68rem; font-weight: 600; color: var(--chalk);
+  background: var(--field-3); border: 1px solid var(--line); border-radius: 999px;
+  padding: .25rem .65rem; cursor: pointer; max-width: 140px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; transition: border-color .15s;
+}
+.league-chip:hover { border-color: var(--amber); }
+.league-chip:empty { display: none; }
 .icon-btn {
   background: none; border: none; color: var(--sage); cursor: pointer;
   font-size: 1.2rem; padding: .25rem; line-height: 1;
@@ -312,9 +320,10 @@ body {
 <div class="topbar">
   <div class="brand" onclick="go('home')">
     <span>BGL<span class="mark">.</span></span>
-    <span class="ver">v4.9</span>
+    <span class="ver">v5.0</span>
   </div>
   <div class="topbar-right">
+    <button class="league-chip" id="league-chip" onclick="openLeagueSwitcher()" title="Change league or sport"></button>
     <span class="week-pill">WK <b id="wk-label">—</b></span>
     <button class="icon-btn" onclick="go('settings')" title="Settings">⚙</button>
   </div>
@@ -562,25 +571,43 @@ function applyMaster(master) {
 /* Local storage now holds ONLY identity pointers — which league this device
    joined and which member it is. All actual league data lives in Firebase. */
 function saveLocal() {
+  const identity = {
+    sport: STATE.sport,
+    activeLeagueDoc: STATE.activeLeagueDoc || null,
+    memberId: STATE.memberId || null,
+  };
   try {
-    const identity = {
-      sport: STATE.sport,
-      activeLeagueDoc: STATE.activeLeagueDoc || null,
-      memberId: STATE.memberId || null,
-    };
     localStorage.setItem(LOCAL_LS_KEY, JSON.stringify(identity));
-  } catch(e) { /* localStorage unavailable */ }
+    // verify the write actually persisted (iOS private mode can silently fail)
+    const check = localStorage.getItem(LOCAL_LS_KEY);
+    if (!check) throw new Error('write did not persist');
+  } catch(e) {
+    // fall back to an in-memory mirror + cookie so a refresh still remembers
+    window.__bglIdentity = identity;
+    try {
+      document.cookie = `${LOCAL_LS_KEY}=${encodeURIComponent(JSON.stringify(identity))};path=/;max-age=31536000;SameSite=Lax`;
+    } catch(e2) {}
+  }
 }
 
 function loadLocal() {
+  let id = null;
   try {
     const raw = localStorage.getItem(LOCAL_LS_KEY);
-    if (!raw) return;
-    const id = JSON.parse(raw);
-    if (id.sport) STATE.sport = id.sport;
-    if (id.activeLeagueDoc) STATE.activeLeagueDoc = id.activeLeagueDoc;
-    if (id.memberId) STATE.memberId = id.memberId;
+    if (raw) id = JSON.parse(raw);
   } catch(e) {}
+  // fallbacks if localStorage was empty/blocked
+  if (!id && window.__bglIdentity) id = window.__bglIdentity;
+  if (!id) {
+    try {
+      const match = document.cookie.match(new RegExp('(?:^|; )' + LOCAL_LS_KEY + '=([^;]*)'));
+      if (match) id = JSON.parse(decodeURIComponent(match[1]));
+    } catch(e) {}
+  }
+  if (!id) return;
+  if (id.sport) STATE.sport = id.sport;
+  if (id.activeLeagueDoc) STATE.activeLeagueDoc = id.activeLeagueDoc;
+  if (id.memberId) STATE.memberId = id.memberId;
 }
 
 function initFirebase() {
@@ -1158,6 +1185,11 @@ function renderPage(page) {
     case 'settings':  el.innerHTML = viewSettings(); break;
   }
   $('wk-label').textContent = activeWeek();
+  // league/sport chip in topbar
+  const chip = $('league-chip');
+  if (chip) {
+    chip.textContent = STATE.activeLeagueDoc ? `${SP().icon} ${LG().leagueName}` : '';
+  }
 }
 
 /* ============================================================
@@ -2337,6 +2369,35 @@ window.gateJoinLeague = function() {
 
 /* legacy entry points kept for the Settings "join / leave" buttons */
 window.promptLeagueName = function() { showGate('sport'); };
+
+/* quick switcher from the topbar chip — change sport or league */
+window.openLeagueSwitcher = function() {
+  openModal(`
+    <div class="h2">League & sport</div>
+    <p class="sub mb">You're in <b class="amber">${esc(LG().leagueName)}</b> · ${SP().icon} ${SP().label}</p>
+    <div class="divlabel">Switch sport</div>
+    <div class="row mt">
+      ${Object.values(SPORTS).map(sp =>
+        `<button class="btn btn-sm ${STATE.sport===sp.key?'btn-amber':'btn-ghost'}"
+          onclick="switchSportInLeague('${sp.key}')">${sp.icon} ${sp.label}</button>`).join('')}
+    </div>
+    <p class="sub mt" style="font-size:.68rem">Switching sport keeps you in this league but shows that sport's teams & draft.</p>
+    <button class="btn btn-ghost btn-block mt" onclick="changeLeague()">⇄ Change league</button>
+    <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Close</button>
+  `);
+};
+window.switchSportInLeague = function(key) {
+  if (!SPORTS[key]) return;
+  STATE.sport = key;
+  saveLocal();
+  closeModal();
+  toast(`Switched to ${SPORTS[key].label}`, 'ok');
+  renderActive();
+};
+window.changeLeague = function() {
+  closeModal();
+  showGate('league');   // go straight to league-name entry (sport already chosen)
+};
 window.leaveLeague = function() {
   openModal(`
     <div class="h2">Leave league?</div>
