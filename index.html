@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Best Game League v5.4</title>
+<title>Best Game League v5.5</title>
 <style>
 /* ============================================================
-   BGL v5.4 — Design System
+   BGL v5.5 — Design System
    Subject: competitive fantasy baseball; hook = best single game/week
    Palette: stadium-at-night
    ============================================================ */
@@ -320,7 +320,7 @@ body {
 <div class="topbar">
   <div class="brand" onclick="go('home')">
     <span>BGL<span class="mark">.</span></span>
-    <span class="ver">v5.4</span>
+    <span class="ver">v5.5</span>
   </div>
   <div class="topbar-right">
     <button class="league-chip" id="league-chip" onclick="openLeagueSwitcher()" title="Change league or sport"></button>
@@ -1127,9 +1127,6 @@ async function computePoolPoints(force, progressFn) {
       if (rosteredIds.has(String(p.espnId)) || p.adp < 9999) pick.set(String(p.espnId), p);
     });
     const mapped = [...pick.values()].filter(p => p.mlbId);
-    const today = new Date(); today.setHours(0,0,0,0);
-    const cut = (days) => { const d = new Date(today); d.setDate(today.getDate()-days); return ymd(d); };
-    const c7 = cut(7), c14 = cut(14), c30 = cut(30);
     LG().gameLogs = LG().gameLogs || {};
     let done = 0;
     for (const p of mapped) {
@@ -1145,20 +1142,7 @@ async function computePoolPoints(force, progressFn) {
           LG().gameLogs[p.mlbId] = log;
           await new Promise(r=>setTimeout(r,40));
         }
-        // roll up
-        let season=0, w7=0, w14=0, w30=0;
-        log.forEach(g => {
-          const pts = gamePoints(g.stat, g.group);
-          season += pts;
-          if (g.date >= c7) w7 += pts;
-          if (g.date >= c14) w14 += pts;
-          if (g.date >= c30) w30 += pts;
-        });
-        p.ptsSeason = Math.round(season*10)/10;
-        p.pts7 = Math.round(w7*10)/10;
-        p.pts14 = Math.round(w14*10)/10;
-        p.pts30 = Math.round(w30*10)/10;
-        p.seasonPts = p.ptsSeason;  // keep legacy field in sync
+        applyPointFields(p, log);
       } catch(e) {}
       progressFn?.(done, mapped.length);
     }
@@ -2002,8 +1986,8 @@ function viewPlayersReal() {
   });
 
   // which points field is active based on the window toggle
-  const ptsField = { season:'ptsSeason', '7':'pts7', '14':'pts14', '30':'pts30' }[playerView.ptsWindow];
-  const ptsLabel = { season:'Season', '7':'7d', '14':'14d', '30':'30d' }[playerView.ptsWindow];
+  const ptsField = { season:'ptsSeason', '7':'pts7', '14':'pts14', '30':'pts30', bestavg:'bestAvg' }[playerView.ptsWindow];
+  const ptsLabel = { season:'Season', '7':'7d', '14':'14d', '30':'30d', bestavg:'Best Avg' }[playerView.ptsWindow];
 
   const s = playerView.sort, dir = playerView.dir;
   list.sort((a,b) => {
@@ -2063,8 +2047,8 @@ function viewPlayersReal() {
       ${sortBtn('adp','ADP')} ${sortBtn('pts','Pts')} ${sortBtn('owned','Owned')} ${sortBtn('name','Name')}
     </div>
     <div class="row" style="gap:.35rem;margin-top:.4rem;flex-wrap:wrap">
-      <span class="sub" style="align-self:center;font-size:.68rem">Points window:</span>
-      ${winBtn('season','Season')} ${winBtn('30','30d')} ${winBtn('14','14d')} ${winBtn('7','7d')}
+      <span class="sub" style="align-self:center;font-size:.68rem">Show stat:</span>
+      ${winBtn('season','Season')} ${winBtn('bestavg','Best Avg')} ${winBtn('30','30d')} ${winBtn('14','14d')} ${winBtn('7','7d')}
     </div>
     <div class="row" style="gap:.35rem;margin-top:.4rem">
       <span class="sub" style="align-self:center;font-size:.68rem">Show:</span>
@@ -2121,13 +2105,32 @@ window.setSearch = function(v) {
 };
 window.setAvail = function(v) { playerView.avail = v; renderActive(); };
 
+/* SINGLE source of truth for a player's computed point fields from a game log.
+   Sets ptsSeason, pts7/14/30, and bestAvg (avg of each week's best single game). */
+function applyPointFields(p, log) {
+  const today = new Date(); today.setHours(0,0,0,0);
+  const cut = (d) => { const x = new Date(today); x.setDate(today.getDate()-d); return ymd(x); };
+  const c7 = cut(7), c14 = cut(14), c30 = cut(30);
+  let season=0,w7=0,w14=0,w30=0;
+  const weekBest = {}; // fantasy week -> best single game pts
+  log.forEach(g => {
+    const pts = gamePoints(g.stat, g.group);
+    season+=pts;
+    if(g.date>=c7)w7+=pts; if(g.date>=c14)w14+=pts; if(g.date>=c30)w30+=pts;
+    const wk = weekOfDate(g.date);
+    if (wk != null) weekBest[wk] = Math.max(weekBest[wk] ?? -Infinity, pts);
+  });
+  const bests = Object.values(weekBest).filter(v => v > -Infinity);
+  const bestAvg = bests.length ? bests.reduce((a,b)=>a+b,0)/bests.length : 0;
+  p.ptsSeason=Math.round(season*10)/10; p.pts7=Math.round(w7*10)/10;
+  p.pts14=Math.round(w14*10)/10; p.pts30=Math.round(w30*10)/10;
+  p.bestAvg=Math.round(bestAvg*10)/10; p.seasonPts=p.ptsSeason;
+}
+
 /* compute points for ONE player on demand (when their modal opens) */
 async function computeOnePlayer(p) {
   if (!p?.mlbId) return;
   try {
-    const today = new Date(); today.setHours(0,0,0,0);
-    const cut = (days) => { const d = new Date(today); d.setDate(today.getDate()-days); return ymd(d); };
-    const c7 = cut(7), c14 = cut(14), c30 = cut(30);
     let log = LG().gameLogs?.[p.mlbId];
     if (!log) {
       const isPitcher = /SP|RP/.test((p.eligible||[]).join('')) && !/1B|2B|3B|SS|OF|C|DH/.test((p.eligible||[]).join(''));
@@ -2137,11 +2140,7 @@ async function computeOnePlayer(p) {
       LG().gameLogs = LG().gameLogs || {};
       LG().gameLogs[p.mlbId] = log;
     }
-    let season=0,w7=0,w14=0,w30=0;
-    log.forEach(g => { const pts=gamePoints(g.stat,g.group); season+=pts;
-      if(g.date>=c7)w7+=pts; if(g.date>=c14)w14+=pts; if(g.date>=c30)w30+=pts; });
-    p.ptsSeason=Math.round(season*10)/10; p.pts7=Math.round(w7*10)/10;
-    p.pts14=Math.round(w14*10)/10; p.pts30=Math.round(w30*10)/10; p.seasonPts=p.ptsSeason;
+    applyPointFields(p, log);
   } catch(e) {}
 }
 
@@ -2187,6 +2186,10 @@ function weekOfDate(dateYmd) {
 window.showPlayer = function(espnId) {
   const p = LG().playerPool.find(x => String(x.espnId) === String(espnId));
   if (!p) return;
+  // reset week-expansion when opening a different player
+  if (!window._expandedWeek || String(window._expandedWeek.espnId) !== String(espnId)) {
+    window._expandedWeek = null;
+  }
   // if this player's points aren't computed yet but they're mapped, fetch on demand
   if (p.ptsSeason == null && p.mlbId) {
     renderPlayerModal(p, true);  // show with a loading hint
@@ -2224,40 +2227,161 @@ function renderPlayerModal(p, loading) {
 
     ${isFreeAgent && myTeamId() ? (
       full
-        ? `<div class="card" style="border-color:var(--bad);padding:.6rem"><p class="sub" style="font-size:.75rem;color:var(--bad)">
-            Your roster is full (${count}/${cap}). Drop someone first (My Page → +/− Players).</p></div>`
+        ? `<button class="btn btn-amber btn-block" onclick="addWithSwap('${p.espnId}')">+ Add (roster full — pick who to drop)</button>`
         : `<button class="btn btn-amber btn-block" onclick="addPlayerFromPool('${p.espnId}')">+ Add to my team (${count}/${cap})</button>`
     ) : ''}
-    ${onMyTeam ? `<button class="btn btn-ghost btn-block" onclick="closeModal();go('home')">View on my team →</button>` : ''}
+    ${onMyTeam ? `
+      <button class="btn btn-ghost btn-block" onclick="closeModal();go('home')">View on my team →</button>
+      <button class="btn btn-block mt" style="background:var(--bad);color:#fff" onclick="dropFromCard('${p.espnId}')">Drop ${esc(p.name)}</button>
+    ` : ''}
 
     ${!havePts ? `<p class="sub mt" style="font-size:.72rem">Load player points on the Players page to see scoring.</p>` : ''}
     <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Close</button>
   `);
 };
-/* weekly scoring breakdown table for the player modal */
+
+/* drop one of your own players directly from their card */
+window.dropFromCard = function(espnId) {
+  const p = LG().playerPool.find(x=>String(x.espnId)===String(espnId));
+  openModal(`
+    <div class="h2">Drop ${esc(p?.name||'player')}?</div>
+    <p class="sub mt mb">They'll return to free agency. Affects your upcoming roster only.</p>
+    <button class="btn btn-block" style="background:var(--bad);color:#fff" onclick="confirmDropCard('${espnId}')">Drop player</button>
+    <button class="btn btn-ghost btn-block mt" onclick="showPlayer('${espnId}')">Cancel</button>
+  `);
+};
+window.confirmDropCard = function(espnId) {
+  doDropPlayer(espnId);
+  toast('Player dropped', 'ok');
+  closeModal();
+  renderActive();
+};
+
+/* add a free agent when roster is FULL — pick someone to drop in the same move */
+window.addWithSwap = function(addId) {
+  const addP = LG().playerPool.find(x=>String(x.espnId)===String(addId));
+  const roster = teamRoster(myTeamId());
+  const rows = roster.map(r => `
+    <div class="row-between" style="padding:.4rem 0;border-bottom:1px solid rgba(42,61,48,.4)">
+      <span>${esc(r.name)} <span class="sub" style="font-size:.7rem">${esc((r.eligible||[]).join('/'))}</span>${r.injured?' <span class="il-badge">IL</span>':''}
+        ${r.bestAvg!=null?`<span class="sub" style="font-size:.65rem"> · ${r.bestAvg.toFixed(1)} avg</span>`:''}</span>
+      <button class="btn btn-sm" style="background:var(--bad);color:#fff" onclick="confirmSwap('${addId}','${r.espnId}')">Drop</button>
+    </div>`).join('');
+  openModal(`
+    <div class="h2">Add ${esc(addP?.name||'')}</div>
+    <p class="sub mb">Your roster is full. Choose a player to drop — they'll be released and
+      ${esc(addP?.name||'the new player')} added in the same move.</p>
+    <div style="max-height:50vh;overflow-y:auto">${rows}</div>
+    <button class="btn btn-ghost btn-block mt" onclick="showPlayer('${addId}')">Cancel</button>
+  `);
+};
+window.confirmSwap = function(addId, dropId) {
+  doDropPlayer(dropId);                       // release the chosen player
+  const maxPick = LG().draft.picks.reduce((m,pk)=>Math.max(m,pk.pick||0), 0);
+  LG().draft.picks.push({ teamId: myTeamId(), playerId: addId, pick: maxPick+1, addedFA: true });
+  save();
+  const addP = LG().playerPool.find(x=>String(x.espnId)===String(addId));
+  const dropP = LG().playerPool.find(x=>String(x.espnId)===String(dropId));
+  toast(`Added ${addP?.name||'player'}, dropped ${dropP?.name||'player'}`, 'ok');
+  closeModal();
+  renderActive();
+};
+
+/* shared drop logic: remove from picks + clear from upcoming lineup */
+function doDropPlayer(espnId) {
+  const tid = myTeamId();
+  LG().draft.picks = LG().draft.picks.filter(pk =>
+    !(String(pk.teamId)===String(tid) && String(pk.playerId)===String(espnId)));
+  const wk = activeWeek();
+  const lu = LG().lineups?.[tid]?.[wk];
+  if (lu?.assignments) {
+    for (const k of Object.keys(lu.assignments)) {
+      if (String(lu.assignments[k])===String(espnId)) delete lu.assignments[k];
+    }
+  }
+}
+/* weekly scoring breakdown table for the player modal — rows expand on tap */
 function renderWeeklyBreakdown(p) {
   const bd = playerWeeklyBreakdown(p);
   if (!bd.weeks.length) return '';
+  const exp = window._expandedWeek;  // {espnId, week} of the currently expanded row
   const rows = bd.weeks.map(w => {
     const isBestWk = w.total === bd.bestWeek && bd.bestWeek > 0;
-    return `<tr style="${isBestWk?'background:var(--amber-bg)':''}">
-      <td class="pos">Wk ${w.week}</td>
+    const isOpen = exp && String(exp.espnId)===String(p.espnId) && exp.week===w.week;
+    let html = `<tr style="cursor:pointer;${isBestWk?'background:var(--amber-bg)':''}" onclick="toggleWeek('${p.espnId}',${w.week})">
+      <td class="pos">${isOpen?'▾':'▸'} Wk ${w.week}</td>
       <td class="r num" style="font-size:.72rem">${w.games}</td>
       <td class="r num cell-best">${w.best.toFixed(0)}</td>
       <td class="r num" style="font-weight:600;${isBestWk?'color:var(--amber)':''}">${w.total.toFixed(0)}</td>
     </tr>`;
+    if (isOpen) {
+      // individual games that week with each game's points + the kept (best) flagged
+      const games = weekGamesDetail(p, w.week);
+      const gameRows = games.map(g => `
+        <tr style="background:var(--field-2)">
+          <td class="pos" style="padding-left:1rem">${esc(g.dateLabel)}</td>
+          <td colspan="2" class="sub" style="font-size:.68rem">${esc(g.opp||'')}${g.isBest?' <span class="amber">★ kept</span>':''}</td>
+          <td class="r num ${g.pts<0?'cell-neg':''}" style="${g.isBest?'color:var(--amber);font-weight:700':''}">${g.pts.toFixed(0)}</td>
+        </tr>
+        <tr style="background:var(--field-2)"><td colspan="4" class="sub" style="font-size:.6rem;padding:.1rem .5rem .4rem 1rem;color:var(--sage-dim)">${esc(g.statline)}</td></tr>`).join('');
+      html += gameRows;
+    }
+    return html;
   }).join('');
   return `
-    <div class="divlabel mt">Weekly scoring · avg <b class="amber">${bd.avg.toFixed(1)}</b>/wk</div>
-    <div class="card card-tight" style="max-height:32vh;overflow-y:auto">
+    <div class="divlabel mt">Weekly scoring · avg <b class="amber">${bd.avg.toFixed(1)}</b>/wk · best-avg <b class="amber">${(p.bestAvg??0).toFixed(1)}</b></div>
+    <div class="card card-tight" style="max-height:38vh;overflow-y:auto">
       <table class="tbl">
         <thead><tr><th>Week</th><th class="r">G</th><th class="r">Best</th><th class="r">Total</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
     <p class="sub" style="font-size:.62rem;text-align:center;margin-top:.3rem">
-      Best = highest single game that week (your kept score). Highlighted = best week.</p>`;
+      Tap a week to see each game. Best = kept score. Highlighted row = best week.</p>`;
 }
+
+/* detail of each game in a player's given week: date, opp, pts, statline, isBest */
+function weekGamesDetail(p, week) {
+  const log = LG().gameLogs?.[p.mlbId] || [];
+  const days = weekDays(week).map(ymd);
+  const games = log.filter(g => days.includes(g.date)).map(g => ({
+    date: g.date,
+    dateLabel: (()=>{ const d=new Date(g.date+'T00:00:00'); return ['Su','Mo','Tu','We','Th','Fr','Sa'][d.getDay()]+' '+(d.getMonth()+1)+'/'+d.getDate(); })(),
+    opp: g.opp ? (g.isHome?'vs ':'@ ')+g.opp : '',
+    pts: gamePoints(g.stat, g.group),
+    statline: buildStatline(g.stat, g.group),
+  })).sort((a,b)=>a.date.localeCompare(b.date));
+  // flag the best (kept) game
+  if (games.length) {
+    const best = games.reduce((b,g)=> g.pts>b.pts?g:b, games[0]);
+    games.forEach(g => g.isBest = (g.date===best.date && g.pts===best.pts));
+  }
+  return games;
+}
+
+/* short human statline from a game's stat object for the active group */
+function buildStatline(stat, group) {
+  if (!stat) return '';
+  if (group === 'pitching') {
+    const ip = stat.inningsPitched ?? '0';
+    return `${ip} IP, ${stat.strikeOuts??0} K, ${stat.earnedRuns??0} ER, ${stat.hits??0} H, ${stat.baseOnBalls??0} BB${stat.wins?', W':''}${stat.saves?', SV':''}`;
+  }
+  const h = stat.hits??0, hr = stat.homeRuns??0, rbi = stat.rbi??0, r = stat.runs??0,
+        bb = stat.baseOnBalls??0, sb = stat.stolenBases??0, k = stat.strikeOuts??0;
+  let parts = [`${h}-for-${stat.atBats??0}`];
+  if (hr) parts.push(`${hr} HR`); if (rbi) parts.push(`${rbi} RBI`); if (r) parts.push(`${r} R`);
+  if (sb) parts.push(`${sb} SB`); if (bb) parts.push(`${bb} BB`); if (k) parts.push(`${k} K`);
+  return parts.join(', ');
+}
+
+window.toggleWeek = function(espnId, week) {
+  const e = window._expandedWeek;
+  if (e && String(e.espnId)===String(espnId) && e.week===week) window._expandedWeek = null;
+  else window._expandedWeek = { espnId, week };
+  // re-render the open player modal
+  const p = LG().playerPool.find(x=>String(x.espnId)===String(espnId));
+  if (p) renderPlayerModal(p, false);
+};
 /* add a free agent straight from the player modal */
 window.addPlayerFromPool = function(espnId) {
   if (!myTeamId()) { toast('Claim your team first', 'err'); return; }
@@ -3263,10 +3387,6 @@ async function autoPullStats(force) {
   const roster = teamRoster(myTeamId()).filter(p => p.mlbId);
   if (!roster.length) return;
   LG().gameLogs = LG().gameLogs || {};
-  // date cutoffs for rolling windows (same as computePoolPoints, so fields match)
-  const today = new Date(); today.setHours(0,0,0,0);
-  const cut = (d) => { const x = new Date(today); x.setDate(today.getDate()-d); return ymd(x); };
-  const c7 = cut(7), c14 = cut(14), c30 = cut(30);
   for (const p of roster) {
     try {
       const isPitcher = /SP|RP/.test((p.eligible||[]).join('')) && !/1B|2B|3B|SS|OF|C|DH/.test((p.eligible||[]).join(''));
@@ -3274,12 +3394,7 @@ async function autoPullStats(force) {
       const log = await mlbGameLog(p.mlbId, grp);
       const mapped = log.map(g => ({...g, group: grp}));
       LG().gameLogs[p.mlbId] = mapped;
-      // ALSO compute the point fields so roster players match pool players
-      let season=0,w7=0,w14=0,w30=0;
-      mapped.forEach(g => { const pts=gamePoints(g.stat,g.group); season+=pts;
-        if(g.date>=c7)w7+=pts; if(g.date>=c14)w14+=pts; if(g.date>=c30)w30+=pts; });
-      p.ptsSeason=Math.round(season*10)/10; p.pts7=Math.round(w7*10)/10;
-      p.pts14=Math.round(w14*10)/10; p.pts30=Math.round(w30*10)/10; p.seasonPts=p.ptsSeason;
+      applyPointFields(p, mapped);  // compute point fields (incl. bestAvg)
     } catch(e) {}
     await new Promise(r=>setTimeout(r,50));
   }
