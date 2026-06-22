@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Best Game League v6.6</title>
+<title>Best Game League v6.7</title>
 <style>
 /* ============================================================
-   BGL v6.6 — Design System
+   BGL v6.7 — Design System
    Subject: competitive fantasy baseball; hook = best single game/week
    Palette: stadium-at-night
    ============================================================ */
@@ -342,7 +342,7 @@ body {
 <div class="topbar">
   <div class="brand" onclick="go('home')">
     <span>BGL<span class="mark">.</span></span>
-    <span class="ver">v6.6</span>
+    <span class="ver">v6.7</span>
   </div>
   <div class="topbar-right">
     <button class="league-chip" id="league-chip" onclick="openLeagueSwitcher()" title="Change league or sport"></button>
@@ -589,9 +589,15 @@ function masterPayload() {
   const out = {};
   for (const sk of Object.keys(STATE.leagues)) {
     const lg = STATE.leagues[sk];
-    out[sk] = {
-      playerPool: lg.playerPool,
-    };
+    // gather every rostered playerId (main draft + rookie draft) so we know which
+    // locally-loaded "extra" players actually need to be synced.
+    const rostered = new Set();
+    (lg.draft?.picks || []).forEach(pk => rostered.add(String(pk.playerId)));
+    (lg.rookieDraft?.picks || []).forEach(pk => rostered.add(String(pk.playerId)));
+    // sync the top-300 pool PLUS any extra player who is on a roster. Unrostered
+    // extras (just browsed) stay local-only so the doc stays under 1 MB.
+    const pool = (lg.playerPool || []).filter(p => !p.extra || rostered.has(String(p.espnId)));
+    out[sk] = { playerPool: pool };
   }
   out.idOverrides = STATE.idOverrides;
   out.approvals = STATE.approvals || {};   // commissioner approval list
@@ -607,9 +613,14 @@ function applyMaster(master) {
     if (!STATE.leagues[sk]) continue;
     const m = master[sk];
     if (m.playerPool) {
-      STATE.leagues[sk].playerPool = m.playerPool;
-      // self-heal: if stored eligibility doesn't match current rules, recompute it
-      // from the raw ESPN slots so a stale pull can't keep showing wrong positions.
+      // Preserve this device's LOCAL-ONLY extras (unrostered players loaded via
+      // search) that aren't in the synced pool — merge them back in after applying.
+      const incoming = m.playerPool;
+      const incomingIds = new Set(incoming.map(p => String(p.espnId)));
+      const localExtras = (STATE.leagues[sk].playerPool || [])
+        .filter(p => p.extra && !incomingIds.has(String(p.espnId)));
+      STATE.leagues[sk].playerPool = incoming.concat(localExtras);
+      // self-heal: recompute eligibility from raw slots if it drifted from rules.
       autoCorrectEligibility(sk);
     }
   }
@@ -740,9 +751,10 @@ function leaguePayload() {
     trades: lg.trades || [],
     lineups: lg.lineups || {},
     members: lg.members || {},
-    gameLogs: lg.gameLogs || {},
-    scheduleCache: lg.scheduleCache || {},
     irStash: lg.irStash || {},
+    // NOTE: gameLogs and scheduleCache are intentionally NOT synced. They're large,
+    // derived caches that every device fetches itself from the MLB API (free + fast).
+    // Syncing them blew past Firestore's 1 MB per-document limit. They live locally only.
     ts: Date.now(),
   };
 }
@@ -1223,16 +1235,9 @@ async function computePoolPoints(force, progressFn) {
   if (_poolPtsRunning) return;
   _poolPtsRunning = true;
   try {
-    // compute for: top 250 by ADP, PLUS every rostered player, PLUS anyone with a
-    // real ADP (<9999). This covers draftable players and current free agents.
-    const sorted = LG().playerPool.slice().sort((a,b)=>a.adp-b.adp);
-    const rosteredIds = new Set(LG().draft.picks.map(pk => String(pk.playerId)));
-    const pick = new Map();
-    sorted.slice(0, 250).forEach(p => pick.set(String(p.espnId), p));
-    LG().playerPool.forEach(p => {
-      if (rosteredIds.has(String(p.espnId)) || p.adp < 9999) pick.set(String(p.espnId), p);
-    });
-    const mapped = [...pick.values()].filter(p => p.mlbId);
+    // the stored pool is already the top 300 by ADP — just compute all of them.
+    // (Players outside the 300 get computed individually via loadExtraPlayer.)
+    const mapped = LG().playerPool.filter(p => p.mlbId);
     LG().gameLogs = LG().gameLogs || {};
     let done = 0;
     for (const p of mapped) {
@@ -2675,8 +2680,80 @@ function viewPlayersReal() {
       ${list.length > 150 ? `<div class="divlabel">showing 150 of ${list.length} matches</div>` :
         `<div class="divlabel">${list.length} player${list.length!==1?'s':''}</div>`}
     </div>
-    <p class="sub mt" style="font-size:.7rem;text-align:center">Tap a player's name to view details and add them to your team.</p>`;
+    ${playerView.search && playerView.search.length >= 3 ? `
+      <div class="card card-tight mt" style="border-color:var(--sage)">
+        <p class="sub" style="font-size:.72rem">Don't see who you're looking for? The pool is the top 300 by ADP.
+          Search MLB directly to load <b>${esc(playerView.search)}</b> to this device.</p>
+        <button class="btn btn-sm btn-block" onclick="loadExtraPlayer('${esc(playerView.search)}')">🔎 Search MLB for "${esc(playerView.search)}"</button>
+      </div>` : ''}
+    <p class="sub mt" style="font-size:.7rem;text-align:center">Pool is the top 300 by ADP. Tap a name for details. Players outside the 300 load to this device only.</p>`;
 }
+
+/* Load a player NOT in the top-300 pool, by searching MLB. Adds them to a
+   LOCAL-ONLY extras list (not synced to Firebase, so the doc stays small). */
+window.loadExtraPlayer = async function(name) {
+  if (!name) return;
+  openModal(`<div class="h2">Searching MLB…</div><div class="spinner"></div>
+    <p class="sub" style="text-align:center">Looking for "${esc(name)}"</p>`);
+  try {
+    const res = await fetch(`${MLB}/people/search?names=${encodeURIComponent(name)}`);
+    const data = res.ok ? await res.json() : {};
+    const people = (data.people || []).slice(0, 8);
+    if (!people.length) {
+      openModal(`<div class="h2">No match</div>
+        <p class="sub mb">MLB had no player named "${esc(name)}".</p>
+        <button class="btn btn-ghost btn-block" onclick="closeModal()">Close</button>`);
+      return;
+    }
+    const rows = people.map(p => {
+      const pos = p.primaryPosition?.abbreviation || '';
+      const team = p.currentTeam?.name || '';
+      const already = LG().playerPool.some(x => String(x.mlbId)===String(p.id));
+      return `<div class="row-between" style="padding:.4rem 0;border-bottom:1px solid rgba(42,61,48,.4)">
+        <span style="font-size:.85rem">${esc(p.fullName)} <span class="sub" style="font-size:.65rem">${esc(pos)} · ${esc(team)}</span></span>
+        ${already?'<span class="sub" style="font-size:.65rem">in pool</span>'
+          :`<button class="btn btn-sm btn-amber" onclick="addExtraPlayer(${p.id},'${esc(p.fullName).replace(/'/g,"\\'")}','${esc(pos)}')">Load</button>`}
+      </div>`;
+    }).join('');
+    openModal(`<div class="h2">Load a player</div>
+      <p class="sub mb">These load to this device only (not synced).</p>
+      ${rows}
+      <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Close</button>`);
+  } catch(e) {
+    openModal(`<div class="h2">Search failed</div><p class="sub mb">${esc(e?.message||'error')}</p>
+      <button class="btn btn-ghost btn-block" onclick="closeModal()">Close</button>`);
+  }
+};
+/* add a searched MLB player into the LOCAL pool (flagged extra, not synced) */
+window.addExtraPlayer = async function(mlbId, fullName, pos) {
+  // map MLB position abbreviation to our eligibility buckets
+  const posMap = { 'C':'C','1B':'1B','2B':'2B','3B':'3B','SS':'SS','LF':'OF','CF':'OF','RF':'OF','OF':'OF','DH':'DH','P':'SP','SP':'SP','RP':'RP' };
+  const eligible = [ posMap[pos] || 'DH' ];
+  const player = {
+    espnId: 'mlb_' + mlbId,     // synthetic id so it won't collide with ESPN ids
+    name: fullName,
+    pos: eligible[0],
+    defPosId: null,
+    eligible,
+    proTeam: '',
+    eligSlots: [],
+    adp: 9999,
+    seasonPts: 0,
+    owned: 0,
+    injured: false,
+    mlbId: mlbId,
+    extra: true,                // flag: local-only, never synced
+  };
+  // de-dupe
+  if (!LG().playerPool.some(p => String(p.mlbId)===String(mlbId))) {
+    LG().playerPool.push(player);
+  }
+  saveLocal();                  // LOCAL only — not save() / Firebase
+  await computeOnePlayer(player);
+  toast(`Loaded ${fullName} to this device`, 'ok');
+  closeModal();
+  renderActive();
+};
 
 window.setPtsWindow = function(w) { playerView.ptsWindow = w; if (playerView.sort==='pts') {} renderActive(); };
 window.loadPoolPoints = async function() {
@@ -3009,11 +3086,18 @@ window.addPlayerFromPool = function(espnId) {
   const maxPick = LG().draft.picks.reduce((m,pk)=>Math.max(m,pk.pick||0), 0);
   LG().draft.picks.push({ teamId: myTeamId(), playerId: espnId, pick: maxPick+1, addedFA: true });
   save();
+  syncExtraIfRostered(espnId);   // if this is a local-only extra, push it to master so all see it
   const p = LG().playerPool.find(x=>String(x.espnId)===String(espnId));
   toast(`Added ${p?.name||'player'} to your team`, 'ok');
   closeModal();
   renderActive();
 };
+/* if a player is a local-only extra and is now on a roster, sync master so their
+   record reaches Firebase (masterPayload includes rostered extras). */
+function syncExtraIfRostered(espnId) {
+  const p = LG().playerPool.find(x=>String(x.espnId)===String(espnId));
+  if (p && p.extra) saveMaster();
+}
 
 /* ============================================================
    SETTINGS — the control center (Phase 1 functional)
@@ -3623,13 +3707,15 @@ window.doPullPool = async function() {
       };
     }).filter(p => p.name);
 
-    // sort by ADP (best first), then trim to top 600 relevant players
+    // sort by ADP (best first), then trim to the top 300. Keeping the pool small
+    // and fixed keeps the synced Firebase doc well under the 1 MB limit. Players
+    // outside the top 300 can be loaded individually to local storage on demand.
     LG().playerPool.sort((a,b) => a.adp - b.adp);
-    LG().playerPool = LG().playerPool.slice(0, 600);
+    LG().playerPool = LG().playerPool.slice(0, 300);
     const ranked = LG().playerPool.filter(p => p.adp < 9999).length;
     slog(`Stored top ${LG().playerPool.length} players (${ranked} with real ADP)`, 'ok');
     await save({master:true});
-    toast('Player pool loaded', 'ok');
+    toast('Player pool loaded (top 300)', 'ok');
     renderActive();
   } catch(e) { slog('Pool fetch failed: ' + e.message, 'err'); toast(e.message, 'err'); }
 };
@@ -4309,6 +4395,7 @@ function commitRookiePick(espnId, team) {
   _rookieGuard = -1;
   if (rookieDone()) { finishRookieDraft(); return; }
   save();
+  syncExtraIfRostered(espnId);
   renderActive();
 }
 function autoRookiePick() {
@@ -4407,6 +4494,7 @@ function commitPick(espnId, team) {
   _autoPickGuard = -1;                      // allow auto-pick for the new pick index
   if (draftDone()) { finishDraft(); return; }
   save();
+  syncExtraIfRostered(espnId);
   renderActive();
 }
 
