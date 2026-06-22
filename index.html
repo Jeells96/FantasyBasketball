@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Best Game League v6.1</title>
+<title>Best Game League v6.3</title>
 <style>
 /* ============================================================
-   BGL v6.1 — Design System
+   BGL v6.3 — Design System
    Subject: competitive fantasy baseball; hook = best single game/week
    Palette: stadium-at-night
    ============================================================ */
@@ -342,7 +342,7 @@ body {
 <div class="topbar">
   <div class="brand" onclick="go('home')">
     <span>BGL<span class="mark">.</span></span>
-    <span class="ver">v6.1</span>
+    <span class="ver">v6.3</span>
   </div>
   <div class="topbar-right">
     <button class="league-chip" id="league-chip" onclick="openLeagueSwitcher()" title="Change league or sport"></button>
@@ -354,6 +354,7 @@ body {
 <!-- ============ PAGES ============ -->
 <div id="page-home" class="page active"></div>
 <div id="page-draft" class="page"></div>
+<div id="page-rookie" class="page"></div>
 <div id="page-standings" class="page"></div>
 <div id="page-matchups" class="page"></div>
 <div id="page-teams" class="page"></div>
@@ -365,6 +366,7 @@ body {
 <div class="botnav">
   <button data-nav="home" onclick="go('home')"><span class="ic">★</span>My Page</button>
   <button data-nav="draft" id="nav-draft" onclick="go('draft')" style="display:none"><span class="ic">◷</span>Draft</button>
+  <button data-nav="rookie" id="nav-rookie" onclick="go('rookie')" style="display:none"><span class="ic">🌱</span>Rookie</button>
   <button data-nav="standings" onclick="go('standings')"><span class="ic">▦</span>Standings</button>
   <button data-nav="matchups" onclick="go('matchups')"><span class="ic">⚔</span>Matchups</button>
   <button data-nav="players" onclick="go('players')"><span class="ic">◎</span>Players</button>
@@ -547,8 +549,9 @@ function blankLeague(name) {
       bonusWin: false,          // extra W/L for top-half/bottom-half weekly scorers
     },
     draftPicks: {},             // dynasty future picks: draftPicks[year][round] = teamId (owner)
-    rookieDraft: { enabled:false, started:false, complete:false, order:[], picks:[], currentPick:0,
-                   draftDate:null, secPerPick:90, snake:true },
+    rookieDraft: { enabled:false, started:false, complete:false, live:false, order:[], picks:[],
+                   currentPick:0, draftDate:null, secPerPick:90, snake:true, rounds:4,
+                   pickStartedAt:null, paused:false },
   };
 }
 
@@ -1266,7 +1269,7 @@ async function nbaLookup(name) {
 /* ============================================================
    NAVIGATION
    ============================================================ */
-const PAGES = ['home','draft','standings','matchups','teams','myteam','players','settings'];
+const PAGES = ['home','draft','rookie','standings','matchups','teams','myteam','players','settings'];
 let activePage = 'home';
 
 window.go = function(page) {
@@ -1286,6 +1289,7 @@ function renderPage(page) {
   switch(page) {
     case 'home':      el.innerHTML = viewMyTeam(); break;
     case 'draft':     el.innerHTML = viewDraft(); break;
+    case 'rookie':    el.innerHTML = viewRookieDraft(); break;
     case 'standings': el.innerHTML = viewStandings(); break;
     case 'matchups':  el.innerHTML = viewMatchups(); break;
     case 'teams':     el.innerHTML = viewTeams(); break;
@@ -1304,8 +1308,11 @@ function renderPage(page) {
   // draft tab appears only while a draft is live
   const navDraft = $('nav-draft');
   if (navDraft) navDraft.style.display = (LG().draft?.live) ? '' : 'none';
+  const navRookie = $('nav-rookie');
+  if (navRookie) navRookie.style.display = (RD().live) ? '' : 'none';
   // run the draft clock only while viewing a live draft
   manageDraftTimer(page);
+  manageRookieTimer(page);
 }
 
 /* drive the 1-second draft clock; auto-pick when it hits zero */
@@ -1333,6 +1340,30 @@ function manageDraftTimer(page) {
     }
   } else if (_draftTimer) {
     clearInterval(_draftTimer); _draftTimer = null;
+  }
+}
+
+/* rookie draft clock — mirrors the main draft timer on RD() */
+function manageRookieTimer(page) {
+  const live = RD().live && !RD().paused;
+  const onPage = page === 'rookie';
+  if (live && onPage) {
+    if (!_rookieTimer) {
+      _rookieTimer = setInterval(() => {
+        if (!RD().live || RD().paused) { clearInterval(_rookieTimer); _rookieTimer=null; return; }
+        const left = rookieSecondsLeft();
+        const t = document.querySelector('.rookie-timer');
+        if (t) { t.textContent = fmtClock(left); t.classList.toggle('urgent', left<=10); }
+        if (left <= 0) {
+          const idx = rookiePickIndex();
+          if (_rookieGuard === idx) return;
+          _rookieGuard = idx;
+          autoRookiePick();
+        }
+      }, 1000);
+    }
+  } else if (_rookieTimer) {
+    clearInterval(_rookieTimer); _rookieTimer = null;
   }
 }
 
@@ -1432,7 +1463,7 @@ function viewDraft() {
     <div class="row-between draft-pick-row" style="padding:.4rem 0;border-bottom:1px solid rgba(42,61,48,.4)">
       <span class="plink" onclick="showPlayer('${p.espnId}')">${esc(p.name)}
         <span class="sub" style="font-size:.65rem">${esc((p.eligible||[]).join('/'))} · ${esc(p.proTeam||'')} · ADP ${p.adp<9999?p.adp.toFixed(0):'—'}${p.bestAvg!=null?` · ${p.bestAvg.toFixed(1)}avg`:''}</span></span>
-      ${(mine||window._masterUnlocked)?`<button class="btn btn-sm btn-amber" onclick="makeDraftPick('${p.espnId}')">Draft</button>`:''}
+      ${mine?`<button class="btn btn-sm btn-amber" onclick="makeDraftPick('${p.espnId}')">Draft</button>`:''}
     </div>`).join('');
 
   // recent picks
@@ -1452,11 +1483,95 @@ function viewDraft() {
       <div class="draft-timer ${secLeft<=10?'urgent':''}">${d.paused?'—':fmtClock(secLeft)}</div>
       ${window._masterUnlocked?`<div class="row" style="justify-content:center;gap:.4rem;margin-top:.5rem">
         <button class="btn btn-sm btn-ghost" onclick="pauseDraft()">${d.paused?'▶ Resume':'⏸ Pause'}</button>
-        <button class="btn btn-sm btn-ghost" onclick="commishForcePick()">Force pick</button>
-      </div>`:''}
+        <button class="btn btn-sm btn-ghost" onclick="commishForcePick()" title="Auto-pick best available for the team on the clock">⏭ Force auto-pick</button>
+      </div><p class="sub" style="font-size:.6rem;margin-top:.3rem">Commissioner controls — you still pick for your own team using the Draft buttons below.</p>`:''}
     </div>
 
     <div class="divlabel">Draft order</div>
+    <div class="draft-order-strip">${orderStrip}</div>
+
+    ${recent?`<div class="divlabel">Recent picks</div><div class="card card-tight">${recent}</div>`:''}
+
+    <div class="divlabel">Available players</div>
+    ${draftFilterBar()}
+    <div class="card card-tight">${playerRows || '<p class="sub">No players match.</p>'}</div>
+  `;
+}
+
+/* ROOKIE DRAFT ROOM — mirrors the main room; picks labeled exact (1.1) when
+   an order is set, generic otherwise. */
+function viewRookieDraft() {
+  const d = RD();
+  if (!d.enabled) {
+    return `<div class="h1">Rookie draft</div>
+      <div class="empty"><div class="big">🌱</div><div class="msg">The rookie draft isn't enabled.</div>
+      ${window._masterUnlocked?'<button class="btn" onclick="go(\'settings\')">Open rookie setup</button>':'<p class="sub">Your commissioner controls the rookie draft.</p>'}</div>`;
+  }
+  if (!d.live && !d.complete) {
+    return `<div class="h1">Rookie draft</div>
+      <div class="empty"><div class="big">🌱</div>
+      <div class="msg">Not live yet.${d.draftDate?`<br><br>Scheduled: <b>${esc(new Date(d.draftDate).toLocaleString())}</b>`:''}
+      <br><br>${d.order?.length?'Picks will be exact (1.1, 1.2…).':'Picks are generic (no order set).'}</div>
+      ${window._masterUnlocked?'<button class="btn" onclick="go(\'settings\')">Open rookie setup</button>':'<p class="sub">Your commissioner will open the room.</p>'}</div>`;
+  }
+  if (d.complete) {
+    return `<div class="h1">Rookie draft complete</div>
+      <div class="empty"><div class="big">✓</div><div class="msg">All ${d.picks.length} rookie picks are in.</div>
+      <button class="btn" onclick="go('teams')">View rosters</button></div>`;
+  }
+  // LIVE
+  const seq = rookieSequence();
+  const idx = rookiePickIndex();
+  const onClock = rookieCurrentTeam();
+  const label = rookiePickLabel(idx);
+  const mine = String(onClock) === String(myTeamId());
+  const secLeft = rookieSecondsLeft();
+  const hasOrder = !!(d.order && d.order.length);
+
+  // order strip (only meaningful with an order)
+  const order = hasOrder ? d.order : LG().teams.map(t=>t.id);
+  const orderStrip = order.map((tid,i) => {
+    const isNow = String(tid)===String(onClock);
+    const seqPos = seq.findIndex((t,si) => si>=idx && String(t)===String(tid));
+    const isNext = seqPos === idx+1;
+    return `<div class="draft-team ${isNow?'now':''} ${isNext?'next':''}">
+      <span class="dt-pos">${hasOrder?(i+1):'•'}</span>
+      <span class="dt-name">${esc(teamById(tid).name)}</span>
+      ${isNow?'<span class="dt-tag">on clock</span>':isNext?'<span class="dt-tag next">on deck</span>':''}
+    </div>`;
+  }).join('');
+
+  const taken = new Set(d.picks.map(p=>String(p.playerId)));
+  const avail = filteredPool().filter(p => !taken.has(String(p.espnId))).slice(0, 80);
+  const playerRows = avail.map(p => `
+    <div class="row-between" style="padding:.4rem 0;border-bottom:1px solid rgba(42,61,48,.4)">
+      <span class="plink" onclick="showPlayer('${p.espnId}')">${esc(p.name)}
+        ${p.isRookie?'<span class="ps-tag" style="display:inline">R</span>':''}
+        <span class="sub" style="font-size:.65rem">${esc((p.eligible||[]).join('/'))} · ${esc(p.proTeam||'')} · ADP ${p.adp<9999?p.adp.toFixed(0):'—'}</span></span>
+      ${mine?`<button class="btn btn-sm btn-amber" onclick="makeRookiePick('${p.espnId}')">Draft</button>`:''}
+    </div>`).join('');
+
+  const recent = d.picks.slice(-6).reverse().map(pk => {
+    const pl = LG().playerPool.find(x=>String(x.espnId)===String(pk.playerId));
+    return `<div class="sub" style="font-size:.72rem;padding:.15rem 0">
+      <b>${esc(pk.label||('#'+pk.pick))}</b> ${esc(teamById(pk.teamId).abbrev||teamById(pk.teamId).name)} — ${esc(pl?.name||'?')}</div>`;
+  }).join('');
+
+  return `
+    <div class="eyebrow">${hasOrder?`Pick ${label}`:`Pick ${idx+1} (generic)`} · 🌱 Rookie draft</div>
+    <div class="h1">Rookie draft room</div>
+
+    <div class="card ${mine?'on-clock-mine':''}" style="text-align:center">
+      <div class="sub">${d.paused?'⏸ PAUSED':'On the clock'}${hasOrder?` · pick ${label}`:''}</div>
+      <div class="h2" style="margin:.2rem 0;color:${mine?'var(--amber)':'var(--chalk)'}">${esc(teamById(onClock).name)}${mine?' (you)':''}</div>
+      <div class="rookie-timer draft-timer ${secLeft<=10?'urgent':''}">${d.paused?'—':fmtClock(secLeft)}</div>
+      ${window._masterUnlocked?`<div class="row" style="justify-content:center;gap:.4rem;margin-top:.5rem">
+        <button class="btn btn-sm btn-ghost" onclick="pauseRookieDraft()">${d.paused?'▶ Resume':'⏸ Pause'}</button>
+        <button class="btn btn-sm btn-ghost" onclick="commishForceRookiePick()">⏭ Force auto-pick</button>
+      </div>`:''}
+    </div>
+
+    <div class="divlabel">${hasOrder?'Draft order':'Teams (no fixed order — generic picks)'}</div>
     <div class="draft-order-strip">${orderStrip}</div>
 
     ${recent?`<div class="divlabel">Recent picks</div><div class="card card-tight">${recent}</div>`:''}
@@ -1896,6 +2011,7 @@ function viewMyTeam() {
     <div class="row-between">
       <div class="h1">${isMine?'My Team':'League Team'}</div>
       ${isMine ? `<div class="row" style="gap:.4rem">
+        <button class="btn btn-sm btn-ghost" onclick="openTradeCenter()">⇄ Trades${pendingForMe().length?` (${pendingForMe().length})`:''}</button>
         <button class="btn btn-sm btn-ghost" onclick="openAddDrop()">+/− Players</button>
         <button class="btn btn-sm btn-ghost" onclick="editLineup()">Lineup ⛶</button>
       </div>` : `<button class="btn btn-sm btn-amber" onclick="viewMyOwnTeam()">← My team</button>`}
@@ -3031,9 +3147,47 @@ function viewSettings() {
         ${LG().draft.order?.length && LG().teams.length>=2 ? '' : 'disabled'}>
         ${LG().draft.live ? '● Draft is LIVE' : '▶ Open draft room (go live)'}</button>
       ${LG().draft.complete ? '<p class="sub mt" style="font-size:.7rem;color:var(--good)">✓ Draft complete</p>' : ''}
-      ${isDynasty() ? `<button class="btn btn-ghost btn-block mt" onclick="toggleRookieDraft()">
-        ${LG().rookieDraft?.enabled ? 'Rookie draft: ENABLED' : 'Enable rookie draft'}</button>` : ''}
     </div>
+
+    ${isDynasty() ? `<div class="card" style="border-color:var(--sage)">
+      <div class="row-between">
+        <div class="h2" style="margin:0">🌱 Rookie draft</div>
+        <button class="btn btn-sm ${RD().enabled?'btn-amber':'btn-ghost'}" onclick="toggleRookieDraft()">${RD().enabled?'Enabled':'Enable'}</button>
+      </div>
+      <p class="sub mt mb">Separate dynasty rookie draft. ${RD().order?.length
+        ? 'Order is set — picks are exact (1.1, 1.2, …).'
+        : 'No order set — picks are generic until you set an order.'}</p>
+      ${RD().enabled ? `
+        <div class="row-between" style="padding:.3rem 0;border-top:1px solid rgba(42,61,48,.4)">
+          <span class="sub">Order</span>
+          <span class="sub" style="font-size:.7rem">${RD().order?.length ? RD().order.length+' teams (exact picks)' : 'not set (generic)'}</span>
+        </div>
+        <div class="row" style="gap:.35rem">
+          <button class="btn btn-sm btn-ghost" onclick="randomizeRookieOrder()">🎲 Randomize</button>
+          <button class="btn btn-sm btn-ghost" onclick="setRookieOrderManual()">Set manually</button>
+          ${RD().order?.length ? `<button class="btn btn-sm btn-ghost" onclick="clearRookieOrder()">Clear</button>` : ''}
+        </div>
+        <div class="row-between mt" style="padding:.3rem 0;border-top:1px solid rgba(42,61,48,.4)">
+          <span class="sub">Rounds</span>
+          <input class="input" type="number" min="1" max="10" value="${RD().rounds||4}"
+            style="width:80px;text-align:right" onchange="setRookieRounds(this.value)">
+        </div>
+        <div class="row-between" style="padding:.3rem 0">
+          <span class="sub">Seconds per pick</span>
+          <input class="input" type="number" min="15" step="15" value="${RD().secPerPick||90}"
+            style="width:90px;text-align:right" onchange="setRookieSecPerPick(this.value)">
+        </div>
+        <div class="row-between" style="padding:.3rem 0">
+          <span class="sub">Draft date/time</span>
+          <input class="input" type="datetime-local" value="${RD().draftDate||''}"
+            style="width:200px" onchange="setRookieDraftDate(this.value)">
+        </div>
+        <button class="btn btn-amber btn-block mt" onclick="startRookieDraft()"
+          ${LG().teams.length>=2 ? '' : 'disabled'}>
+          ${RD().live ? '● Rookie draft is LIVE' : '▶ Open rookie draft room (go live)'}</button>
+        ${RD().complete ? '<p class="sub mt" style="font-size:.7rem;color:var(--good)">✓ Rookie draft complete</p>' : ''}
+      ` : ''}
+    </div>` : ''}
 
     <div class="card">
       <div class="h2">Player eligibility</div>
@@ -3765,6 +3919,12 @@ function LSET() {
   return { ...d, ...(LG().settings || {}) };
 }
 function isDynasty() { return LSET().leagueType === 'dynasty'; }
+function RD() {
+  // rookie draft state with defaults (older leagues may lack fields)
+  const d = { enabled:false, started:false, complete:false, live:false, order:[], picks:[],
+              currentPick:0, draftDate:null, secPerPick:90, snake:true, rounds:4, pickStartedAt:null, paused:false };
+  return { ...d, ...(LG().rookieDraft || {}) };
+}
 function rosterBenchCount() {
   return LG().rosterOverride?.benchCount ?? SP().benchCount ?? 5;
 }
@@ -3961,11 +4121,165 @@ window.saveDraftOrder = function() {
   LG().draft.order = [...window._draftOrderTmp];
   save(); toast('Draft order saved', 'ok'); closeModal(); renderActive();
 };
+/* ============================================================
+   ROOKIE DRAFT — separate dynasty draft. Mirrors the main draft engine
+   but on LG().rookieDraft. If an order is set, picks are exact (1.1, 1.2…);
+   with no order, picks are generic (no per-slot numbering).
+   ============================================================ */
+function ensureRD() { if (!LG().rookieDraft) LG().rookieDraft = {}; }
 window.toggleRookieDraft = function() {
-  if (!LG().rookieDraft) LG().rookieDraft = { enabled:false };
-  LG().rookieDraft.enabled = !LG().rookieDraft.enabled;
-  save(); toast(LG().rookieDraft.enabled ? 'Rookie draft enabled' : 'Rookie draft disabled', 'ok'); renderActive();
+  ensureRD();
+  LG().rookieDraft.enabled = !RD().enabled;
+  save(); toast(RD().enabled ? 'Rookie draft enabled' : 'Rookie draft disabled', 'ok'); renderActive();
 };
+window.setRookieRounds = function(v) { ensureRD(); LG().rookieDraft.rounds = Math.max(1, Math.min(10, parseInt(v)||4)); save(); };
+window.setRookieSecPerPick = function(v) { ensureRD(); LG().rookieDraft.secPerPick = Math.max(15, parseInt(v)||90); save(); };
+window.setRookieDraftDate = function(v) { ensureRD(); LG().rookieDraft.draftDate = v || null; save(); renderActive(); };
+window.clearRookieOrder = function() {
+  ensureRD(); LG().rookieDraft.order = []; save();
+  toast('Rookie order cleared — picks are now generic', 'ok'); renderActive();
+};
+window.randomizeRookieOrder = function() {
+  if (LG().teams.length < 2) { toast('Generate teams first', 'err'); return; }
+  ensureRD();
+  const ids = LG().teams.map(t => t.id);
+  for (let i = ids.length - 1; i > 0; i--) { const j = Math.floor(Math.random()*(i+1)); [ids[i],ids[j]]=[ids[j],ids[i]]; }
+  LG().rookieDraft.order = ids;
+  save();
+  const names = ids.map((id,i) => `${i+1}. ${teamById(id).name}`).join('\n');
+  openModal(`<div class="h2">🎲 Rookie order set</div>
+    <pre class="sub" style="white-space:pre-wrap;font-size:.8rem;line-height:1.6">${esc(names)}</pre>
+    <p class="sub mt" style="font-size:.7rem">Picks will be exact: 1.1, 1.2, … through round ${RD().rounds}.</p>
+    <button class="btn btn-block mt" onclick="closeModal();renderActive()">Done</button>
+    <button class="btn btn-ghost btn-block mt" onclick="randomizeRookieOrder()">🎲 Re-randomize</button>`);
+};
+window.setRookieOrderManual = function() {
+  if (LG().teams.length < 2) { toast('Generate teams first', 'err'); return; }
+  const cur = RD().order?.length ? RD().order : LG().teams.map(t=>t.id);
+  window._rookieOrderTmp = [...cur];
+  renderRookieOrderModal();
+};
+function renderRookieOrderModal() {
+  const cur = window._rookieOrderTmp;
+  const rows = cur.map((id,i) => `
+    <div class="row-between" style="padding:.35rem 0;border-bottom:1px solid rgba(42,61,48,.4)">
+      <span><b>${i+1}.</b> ${esc(teamById(id).name)}</span>
+      <div class="row" style="gap:.2rem">
+        <button class="btn btn-sm btn-ghost" onclick="moveRookieSlot(${i},-1)" ${i===0?'disabled':''}>▲</button>
+        <button class="btn btn-sm btn-ghost" onclick="moveRookieSlot(${i},1)" ${i===cur.length-1?'disabled':''}>▼</button>
+      </div>
+    </div>`).join('');
+  openModal(`<div class="h2">Set rookie draft order</div>
+    <p class="sub mb">Reorder teams. Pick 1.1 is at the top. Picks will be exact.</p>
+    <div id="rookie-order-list">${rows}</div>
+    <button class="btn btn-block mt" onclick="saveRookieOrder()">Save order</button>
+    <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Cancel</button>`);
+}
+window.moveRookieSlot = function(i, dir) {
+  const arr = window._rookieOrderTmp; const j = i+dir;
+  if (j<0||j>=arr.length) return;
+  [arr[i],arr[j]]=[arr[j],arr[i]];
+  renderRookieOrderModal();
+};
+window.saveRookieOrder = function() {
+  ensureRD(); LG().rookieDraft.order = [...window._rookieOrderTmp];
+  save(); toast('Rookie order saved — picks are exact', 'ok'); closeModal(); renderActive();
+};
+window.startRookieDraft = function() {
+  if (LG().teams.length < 2) { toast('Need at least 2 teams', 'err'); return; }
+  if (RD().complete) { toast('Rookie draft already complete', 'err'); return; }
+  ensureRD();
+  LG().rookieDraft.started = true;
+  LG().rookieDraft.live = true;
+  LG().rookieDraft.paused = false;
+  LG().rookieDraft.pickStartedAt = Date.now();
+  if (!LG().rookieDraft.picks) LG().rookieDraft.picks = [];
+  save();
+  toast('Rookie draft room is live', 'ok');
+  go('rookie');
+};
+
+/* rookie draft sequence: uses its own order (or team order if none) + rounds.
+   Snake honored. */
+function rookieSequence() {
+  const order = RD().order?.length ? RD().order : LG().teams.map(t=>t.id);
+  const rounds = RD().rounds || 4;
+  const seq = [];
+  for (let r = 0; r < rounds; r++) {
+    const ro = (RD().snake && r % 2 === 1) ? [...order].reverse() : order;
+    ro.forEach(tid => seq.push(tid));
+  }
+  return seq;
+}
+function rookiePickIndex() { return (RD().picks || []).length; }
+function rookieCurrentTeam() {
+  const seq = rookieSequence(); const idx = rookiePickIndex();
+  return idx < seq.length ? seq[idx] : null;
+}
+function rookieDone() { return rookiePickIndex() >= rookieSequence().length; }
+/* pick label: exact "round.slot" if order set, else generic "Pick N" */
+function rookiePickLabel(idx) {
+  const teams = (RD().order?.length ? RD().order.length : LG().teams.length) || 1;
+  const round = Math.floor(idx / teams) + 1;
+  const slot = (idx % teams) + 1;
+  if (RD().order?.length) return `${round}.${slot}`;        // exact
+  return `Pick ${idx + 1}`;                                  // generic
+}
+
+let _rookieTimer = null;
+let _rookieGuard = -1;
+function rookieSecondsLeft() {
+  const d = RD();
+  if (d.paused || !d.pickStartedAt) return d.secPerPick;
+  const elapsed = Math.floor((Date.now() - d.pickStartedAt)/1000);
+  return Math.max(0, d.secPerPick - elapsed);
+}
+window.makeRookiePick = function(espnId, force) {
+  if (!RD().live) { toast('Rookie draft is not live', 'err'); return; }
+  const team = rookieCurrentTeam();
+  if (!team) { finishRookieDraft(); return; }
+  const mine = String(team) === String(myTeamId());
+  if (!mine && !force) { toast("Not your pick — it's " + (teamById(team).name||'another team') + "'s turn", 'err'); return; }
+  commitRookiePick(espnId, team);
+};
+function commitRookiePick(espnId, team) {
+  ensureRD();
+  if (!team) return;
+  const taken = new Set((RD().picks||[]).map(p => String(p.playerId)));
+  if (taken.has(String(espnId))) return;
+  const idx = rookiePickIndex();
+  LG().rookieDraft.picks.push({ pick: idx+1, label: rookiePickLabel(idx), teamId: team, playerId: espnId, rookie: true });
+  LG().rookieDraft.pickStartedAt = Date.now();
+  _rookieGuard = -1;
+  if (rookieDone()) { finishRookieDraft(); return; }
+  save();
+  renderActive();
+}
+function autoRookiePick() {
+  const team = rookieCurrentTeam();
+  if (!team) { if (RD().live) finishRookieDraft(); return; }
+  const taken = new Set((RD().picks||[]).map(p => String(p.playerId)));
+  // rookie pool = players flagged rookie if available, else best available by ADP
+  const pool = [...LG().playerPool].sort((a,b)=>a.adp-b.adp);
+  let pick = pool.find(p => p.isRookie && !taken.has(String(p.espnId)))
+          || pool.find(p => !taken.has(String(p.espnId)));
+  if (pick) commitRookiePick(pick.espnId, team);
+}
+function finishRookieDraft() {
+  ensureRD();
+  LG().rookieDraft.live = false;
+  LG().rookieDraft.complete = true;
+  save();
+  toast('Rookie draft complete!', 'ok');
+  go('teams');
+}
+window.pauseRookieDraft = function() {
+  ensureRD();
+  LG().rookieDraft.paused = !RD().paused;
+  if (!RD().paused) LG().rookieDraft.pickStartedAt = Date.now();
+  save(); renderActive();
+};
+window.commishForceRookiePick = function() { autoRookiePick(); };
 
 /* ============================================================
    LIVE DRAFT ENGINE — snake/linear, timer, auto-pick fills empty slots
@@ -4015,12 +4329,14 @@ window.startLiveDraft = function() {
 };
 
 /* make a pick (manual click). enforces turn order. */
-window.makeDraftPick = function(espnId) {
+window.makeDraftPick = function(espnId, force) {
   if (!LG().draft.live) { toast('Draft is not live', 'err'); return; }
   const team = currentPickTeam();
   if (!team) { finishDraft(); return; }
   const mine = String(team) === String(myTeamId());
-  if (!mine && !window._masterUnlocked) { toast("Not your pick", 'err'); return; }
+  // Turn order is enforced for EVERYONE, including the commissioner. The only way
+  // to pick for another team is the explicit "Force pick" button (force === true).
+  if (!mine && !force) { toast("Not your pick — it's " + (teamById(team).name||'another team') + "'s turn", 'err'); return; }
   commitPick(espnId, team);
 };
 
@@ -4084,6 +4400,267 @@ window.pauseDraft = function() {
   save(); renderActive();
 };
 window.commishForcePick = function() { autoPickForCurrent(); };
+
+/* ============================================================
+   TRADE SYSTEM — players and/or dynasty picks between two teams.
+   Privacy: a pending proposal is visible ONLY to the two teams involved.
+   Once accepted, it's executed and logged (visible to all as history).
+   ============================================================ */
+
+/* trades this device's team can SEE: ones it's part of, plus all completed history */
+function visibleTrades() {
+  const mine = myTeamId();
+  return (LG().trades || []).filter(t =>
+    t.status !== 'pending' ||                       // completed/rejected = visible to all
+    String(t.from) === String(mine) ||              // I proposed it
+    String(t.to) === String(mine) ||                // it's offered to me
+    window._masterUnlocked                          // commissioner sees all
+  );
+}
+function pendingForMe() {
+  const mine = myTeamId();
+  return (LG().trades || []).filter(t => t.status === 'pending' && String(t.to) === String(mine));
+}
+function myPendingOut() {
+  const mine = myTeamId();
+  return (LG().trades || []).filter(t => t.status === 'pending' && String(t.from) === String(mine));
+}
+
+window.openTradeCenter = function() {
+  if (!myTeamId()) { toast('Claim your team first', 'err'); return; }
+  if (LG().teams.length < 2) { toast('Need at least 2 teams', 'err'); return; }
+  const incoming = pendingForMe();
+  const outgoing = myPendingOut();
+  const history = (LG().trades||[]).filter(t => t.status === 'accepted').slice(-8).reverse();
+
+  const incHtml = incoming.length ? incoming.map(t => tradeCard(t, 'incoming')).join('') :
+    '<p class="sub" style="font-size:.75rem">No incoming offers.</p>';
+  const outHtml = outgoing.length ? outgoing.map(t => tradeCard(t, 'outgoing')).join('') :
+    '<p class="sub" style="font-size:.75rem">No pending offers sent.</p>';
+  const histHtml = history.length ? history.map(t => tradeCard(t, 'history')).join('') :
+    '<p class="sub" style="font-size:.75rem">No completed trades yet.</p>';
+
+  openModal(`
+    <div class="h2">Trade center</div>
+    <button class="btn btn-amber btn-block mb" onclick="newTradeProposal()">+ Propose a trade</button>
+    <div class="divlabel">Incoming offers ${incoming.length?`(${incoming.length})`:''}</div>
+    ${incHtml}
+    <div class="divlabel mt">Your pending offers</div>
+    ${outHtml}
+    <div class="divlabel mt">Recent completed trades</div>
+    ${histHtml}
+    <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Close</button>
+  `);
+};
+
+/* render a single trade as a card with context-appropriate actions */
+function tradeCard(t, mode) {
+  const fromT = teamById(t.from), toT = teamById(t.to);
+  const fromAssets = describeAssets(t.fromPlayers, t.fromPicks);
+  const toAssets = describeAssets(t.toPlayers, t.toPicks);
+  let actions = '';
+  if (mode === 'incoming') {
+    actions = `<div class="row" style="gap:.4rem;margin-top:.5rem">
+      <button class="btn btn-sm btn-amber" onclick="acceptTrade('${t.id}')">Accept</button>
+      <button class="btn btn-sm btn-ghost" onclick="rejectTrade('${t.id}')">Reject</button>
+    </div>`;
+  } else if (mode === 'outgoing') {
+    actions = `<button class="btn btn-sm btn-ghost mt" onclick="cancelTrade('${t.id}')">Cancel offer</button>`;
+  }
+  const statusTag = mode==='history' ? `<span class="sub" style="font-size:.6rem">✓ completed</span>` : '';
+  return `<div class="card card-tight" style="margin-bottom:.5rem">
+    <div class="row-between"><b style="font-size:.82rem">${esc(fromT.name)} ⇄ ${esc(toT.name)}</b>${statusTag}</div>
+    <div class="sub" style="font-size:.72rem;margin-top:.3rem">
+      <b>${esc(fromT.abbrev||fromT.name)}</b> sends: ${fromAssets || '—'}<br>
+      <b>${esc(toT.abbrev||toT.name)}</b> sends: ${toAssets || '—'}
+    </div>
+    ${actions}
+  </div>`;
+}
+/* human-readable list of players + picks */
+function describeAssets(playerIds, picks) {
+  const parts = [];
+  (playerIds||[]).forEach(id => {
+    const p = LG().playerPool.find(x => String(x.espnId)===String(id));
+    if (p) parts.push(esc(p.name));
+  });
+  (picks||[]).forEach(pk => parts.push(`${pk.year} R${pk.round} pick`));
+  return parts.join(', ');
+}
+
+/* ---- build a new proposal ---- */
+window.newTradeProposal = function() {
+  const mine = myTeamId();
+  const others = LG().teams.filter(t => String(t.id)!==String(mine));
+  window._trade = { to: others[0]?.id, fromPlayers:[], toPlayers:[], fromPicks:[], toPicks:[] };
+  renderTradeBuilder();
+};
+function renderTradeBuilder() {
+  const mine = myTeamId();
+  const tr = window._trade;
+  const others = LG().teams.filter(t => String(t.id)!==String(mine));
+  const partnerOpts = others.map(t =>
+    `<option value="${t.id}" ${String(tr.to)===String(t.id)?'selected':''}>${esc(t.name)}</option>`).join('');
+
+  const myRoster = teamRoster(mine);
+  const partnerRoster = tr.to ? teamRoster(tr.to) : [];
+
+  const myPlayerRows = myRoster.map(p => {
+    const on = tr.fromPlayers.includes(String(p.espnId));
+    return `<div class="row-between" style="padding:.25rem 0">
+      <span style="font-size:.8rem">${esc(p.name)} <span class="sub" style="font-size:.62rem">${esc((p.eligible||[]).join('/'))}</span></span>
+      <button class="btn btn-sm ${on?'btn-amber':'btn-ghost'}" onclick="toggleTradeAsset('from','${p.espnId}')">${on?'✓':'+'}</button>
+    </div>`;
+  }).join('') || '<p class="sub">No players.</p>';
+
+  const partnerPlayerRows = partnerRoster.map(p => {
+    const on = tr.toPlayers.includes(String(p.espnId));
+    return `<div class="row-between" style="padding:.25rem 0">
+      <span style="font-size:.8rem">${esc(p.name)} <span class="sub" style="font-size:.62rem">${esc((p.eligible||[]).join('/'))}</span></span>
+      <button class="btn btn-sm ${on?'btn-amber':'btn-ghost'}" onclick="toggleTradeAsset('to','${p.espnId}')">${on?'✓':'+'}</button>
+    </div>`;
+  }).join('') || '<p class="sub">No players.</p>';
+
+  // dynasty: pick selectors
+  const pickSection = isDynasty() ? `
+    <div class="divlabel mt">Draft picks (dynasty)</div>
+    <div class="row" style="gap:.4rem;flex-wrap:wrap">
+      <button class="btn btn-sm btn-ghost" onclick="addTradePick('from')">+ My pick</button>
+      <button class="btn btn-sm btn-ghost" onclick="addTradePick('to')">+ Their pick</button>
+    </div>
+    <div class="sub mt" style="font-size:.72rem">
+      ${tr.fromPicks.length?`You send: ${tr.fromPicks.map(p=>`${p.year} R${p.round}`).join(', ')}<br>`:''}
+      ${tr.toPicks.length?`They send: ${tr.toPicks.map(p=>`${p.year} R${p.round}`).join(', ')}`:''}
+    </div>` : '';
+
+  openModal(`
+    <div class="h2">Propose a trade</div>
+    <label class="sub">Trade with</label>
+    <select class="select mb" onchange="setTradePartner(this.value)" style="width:100%">${partnerOpts}</select>
+
+    <div class="divlabel">You send</div>
+    <div class="card card-tight" style="max-height:22vh;overflow-y:auto">${myPlayerRows}</div>
+
+    <div class="divlabel mt">You receive</div>
+    <div class="card card-tight" style="max-height:22vh;overflow-y:auto">${partnerPlayerRows}</div>
+
+    ${pickSection}
+
+    <button class="btn btn-amber btn-block mt" onclick="sendTradeProposal()">Send proposal</button>
+    <button class="btn btn-ghost btn-block mt" onclick="openTradeCenter()">← Back</button>
+  `);
+}
+window.setTradePartner = function(id) {
+  window._trade.to = id;
+  window._trade.toPlayers = [];   // reset their side when partner changes
+  window._trade.toPicks = [];
+  renderTradeBuilder();
+};
+window.toggleTradeAsset = function(side, espnId) {
+  const arr = side==='from' ? window._trade.fromPlayers : window._trade.toPlayers;
+  const i = arr.indexOf(String(espnId));
+  if (i>=0) arr.splice(i,1); else arr.push(String(espnId));
+  renderTradeBuilder();
+};
+window.addTradePick = function(side) {
+  const yr = new Date().getFullYear();
+  const years = [yr+1, yr+2, yr+3];
+  const rounds = [1,2,3,4,5];
+  openModal(`<div class="h2">Add a ${side==='from'?'your':'their'} pick</div>
+    <label class="sub">Year</label>
+    <select class="select mb" id="pick-year" style="width:100%">${years.map(y=>`<option value="${y}">${y}</option>`).join('')}</select>
+    <label class="sub">Round</label>
+    <select class="select mb" id="pick-round" style="width:100%">${rounds.map(r=>`<option value="${r}">Round ${r}</option>`).join('')}</select>
+    <button class="btn btn-amber btn-block" onclick="confirmAddPick('${side}')">Add pick</button>
+    <button class="btn btn-ghost btn-block mt" onclick="renderTradeBuilder()">← Back</button>`);
+};
+window.confirmAddPick = function(side) {
+  const year = parseInt($('pick-year').value);
+  const round = parseInt($('pick-round').value);
+  const arr = side==='from' ? window._trade.fromPicks : window._trade.toPicks;
+  if (!arr.some(p=>p.year===year && p.round===round)) arr.push({ year, round });
+  renderTradeBuilder();
+};
+window.sendTradeProposal = function() {
+  const tr = window._trade;
+  if (!tr.to) { toast('Pick a trade partner', 'err'); return; }
+  const nAssets = tr.fromPlayers.length + tr.toPlayers.length + tr.fromPicks.length + tr.toPicks.length;
+  if (nAssets === 0) { toast('Add at least one asset', 'err'); return; }
+  if ((tr.fromPlayers.length + tr.fromPicks.length) === 0 || (tr.toPlayers.length + tr.toPicks.length) === 0) {
+    toast('Both sides must give something', 'err'); return;
+  }
+  const trade = {
+    id: 'tr_' + Date.now() + '_' + Math.random().toString(36).slice(2,6),
+    from: myTeamId(), to: tr.to,
+    fromPlayers: tr.fromPlayers.slice(), toPlayers: tr.toPlayers.slice(),
+    fromPicks: tr.fromPicks.slice(), toPicks: tr.toPicks.slice(),
+    status: 'pending', created: Date.now(),
+  };
+  LG().trades = LG().trades || [];
+  LG().trades.push(trade);
+  save();
+  toast(`Trade proposal sent to ${teamById(tr.to).name}`, 'ok');
+  window._trade = null;
+  openTradeCenter();
+};
+
+/* ---- respond to a trade ---- */
+window.acceptTrade = function(id) {
+  const t = (LG().trades||[]).find(x => x.id===id);
+  if (!t || t.status!=='pending') { toast('Trade no longer available', 'err'); return; }
+  if (String(t.to)!==String(myTeamId())) { toast('Only the receiving team can accept', 'err'); return; }
+  executeTrade(t);
+  t.status = 'accepted'; t.resolved = Date.now();
+  save();
+  toast('Trade accepted!', 'ok');
+  openTradeCenter();
+  renderActive();
+};
+window.rejectTrade = function(id) {
+  const t = (LG().trades||[]).find(x => x.id===id);
+  if (!t) return;
+  t.status = 'rejected'; t.resolved = Date.now();
+  save();
+  toast('Trade rejected', 'ok');
+  openTradeCenter();
+};
+window.cancelTrade = function(id) {
+  const t = (LG().trades||[]).find(x => x.id===id);
+  if (!t || String(t.from)!==String(myTeamId())) return;
+  t.status = 'cancelled'; t.resolved = Date.now();
+  save();
+  toast('Offer cancelled', 'ok');
+  openTradeCenter();
+};
+
+/* move players + picks between the two teams */
+function executeTrade(t) {
+  // PLAYERS: reassign draft-pick ownership (rosters derive from draft.picks teamId)
+  const reassign = (playerIds, newTeam) => {
+    (playerIds||[]).forEach(pid => {
+      const pk = LG().draft.picks.find(x => String(x.playerId)===String(pid));
+      if (pk) pk.teamId = newTeam;
+      // clear from old team's lineup assignments
+      Object.values(LG().lineups||{}).forEach(weeks => Object.values(weeks||{}).forEach(wk => {
+        if (wk.assignments) for (const k of Object.keys(wk.assignments)) {
+          if (String(wk.assignments[k])===String(pid)) delete wk.assignments[k];
+        }
+      }));
+    });
+  };
+  reassign(t.fromPlayers, t.to);    // from-team's players go to to-team
+  reassign(t.toPlayers, t.from);    // to-team's players go to from-team
+  // PICKS: record ownership transfer in draftPicks[year][round] = owning team
+  LG().draftPicks = LG().draftPicks || {};
+  const movePick = (picks, newOwner) => {
+    (picks||[]).forEach(pk => {
+      LG().draftPicks[pk.year] = LG().draftPicks[pk.year] || {};
+      LG().draftPicks[pk.year][pk.round] = newOwner;
+    });
+  };
+  movePick(t.fromPicks, t.to);
+  movePick(t.toPicks, t.from);
+}
 
 /* ---- AUTODRAFT — snake, best available by ADP ---- */
 window.autodraft = function() {
