@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Best Game League v6.5</title>
+<title>Best Game League v6.6</title>
 <style>
 /* ============================================================
-   BGL v6.5 — Design System
+   BGL v6.6 — Design System
    Subject: competitive fantasy baseball; hook = best single game/week
    Palette: stadium-at-night
    ============================================================ */
@@ -342,7 +342,7 @@ body {
 <div class="topbar">
   <div class="brand" onclick="go('home')">
     <span>BGL<span class="mark">.</span></span>
-    <span class="ver">v6.5</span>
+    <span class="ver">v6.6</span>
   </div>
   <div class="topbar-right">
     <button class="league-chip" id="league-chip" onclick="openLeagueSwitcher()" title="Change league or sport"></button>
@@ -726,25 +726,40 @@ async function save(opts = {}) {
 function leaguePayload() {
   const lg = LG();
   return {
-    sport: STATE.sport,
-    leagueName: lg.leagueName,
-    currentWeek: lg.currentWeek,
-    teams: lg.teams,
-    draft: lg.draft,
-    schedule: lg.schedule,
-    customScoring: lg.customScoring || {},   // per-league scoring (commissioner)
+    sport: STATE.sport || 'flb',
+    leagueName: lg.leagueName || 'League',
+    currentWeek: lg.currentWeek ?? 1,
+    teams: lg.teams || [],
+    draft: lg.draft || { started:false, complete:false, order:[], picks:[], currentPick:0 },
+    schedule: lg.schedule || {},
+    customScoring: lg.customScoring || {},
     rosterOverride: lg.rosterOverride || null,
-    settings: lg.settings || {},        // league-wide commissioner settings
-    draftPicks: lg.draftPicks || {},    // dynasty future picks ownership
-    rookieDraft: lg.rookieDraft || {},  // separate rookie draft state
+    settings: lg.settings || {},
+    draftPicks: lg.draftPicks || {},
+    rookieDraft: lg.rookieDraft || {},
     trades: lg.trades || [],
-    lineups: lg.lineups || {},          // {teamId: {week: {assignments}}}
-    members: lg.members || {},          // {memberId: {name, teamId, joined}}
-    gameLogs: lg.gameLogs || {},        // shared stat cache (everyone benefits)
+    lineups: lg.lineups || {},
+    members: lg.members || {},
+    gameLogs: lg.gameLogs || {},
     scheduleCache: lg.scheduleCache || {},
     irStash: lg.irStash || {},
     ts: Date.now(),
   };
+}
+
+/* Firebase rejects any `undefined` anywhere in the document. Deep-strip them so
+   one stray undefined (e.g. in a player object or trade) can't fail the whole write. */
+function stripUndefined(v) {
+  if (Array.isArray(v)) return v.map(stripUndefined).filter(x => x !== undefined);
+  if (v && typeof v === 'object') {
+    const out = {};
+    for (const k of Object.keys(v)) {
+      const cleaned = stripUndefined(v[k]);
+      if (cleaned !== undefined) out[k] = cleaned;
+    }
+    return out;
+  }
+  return v === undefined ? undefined : v;
 }
 
 async function saveLeague(opts = {}) {
@@ -752,7 +767,7 @@ async function saveLeague(opts = {}) {
     if (!opts.silent) toast('💾 Saved locally', 'ok');
     return;
   }
-  const payload = leaguePayload();
+  const payload = stripUndefined(leaguePayload());
   // SAFETY (wipe guard): never overwrite a populated doc with empty state. If this
   // device's league has no teams AND no draft picks AND no members, treat it as
   // "not loaded yet" and refuse to write. Prevents a blank LG() (after a sport
@@ -810,9 +825,13 @@ function applyLeague(league) {
 async function saveMaster() {
   if (!fbReady) { toast('⚠ Master not saved — Firebase offline', 'err'); return; }
   try {
-    await setDoc(doc(db, 'leagues', MASTER_DOC), { master: masterPayload(), ts: Date.now() });
+    // Full write (NOT merge) so removing an approval actually deletes it. The master
+    // doc is small and always fully populated, so a full overwrite is safe here.
+    // Still strip undefined so a stray undefined can't fail the write.
+    const master = stripUndefined(masterPayload());
+    await setDoc(doc(db, 'leagues', MASTER_DOC), { master, ts: Date.now() });
     toast(`☁️ Saved to Firebase: ${FB_CONFIG.projectId}`, 'ok');
-  } catch(e) { toast('Master save failed: ' + e.message, 'err'); }
+  } catch(e) { toast('Master save failed: ' + (e?.message || e?.code || 'unknown'), 'err'); console.error('saveMaster:', e); }
 }
 
 /* ============================================================
@@ -3307,9 +3326,9 @@ window.addApprovalPrompt = function() {
     <div class="h2">Create a league</div>
     <div class="field mt"><label>Commissioner name</label>
       <input class="input" id="ap-commish" placeholder="e.g. Dustin"></div>
-    <div class="field"><label>League name (for your reference)</label>
+    <div class="field"><label>League name (optional)</label>
       <input class="input" id="ap-league" placeholder="e.g. Dustin's Dynasty"></div>
-    <p class="sub mt">A unique 5-digit League ID will be generated. Members join by entering that ID.</p>
+    <p class="sub mt">A unique 5-digit League ID will be generated. Members join with that ID. A name is optional — leave it blank and we'll use the ID.</p>
     <button class="btn btn-block mt" onclick="saveApproval()">Create & generate ID</button>
     <button class="btn btn-ghost btn-block mt" onclick="openCommishLog()">Cancel</button>
   `);
@@ -3322,25 +3341,26 @@ function genLeagueId() {
   return id;
 }
 window.saveApproval = function() {
-  const commish = $('ap-commish')?.value.trim();
-  const leagueName = $('ap-league')?.value.trim();
-  if (!leagueName) { toast('League name required', 'err'); return; }
-  const id = genLeagueId();                          // 5-digit key
+  const commish = $('ap-commish')?.value.trim() || '';
+  const leagueName = $('ap-league')?.value.trim() || '';   // optional
+  const id = genLeagueId();                          // 5-digit key (the required identifier)
   STATE.approvals = STATE.approvals || {};
   STATE.approvals[id] = {
-    commish, leagueName, approved: true,
+    commish,
+    leagueName: leagueName || ('League ' + id),      // default name from ID if blank
+    approved: true,
     leagueId: id,
     leagueDocId: 'league_' + id,
     created: Date.now(),
   };
   save({master:true});
-  // show the ID prominently so the commissioner can share it
+  const shownName = leagueName || ('League ' + id);
   openModal(`<div class="h2">League created 🎉</div>
     <p class="sub mb">Share this League ID with your members. They enter it to join.</p>
     <div style="text-align:center;padding:1rem;background:var(--field-2);border-radius:8px;margin-bottom:1rem">
       <div class="sub" style="font-size:.65rem;letter-spacing:2px">LEAGUE ID</div>
       <div class="display amber" style="font-size:2.5rem;letter-spacing:6px">${id}</div>
-      <div class="sub" style="font-size:.7rem">${esc(leagueName)}</div>
+      <div class="sub" style="font-size:.7rem">${esc(shownName)}</div>
     </div>
     <button class="btn btn-block" onclick="openCommishLog()">Done</button>`);
 };
