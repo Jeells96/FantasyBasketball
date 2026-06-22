@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Best Game League v6.3</title>
+<title>Best Game League v6.4</title>
 <style>
 /* ============================================================
-   BGL v6.3 — Design System
+   BGL v6.4 — Design System
    Subject: competitive fantasy baseball; hook = best single game/week
    Palette: stadium-at-night
    ============================================================ */
@@ -342,7 +342,7 @@ body {
 <div class="topbar">
   <div class="brand" onclick="go('home')">
     <span>BGL<span class="mark">.</span></span>
-    <span class="ver">v6.3</span>
+    <span class="ver">v6.4</span>
   </div>
   <div class="topbar-right">
     <button class="league-chip" id="league-chip" onclick="openLeagueSwitcher()" title="Change league or sport"></button>
@@ -756,8 +756,14 @@ async function saveLeague(opts = {}) {
     await setDoc(doc(db, 'leagues', STATE.activeLeagueDoc), { league: leaguePayload() });
     if (!opts.silent) toast(`☁️ Synced to league: ${LG().leagueName}`, 'ok');
   } catch(e) {
-    // most common cause: not approved (rule denied) — fall back to local
-    toast('League sync blocked (check approval). Saved locally.', 'err');
+    // surface the REAL error code so we can tell approval-denial from other failures
+    const code = e?.code || '';
+    if (code === 'permission-denied') {
+      toast('Sync denied by security rule. Check the Firestore rule is published.', 'err');
+    } else {
+      toast('League sync failed: ' + (e?.message || code || 'unknown'), 'err');
+    }
+    console.error('saveLeague error:', code, e);
   }
 }
 
@@ -3263,7 +3269,9 @@ window.openCommishLog = function() {
       <div class="row-between">
         <div>
           <b>${esc(a.leagueName)}</b><br>
-          <span class="sub" style="font-size:.7rem">${esc(a.commish||'—')} · <span class="num">${esc(key)}</span></span>
+          <span class="sub" style="font-size:.7rem">${esc(a.commish||'—')}</span><br>
+          <span class="sub" style="font-size:.62rem;letter-spacing:1px">ID</span>
+          <span class="display amber" style="font-size:1.1rem;letter-spacing:3px">${esc(key)}</span>
         </div>
         <div style="text-align:right">
           <button class="btn btn-sm ${a.approved?'btn-amber':'btn-ghost'}" onclick="toggleApproval('${key}')">
@@ -3271,41 +3279,57 @@ window.openCommishLog = function() {
         </div>
       </div>
       <button class="btn btn-ghost btn-sm mt" style="font-size:.65rem" onclick="removeApproval('${key}')">Remove</button>
-    </div>`).join('') || '<p class="sub">No approved leagues yet.</p>';
+    </div>`).join('') || '<p class="sub">No leagues yet.</p>';
   openModal(`
     <div class="h2">Commissioner log</div>
-    <p class="sub mb">Approve leagues to give them access. Toggle off to cut access (non-payment).
-      All share this one Firebase — no separate projects needed.</p>
-    <button class="btn btn-block mb" onclick="addApprovalPrompt()">+ Add league</button>
+    <p class="sub mb">Each league gets a 5-digit ID. Share it with members so they can join.
+      Toggle off to cut access (e.g. non-payment).</p>
+    <button class="btn btn-block mb" onclick="addApprovalPrompt()">+ Create league</button>
     <div style="max-height:50vh;overflow-y:auto">${rows}</div>
     <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Close</button>
   `);
 };
 window.addApprovalPrompt = function() {
   openModal(`
-    <div class="h2">Approve a league</div>
+    <div class="h2">Create a league</div>
     <div class="field mt"><label>Commissioner name</label>
       <input class="input" id="ap-commish" placeholder="e.g. Dustin"></div>
-    <div class="field"><label>League name (they'll type this to join)</label>
+    <div class="field"><label>League name (for your reference)</label>
       <input class="input" id="ap-league" placeholder="e.g. Dustin's Dynasty"></div>
-    <button class="btn btn-block" onclick="saveApproval()">Add & approve</button>
+    <p class="sub mt">A unique 5-digit League ID will be generated. Members join by entering that ID.</p>
+    <button class="btn btn-block mt" onclick="saveApproval()">Create & generate ID</button>
     <button class="btn btn-ghost btn-block mt" onclick="openCommishLog()">Cancel</button>
   `);
 };
+/* generate a 5-digit league id not already in use */
+function genLeagueId() {
+  const used = new Set(Object.keys(STATE.approvals || {}));
+  let id;
+  do { id = String(Math.floor(10000 + Math.random() * 90000)); } while (used.has(id));
+  return id;
+}
 window.saveApproval = function() {
   const commish = $('ap-commish')?.value.trim();
   const leagueName = $('ap-league')?.value.trim();
   if (!leagueName) { toast('League name required', 'err'); return; }
-  const key = normLeague(leagueName);
+  const id = genLeagueId();                          // 5-digit key
   STATE.approvals = STATE.approvals || {};
-  STATE.approvals[key] = {
+  STATE.approvals[id] = {
     commish, leagueName, approved: true,
-    leagueDocId: 'league_' + key,
+    leagueId: id,
+    leagueDocId: 'league_' + id,
     created: Date.now(),
   };
   save({master:true});
-  toast(`Approved: ${leagueName}`, 'ok');
-  openCommishLog();
+  // show the ID prominently so the commissioner can share it
+  openModal(`<div class="h2">League created 🎉</div>
+    <p class="sub mb">Share this League ID with your members. They enter it to join.</p>
+    <div style="text-align:center;padding:1rem;background:var(--field-2);border-radius:8px;margin-bottom:1rem">
+      <div class="sub" style="font-size:.65rem;letter-spacing:2px">LEAGUE ID</div>
+      <div class="display amber" style="font-size:2.5rem;letter-spacing:6px">${id}</div>
+      <div class="sub" style="font-size:.7rem">${esc(leagueName)}</div>
+    </div>
+    <button class="btn btn-block" onclick="openCommishLog()">Done</button>`);
 };
 window.toggleApproval = function(key) {
   if (!STATE.approvals?.[key]) return;
@@ -3368,15 +3392,15 @@ function renderGateLeague() {
   $('gate-inner').innerHTML = `
     <div class="brand-big">BGL<span class="mark">.</span></div>
     <div class="tagline">${SP().icon} ${SP().label}</div>
-    <div class="step-label">Step 2 of 2 · Enter your league</div>
+    <div class="step-label">Step 2 of 2 · Enter your League ID</div>
     <p class="sub" style="text-align:center;margin-bottom:1rem">
-      Type your league name exactly as your commissioner gave it to you.</p>
-    <input class="input" id="gate-ln" placeholder="League name"
-      style="text-align:center;font-size:1.1rem">
+      Enter the 5-digit League ID your commissioner shared with you.</p>
+    <input class="input" id="gate-ln" placeholder="5-digit ID" inputmode="numeric" maxlength="5"
+      style="text-align:center;font-size:1.8rem;letter-spacing:8px">
     <button class="btn btn-amber btn-block mt" onclick="gateJoinLeague()">Join league</button>
     <button class="btn btn-ghost btn-block mt" onclick="showGate('sport')">← Change sport</button>
     <p class="sub mt" style="font-size:.65rem;text-align:center">
-      Don't have a league name? Ask your commissioner for it.</p>
+      Don't have a League ID? Ask your commissioner for it.</p>
     <div style="text-align:center;margin-top:1.5rem;padding-top:1rem;border-top:1px solid var(--line)">
       <button class="btn btn-ghost btn-sm" onclick="gateCommishSetup()" style="font-size:.7rem">
         ⚙ Commissioner setup</button>
@@ -3394,11 +3418,10 @@ window.gateCommishSetup = function() {
   toast('Master unlocked — create a league in the Commissioner log, then rejoin', 'ok');
 };
 window.gateJoinLeague = function() {
-  const name = $('gate-ln')?.value.trim();
-  if (!name) { toast('Enter a league name', 'err'); return; }
-  const key = normLeague(name);
-  const appr = STATE.approvals?.[key];
-  if (!appr) { toast('League not found. Check the name with your commissioner.', 'err'); return; }
+  const id = ($('gate-ln')?.value || '').trim();
+  if (!/^\d{5}$/.test(id)) { toast('Enter the 5-digit League ID', 'err'); return; }
+  const appr = STATE.approvals?.[id];
+  if (!appr) { toast('League ID not found. Double-check it with your commissioner.', 'err'); return; }
   if (!appr.approved) {
     $('gate-inner').innerHTML = `
       <div class="brand-big">BGL<span class="mark">.</span></div>
