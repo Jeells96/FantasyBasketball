@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Best Game League v4.8</title>
+<title>Best Game League v4.9</title>
 <style>
 /* ============================================================
-   BGL v4.8 — Design System
+   BGL v4.9 — Design System
    Subject: competitive fantasy baseball; hook = best single game/week
    Palette: stadium-at-night
    ============================================================ */
@@ -228,6 +228,32 @@ body {
   align-items: flex-end; justify-content: center;
 }
 .modal-bg.open { display: flex; }
+
+/* blocking gate — sits above everything, app can't be used until passed */
+.gate {
+  position: fixed; inset: 0; z-index: 500;
+  background: var(--field); display: flex;
+  align-items: center; justify-content: center; padding: 1.5rem;
+}
+.gate-inner {
+  width: 100%; max-width: 440px;
+}
+.gate .brand-big {
+  font-family: var(--display); font-size: 2.5rem; font-weight: 800;
+  text-align: center; color: var(--chalk); margin-bottom: .25rem; letter-spacing: -1px;
+}
+.gate .brand-big .mark { color: var(--amber); }
+.gate .tagline { text-align: center; color: var(--sage-dim); font-size: .8rem; margin-bottom: 2rem; }
+.gate .step-label { text-transform: uppercase; letter-spacing: 2px; font-size: .65rem;
+  color: var(--amber); text-align: center; margin-bottom: 1rem; font-family: var(--mono); }
+.gate .sport-pick { display: grid; grid-template-columns: 1fr 1fr; gap: .75rem; }
+.gate .sport-card {
+  background: var(--field-2); border: 2px solid var(--line); border-radius: var(--r);
+  padding: 1.5rem 1rem; text-align: center; cursor: pointer; transition: all .15s;
+}
+.gate .sport-card:hover, .gate .sport-card:active { border-color: var(--amber); background: var(--field-3); }
+.gate .sport-card .ic { font-size: 2.5rem; display: block; margin-bottom: .5rem; }
+.gate .sport-card .nm { font-family: var(--display); font-size: 1.1rem; font-weight: 700; color: var(--chalk); }
 .modal {
   background: var(--field-2); border: 1px solid var(--line);
   border-radius: var(--r) var(--r) 0 0; width: 100%; max-width: 560px;
@@ -286,7 +312,7 @@ body {
 <div class="topbar">
   <div class="brand" onclick="go('home')">
     <span>BGL<span class="mark">.</span></span>
-    <span class="ver">v4.8</span>
+    <span class="ver">v4.9</span>
   </div>
   <div class="topbar-right">
     <span class="week-pill">WK <b id="wk-label">—</b></span>
@@ -306,14 +332,18 @@ body {
 
 <!-- ============ BOTTOM NAV ============ -->
 <div class="botnav">
-  <button data-nav="home" onclick="go('home')"><span class="ic">⌂</span>Home</button>
+  <button data-nav="home" onclick="go('home')"><span class="ic">★</span>My Page</button>
   <button data-nav="standings" onclick="go('standings')"><span class="ic">▦</span>Standings</button>
   <button data-nav="matchups" onclick="go('matchups')"><span class="ic">⚔</span>Matchups</button>
   <button data-nav="players" onclick="go('players')"><span class="ic">◎</span>Players</button>
-  <button data-nav="myteam" onclick="go('myteam')"><span class="ic">★</span>My Team</button>
 </div>
 
 <div class="toast-wrap" id="toasts"></div>
+
+<!-- ============ BLOCKING GATE (sport → league name) ============ -->
+<div class="gate" id="gate" style="display:none">
+  <div class="gate-inner" id="gate-inner"></div>
+</div>
 
 <!-- generic modal -->
 <div class="modal-bg" id="modal" onclick="if(event.target===this)closeModal()">
@@ -1118,7 +1148,7 @@ function renderPage(page) {
   const el = $('page-' + page);
   if (!el) return;
   switch(page) {
-    case 'home':      el.innerHTML = viewHome(); break;
+    case 'home':      el.innerHTML = viewMyTeam(); break;
     case 'draft':     el.innerHTML = viewDraft(); break;
     case 'standings': el.innerHTML = viewStandings(); break;
     case 'matchups':  el.innerHTML = viewMatchups(); break;
@@ -2214,29 +2244,103 @@ window.removeApproval = function(key) {
    on the approved list (and toggled on), their data syncs to that
    league's own doc. Otherwise they're denied. The commissioner (you)
    bypasses this — your master PIN unlocks everything. ---- */
-window.promptLeagueName = function() {
-  const saved = LG().leagueName && LG().leagueName !== 'My League' ? LG().leagueName : '';
-  openModal(`
-    <div class="h2">Enter your league</div>
-    <p class="sub mt mb">Type your league name exactly as your commissioner gave it to you.</p>
-    <input class="input" id="ln-input" placeholder="League name" value="${esc(saved)}"
-      style="text-align:center;font-size:1.05rem">
-    <button class="btn btn-block mt" onclick="submitLeagueName()">Join league</button>
-    <button class="btn btn-ghost btn-block mt" onclick="dismissJoin()">I'm the commissioner / skip</button>
-    <p class="sub mt" style="font-size:.65rem;text-align:center">Don't have one? Ask your commissioner,
-      or use Settings to set up a new league if you're the commissioner.</p>
-  `);
-  setTimeout(()=>$('ln-input')?.focus(), 100);
+/* ============================================================
+   BLOCKING GATE — sport selection → league name. The app is hidden
+   behind this until the user picks a sport and joins an approved
+   league. No skip path. Commissioners join their own league too.
+   ============================================================ */
+function gateNeeded() {
+  // need both a chosen sport (always set) AND a joined league
+  return !STATE.activeLeagueDoc;
+}
+function showGate(step) {
+  const gate = $('gate');
+  gate.style.display = 'flex';
+  if (step === 'sport') renderGateSport();
+  else renderGateLeague();
+}
+function hideGate() {
+  $('gate').style.display = 'none';
+}
+function renderGateSport() {
+  $('gate-inner').innerHTML = `
+    <div class="brand-big">BGL<span class="mark">.</span></div>
+    <div class="tagline">Best Game League</div>
+    <div class="step-label">Step 1 of 2 · Choose your sport</div>
+    <div class="sport-pick">
+      ${Object.values(SPORTS).map(sp => `
+        <div class="sport-card" onclick="gatePickSport('${sp.key}')">
+          <span class="ic">${sp.icon}</span>
+          <span class="nm">${sp.label}</span>
+        </div>`).join('')}
+    </div>`;
+}
+window.gatePickSport = function(key) {
+  STATE.sport = key;
+  saveLocal();
+  renderActive();        // re-render underlying app for the new sport
+  showGate('league');    // advance to league-name step
 };
-window.dismissJoin = function() {
-  sessionStorage.setItem('bgl_join_dismissed', '1');
-  closeModal();
+function renderGateLeague() {
+  $('gate-inner').innerHTML = `
+    <div class="brand-big">BGL<span class="mark">.</span></div>
+    <div class="tagline">${SP().icon} ${SP().label}</div>
+    <div class="step-label">Step 2 of 2 · Enter your league</div>
+    <p class="sub" style="text-align:center;margin-bottom:1rem">
+      Type your league name exactly as your commissioner gave it to you.</p>
+    <input class="input" id="gate-ln" placeholder="League name"
+      style="text-align:center;font-size:1.1rem">
+    <button class="btn btn-amber btn-block mt" onclick="gateJoinLeague()">Join league</button>
+    <button class="btn btn-ghost btn-block mt" onclick="showGate('sport')">← Change sport</button>
+    <p class="sub mt" style="font-size:.65rem;text-align:center">
+      Don't have a league name? Ask your commissioner for it.</p>
+    <div style="text-align:center;margin-top:1.5rem;padding-top:1rem;border-top:1px solid var(--line)">
+      <button class="btn btn-ghost btn-sm" onclick="gateCommishSetup()" style="font-size:.7rem">
+        ⚙ Commissioner setup</button>
+    </div>`;
+  setTimeout(()=>$('gate-ln')?.focus(), 100);
+}
+/* Commissioner escape from the gate: PIN-gated access to master settings so
+   the commissioner can create/approve the first league before anyone joins. */
+window.gateCommishSetup = function() {
+  const pin = prompt('Commissioner PIN:');
+  if (pin !== ADMIN_PIN) { if (pin !== null) toast('Wrong PIN', 'err'); return; }
+  window._masterUnlocked = true;
+  hideGate();
+  go('settings');
+  toast('Master unlocked — create a league in the Commissioner log, then rejoin', 'ok');
 };
+window.gateJoinLeague = function() {
+  const name = $('gate-ln')?.value.trim();
+  if (!name) { toast('Enter a league name', 'err'); return; }
+  const key = normLeague(name);
+  const appr = STATE.approvals?.[key];
+  if (!appr) { toast('League not found. Check the name with your commissioner.', 'err'); return; }
+  if (!appr.approved) {
+    $('gate-inner').innerHTML = `
+      <div class="brand-big">BGL<span class="mark">.</span></div>
+      <div class="step-label" style="color:var(--bad)">Access paused</div>
+      <p class="sub" style="text-align:center;margin-bottom:1rem">
+        This league's access is currently turned off. Please contact your commissioner.</p>
+      <button class="btn btn-ghost btn-block" onclick="showGate('league')">← Back</button>`;
+    return;
+  }
+  // approved → bind device, sync, drop the gate
+  LG().leagueName = appr.leagueName;
+  STATE.activeLeagueDoc = appr.leagueDocId;
+  saveLocal();
+  subscribeLeague(appr.leagueDocId);
+  hideGate();
+  toast(`Joined ${appr.leagueName}`, 'ok');
+  go('home');
+};
+
+/* legacy entry points kept for the Settings "join / leave" buttons */
+window.promptLeagueName = function() { showGate('sport'); };
 window.leaveLeague = function() {
   openModal(`
     <div class="h2">Leave league?</div>
-    <p class="sub mt mb">You'll stop syncing with <b>${esc(LG().leagueName)}</b> and go back to local-only.
-      Your personal team pick and lineups stay on this device.</p>
+    <p class="sub mt mb">You'll stop syncing with <b>${esc(LG().leagueName)}</b> and return to the league picker.</p>
     <button class="btn btn-amber btn-block" onclick="confirmLeaveLeague()">Leave league</button>
     <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Cancel</button>
   `);
@@ -2244,35 +2348,10 @@ window.leaveLeague = function() {
 window.confirmLeaveLeague = function() {
   if (_leagueUnsub) { try { _leagueUnsub(); } catch(e){} _leagueUnsub = null; }
   STATE.activeLeagueDoc = null;
-  sessionStorage.removeItem('bgl_join_dismissed');
   saveLocal();
   closeModal();
   toast('Left league', 'ok');
-  renderActive();
-};
-window.submitLeagueName = function() {
-  const name = $('ln-input')?.value.trim();
-  if (!name) { toast('Enter a league name', 'err'); return; }
-  const key = normLeague(name);
-  const appr = STATE.approvals?.[key];
-  if (!appr) {
-    toast('League not found. Check the name with your commissioner.', 'err');
-    return;
-  }
-  if (!appr.approved) {
-    openModal(`<div class="h2">Access paused</div>
-      <p class="sub mt">This league's access is currently turned off. Please contact your commissioner.</p>
-      <button class="btn btn-ghost btn-block mt" onclick="promptLeagueName()">← Back</button>`);
-    return;
-  }
-  // approved → bind this device to that league's doc
-  LG().leagueName = appr.leagueName;
-  STATE.activeLeagueDoc = appr.leagueDocId;
-  saveLocal();
-  subscribeLeague(appr.leagueDocId);   // start live sync of shared league data
-  closeModal();
-  toast(`Joined ${appr.leagueName}`, 'ok');
-  renderActive();
+  showGate('sport');   // back to the blocking gate
 };
 
 /* ---- FAILED MAPPINGS — see & fix unmapped players ---- */
@@ -2857,19 +2936,15 @@ initFirebase();
 go('home');
 if (!fbReady) setTimeout(() => { if (!STATE._loaded) renderActive(); }, 300);
 
-/* First-run: if this device hasn't joined a league yet, prompt for the
-   league name once the approval list has loaded from master. The commissioner
-   can dismiss it and use Settings instead. */
-function maybePromptJoin() {
-  if (STATE.activeLeagueDoc) return;          // already joined
-  if (myTeamId()) return;                  // already has a team set up locally
-  if (sessionStorage.getItem('bgl_join_dismissed')) return;
-  // wait until approvals exist (master loaded), else there's nothing to match against
-  if (!STATE.approvals || !Object.keys(STATE.approvals).length) return;
-  promptLeagueName();
-}
-// give master a moment to load, then offer the join prompt
-setTimeout(maybePromptJoin, 1500);
+/* Blocking gate: if this device hasn't joined a league, show the gate
+   (sport → league name) immediately. Nothing else is usable until passed.
+   We show it right away so there's no flash of the app behind it. */
+if (gateNeeded()) showGate('sport');
+
+/* Re-check after master loads — in case approvals arrive late, the gate is
+   already up; this just ensures it's shown if boot raced ahead. Skip if the
+   commissioner used the setup escape (master unlocked). */
+setTimeout(() => { if (gateNeeded() && !window._masterUnlocked) showGate('sport'); }, 400);
 
 /* Auto-pull MLB stats on load (once per ~6h) and when a team is chosen.
    Runs silently in the background; refreshes the view when done. */
