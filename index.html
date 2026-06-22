@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Best Game League v6.4</title>
+<title>Best Game League v6.5</title>
 <style>
 /* ============================================================
-   BGL v6.4 — Design System
+   BGL v6.5 — Design System
    Subject: competitive fantasy baseball; hook = best single game/week
    Palette: stadium-at-night
    ============================================================ */
@@ -342,7 +342,7 @@ body {
 <div class="topbar">
   <div class="brand" onclick="go('home')">
     <span>BGL<span class="mark">.</span></span>
-    <span class="ver">v6.4</span>
+    <span class="ver">v6.5</span>
   </div>
   <div class="topbar-right">
     <button class="league-chip" id="league-chip" onclick="openLeagueSwitcher()" title="Change league or sport"></button>
@@ -752,11 +752,24 @@ async function saveLeague(opts = {}) {
     if (!opts.silent) toast('💾 Saved locally', 'ok');
     return;
   }
+  const payload = leaguePayload();
+  // SAFETY (wipe guard): never overwrite a populated doc with empty state. If this
+  // device's league has no teams AND no draft picks AND no members, treat it as
+  // "not loaded yet" and refuse to write. Prevents a blank LG() (after a sport
+  // switch or mid-render glitch) from wiping everyone's Firebase data.
+  const looksEmpty = (!payload.teams || payload.teams.length === 0)
+                  && (!payload.draft?.picks || payload.draft.picks.length === 0)
+                  && (!payload.members || Object.keys(payload.members).length === 0);
+  if (looksEmpty && !opts.allowEmpty) {
+    console.warn('saveLeague: refused empty payload (wipe guard)');
+    if (!opts.silent) toast('Not synced — data not loaded yet. Try again shortly.', 'err');
+    return;
+  }
   try {
-    await setDoc(doc(db, 'leagues', STATE.activeLeagueDoc), { league: leaguePayload() });
+    // merge:true so a partial write can never delete fields it didn't include
+    await setDoc(doc(db, 'leagues', STATE.activeLeagueDoc), { league: payload }, { merge: true });
     if (!opts.silent) toast(`☁️ Synced to league: ${LG().leagueName}`, 'ok');
   } catch(e) {
-    // surface the REAL error code so we can tell approval-denial from other failures
     const code = e?.code || '';
     if (code === 'permission-denied') {
       toast('Sync denied by security rule. Check the Firestore rule is published.', 'err');
@@ -4632,7 +4645,8 @@ window.acceptTrade = function(id) {
   const t = (LG().trades||[]).find(x => x.id===id);
   if (!t || t.status!=='pending') { toast('Trade no longer available', 'err'); return; }
   if (String(t.to)!==String(myTeamId())) { toast('Only the receiving team can accept', 'err'); return; }
-  executeTrade(t);
+  const ok = executeTrade(t);
+  if (!ok) { toast('Trade could not be applied — nothing changed', 'err'); return; }
   t.status = 'accepted'; t.resolved = Date.now();
   save();
   toast('Trade accepted!', 'ok');
@@ -4656,33 +4670,45 @@ window.cancelTrade = function(id) {
   openTradeCenter();
 };
 
-/* move players + picks between the two teams */
+/* move players + picks between the two teams. Defensive: validates refs and
+   applies atomically; never leaves state half-changed. */
 function executeTrade(t) {
-  // PLAYERS: reassign draft-pick ownership (rosters derive from draft.picks teamId)
+  if (!t || !t.from || !t.to) return false;
+  const picks = (LG().draft && LG().draft.picks) ? LG().draft.picks : null;
+  if (!picks) { console.error('executeTrade: no draft picks array'); return false; }
+  // PLAYERS: reassign draft-pick ownership (rosters derive from draft.picks.teamId)
   const reassign = (playerIds, newTeam) => {
     (playerIds||[]).forEach(pid => {
-      const pk = LG().draft.picks.find(x => String(x.playerId)===String(pid));
+      const pk = picks.find(x => String(x.playerId)===String(pid));
       if (pk) pk.teamId = newTeam;
-      // clear from old team's lineup assignments
-      Object.values(LG().lineups||{}).forEach(weeks => Object.values(weeks||{}).forEach(wk => {
-        if (wk.assignments) for (const k of Object.keys(wk.assignments)) {
+      // clear from any team's lineup assignments
+      const lineups = LG().lineups || {};
+      Object.values(lineups).forEach(weeks => Object.values(weeks||{}).forEach(wk => {
+        if (wk && wk.assignments) for (const k of Object.keys(wk.assignments)) {
           if (String(wk.assignments[k])===String(pid)) delete wk.assignments[k];
         }
       }));
     });
   };
-  reassign(t.fromPlayers, t.to);    // from-team's players go to to-team
-  reassign(t.toPlayers, t.from);    // to-team's players go to from-team
-  // PICKS: record ownership transfer in draftPicks[year][round] = owning team
-  LG().draftPicks = LG().draftPicks || {};
-  const movePick = (picks, newOwner) => {
-    (picks||[]).forEach(pk => {
-      LG().draftPicks[pk.year] = LG().draftPicks[pk.year] || {};
-      LG().draftPicks[pk.year][pk.round] = newOwner;
-    });
-  };
-  movePick(t.fromPicks, t.to);
-  movePick(t.toPicks, t.from);
+  try {
+    reassign(t.fromPlayers, t.to);
+    reassign(t.toPlayers, t.from);
+    // PICKS: record ownership transfer in draftPicks[year][round] = owning team
+    LG().draftPicks = LG().draftPicks || {};
+    const movePick = (pks, newOwner) => {
+      (pks||[]).forEach(pk => {
+        if (!pk || pk.year==null || pk.round==null) return;
+        LG().draftPicks[pk.year] = LG().draftPicks[pk.year] || {};
+        LG().draftPicks[pk.year][pk.round] = newOwner;
+      });
+    };
+    movePick(t.fromPicks, t.to);
+    movePick(t.toPicks, t.from);
+    return true;
+  } catch(e) {
+    console.error('executeTrade failed:', e);
+    return false;
+  }
 }
 
 /* ---- AUTODRAFT — snake, best available by ADP ---- */
