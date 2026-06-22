@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Best Game League v5.3</title>
+<title>Best Game League v5.4</title>
 <style>
 /* ============================================================
-   BGL v5.3 — Design System
+   BGL v5.4 — Design System
    Subject: competitive fantasy baseball; hook = best single game/week
    Palette: stadium-at-night
    ============================================================ */
@@ -320,7 +320,7 @@ body {
 <div class="topbar">
   <div class="brand" onclick="go('home')">
     <span>BGL<span class="mark">.</span></span>
-    <span class="ver">v5.3</span>
+    <span class="ver">v5.4</span>
   </div>
   <div class="topbar-right">
     <button class="league-chip" id="league-chip" onclick="openLeagueSwitcher()" title="Change league or sport"></button>
@@ -2044,9 +2044,9 @@ function viewPlayersReal() {
     <div class="h1">Players</div>
 
     ${!havePoints ? `<div class="card card-tight mt" style="border-color:var(--amber)">
-      <p class="sub mb" style="font-size:.78rem">Points aren't loaded yet. Pull game logs for the top 200 by ADP
-        to see season and recent scoring.</p>
-      <button class="btn btn-amber btn-block" onclick="loadPoolPoints()">Load player points (top 200)</button>
+      <p class="sub mb" style="font-size:.78rem">Loading player points in the background…
+        if they don't appear shortly, tap below to load now.</p>
+      <button class="btn btn-amber btn-block" onclick="loadPoolPoints()">Load player points</button>
     </div>` : ''}
 
     <div class="field mt">
@@ -3263,12 +3263,23 @@ async function autoPullStats(force) {
   const roster = teamRoster(myTeamId()).filter(p => p.mlbId);
   if (!roster.length) return;
   LG().gameLogs = LG().gameLogs || {};
+  // date cutoffs for rolling windows (same as computePoolPoints, so fields match)
+  const today = new Date(); today.setHours(0,0,0,0);
+  const cut = (d) => { const x = new Date(today); x.setDate(today.getDate()-d); return ymd(x); };
+  const c7 = cut(7), c14 = cut(14), c30 = cut(30);
   for (const p of roster) {
     try {
       const isPitcher = /SP|RP/.test((p.eligible||[]).join('')) && !/1B|2B|3B|SS|OF|C|DH/.test((p.eligible||[]).join(''));
       const grp = isPitcher ? 'pitching' : 'hitting';
       const log = await mlbGameLog(p.mlbId, grp);
-      LG().gameLogs[p.mlbId] = log.map(g => ({...g, group: grp}));
+      const mapped = log.map(g => ({...g, group: grp}));
+      LG().gameLogs[p.mlbId] = mapped;
+      // ALSO compute the point fields so roster players match pool players
+      let season=0,w7=0,w14=0,w30=0;
+      mapped.forEach(g => { const pts=gamePoints(g.stat,g.group); season+=pts;
+        if(g.date>=c7)w7+=pts; if(g.date>=c14)w14+=pts; if(g.date>=c30)w30+=pts; });
+      p.ptsSeason=Math.round(season*10)/10; p.pts7=Math.round(w7*10)/10;
+      p.pts14=Math.round(w14*10)/10; p.pts30=Math.round(w30*10)/10; p.seasonPts=p.ptsSeason;
     } catch(e) {}
     await new Promise(r=>setTimeout(r,50));
   }
@@ -3277,6 +3288,9 @@ async function autoPullStats(force) {
   renderActive();
   // background: resolve team ids + injuries + schedule (non-blocking for the grid)
   refreshTeamMeta();
+  // also compute points for the rest of the pool (top players + free agents) in the
+  // background, so the Players page is populated without a manual "Load points" tap.
+  computePoolPoints(false).then(() => renderActive()).catch(()=>{});
 }
 
 /* resolve each rostered player's MLB team id + current injury status, then
