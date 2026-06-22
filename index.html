@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Best Game League v6.0</title>
+<title>Best Game League v6.1</title>
 <style>
 /* ============================================================
-   BGL v6.0 — Design System
+   BGL v6.1 — Design System
    Subject: competitive fantasy baseball; hook = best single game/week
    Palette: stadium-at-night
    ============================================================ */
@@ -342,7 +342,7 @@ body {
 <div class="topbar">
   <div class="brand" onclick="go('home')">
     <span>BGL<span class="mark">.</span></span>
-    <span class="ver">v6.0</span>
+    <span class="ver">v6.1</span>
   </div>
   <div class="topbar-right">
     <button class="league-chip" id="league-chip" onclick="openLeagueSwitcher()" title="Change league or sport"></button>
@@ -544,6 +544,7 @@ function blankLeague(name) {
       draftDate: null,          // ISO datetime string for live draft start
       useSalaryCap: false,      // real salaries + cap toggle (rules TBD)
       salaryCap: 260,           // cap amount when enabled
+      bonusWin: false,          // extra W/L for top-half/bottom-half weekly scorers
     },
     draftPicks: {},             // dynasty future picks: draftPicks[year][round] = teamId (owner)
     rookieDraft: { enabled:false, started:false, complete:false, order:[], picks:[], currentPick:0,
@@ -602,8 +603,24 @@ function applyMaster(master) {
     if (sk === 'approvals') continue;
     if (!STATE.leagues[sk]) continue;
     const m = master[sk];
-    if (m.playerPool) STATE.leagues[sk].playerPool = m.playerPool;
+    if (m.playerPool) {
+      STATE.leagues[sk].playerPool = m.playerPool;
+      // self-heal: if stored eligibility doesn't match current rules, recompute it
+      // from the raw ESPN slots so a stale pull can't keep showing wrong positions.
+      autoCorrectEligibility(sk);
+    }
   }
+}
+
+/* recompute eligibility for a sport's pool from stored raw slots if it drifted
+   from what the current rules produce. Silent; no save (master is read-only here). */
+function autoCorrectEligibility(sk) {
+  const pool = STATE.leagues[sk]?.playerPool || [];
+  pool.forEach(p => {
+    if (!p.eligSlots) return;                 // no raw slots → can't re-derive
+    const fresh = deriveEligibility(p.eligSlots, p.defPosId);
+    if ((p.eligible||[]).join('/') !== fresh.join('/')) p.eligible = fresh;
+  });
 }
 
 /* Local storage now holds ONLY identity pointers — which league this device
@@ -1293,6 +1310,7 @@ function renderPage(page) {
 
 /* drive the 1-second draft clock; auto-pick when it hits zero */
 let _draftTimer = null;
+let _autoPickGuard = -1;   // pick index we last auto-fired, prevents double-fire
 function manageDraftTimer(page) {
   const live = LG().draft?.live && !LG().draft?.paused;
   const onDraftPage = page === 'draft';
@@ -1301,14 +1319,15 @@ function manageDraftTimer(page) {
       _draftTimer = setInterval(() => {
         if (!LG().draft?.live || LG().draft?.paused) { clearInterval(_draftTimer); _draftTimer=null; return; }
         const left = draftSecondsLeft();
-        // update just the timer element to avoid a full re-render every second
         const t = document.querySelector('.draft-timer');
         if (t) { t.textContent = fmtClock(left); t.classList.toggle('urgent', left<=10); }
         if (left <= 0) {
-          clearInterval(_draftTimer); _draftTimer=null;
-          // only the team on the clock (or commissioner) auto-picks, to avoid double-picks
-          const onClock = currentPickTeam();
-          if (String(onClock)===String(myTeamId()) || window._masterUnlocked) autoPickForCurrent();
+          // AUTO-PICK for whichever team is on the clock — fires regardless of which
+          // team is "mine", so other teams' expired picks don't stall the draft.
+          const idx = currentPickIndex();
+          if (_autoPickGuard === idx) return;   // already fired for this pick; wait for sync
+          _autoPickGuard = idx;
+          autoPickForCurrent();
         }
       }, 1000);
     }
@@ -1510,6 +1529,77 @@ function teamSeasonTotal(teamId) {
   return Math.round(total*10)/10;
 }
 
+/* round-robin matchup schedule: returns opponentId for teamId in a given week.
+   Standard circle method; teams rotate. Deterministic from team order. */
+function matchupSchedule() {
+  let ids = (LG().draft.order?.length ? LG().draft.order : LG().teams.map(t=>t.id)).slice();
+  if (ids.length < 2) return {};
+  const bye = (ids.length % 2 === 1);
+  if (bye) ids.push('__BYE__');
+  const n = ids.length, rounds = n - 1, half = n/2;
+  const sched = {};  // week -> [[a,b],...]
+  let arr = ids.slice();
+  for (let r = 0; r < rounds; r++) {
+    const pairs = [];
+    for (let i = 0; i < half; i++) pairs.push([arr[i], arr[n-1-i]]);
+    sched[r+1] = pairs;
+    // rotate (keep first fixed)
+    arr = [arr[0], arr[n-1], ...arr.slice(1, n-1)];
+  }
+  return sched;
+}
+/* who does teamId play in week? (cycles through the rounds if season > rounds) */
+function opponentFor(teamId, week) {
+  const sched = matchupSchedule();
+  const rounds = Object.keys(sched).length;
+  if (!rounds) return null;
+  const wk = ((week - 1) % rounds) + 1;
+  const pairs = sched[wk] || [];
+  for (const [a,b] of pairs) {
+    if (String(a)===String(teamId)) return b==='__BYE__'?null:b;
+    if (String(b)===String(teamId)) return a==='__BYE__'?null:a;
+  }
+  return null;
+}
+
+/* full H2H record for every team through the current week.
+   Returns { teamId: {w,l,t, pf, pa, bonusW, bonusL} }. */
+function computeRecords() {
+  const cur = currentWeekNow();
+  const teams = LG().teams.map(t=>t.id);
+  const rec = {}; teams.forEach(id => rec[id] = {w:0,l:0,t:0,pf:0,pa:0,bonusW:0,bonusL:0});
+  const bonus = LSET().bonusWin;
+  for (let wk = 1; wk <= cur; wk++) {
+    // skip weeks with no games played yet by anyone (avoids 0-0 phantom losses)
+    const totals = {}; let anyPlayed = false;
+    teams.forEach(id => { const tot = teamWeekTotal(id, wk); totals[id]=tot; if (tot>0) anyPlayed=true; });
+    if (!anyPlayed) continue;
+    // head-to-head
+    const counted = new Set();
+    teams.forEach(id => {
+      const opp = opponentFor(id, wk);
+      rec[id].pf += totals[id];
+      if (opp && !counted.has(id+'-'+opp)) {
+        counted.add(opp+'-'+id);
+        rec[id].pa += totals[opp]||0;
+        if (totals[id] > (totals[opp]||0)) rec[id].w++;
+        else if (totals[id] < (totals[opp]||0)) rec[id].l++;
+        else rec[id].t++;
+      }
+    });
+    // bonus win: top half of weekly scorers get +W, bottom half +L
+    if (bonus) {
+      const ranked = teams.slice().sort((a,b)=>(totals[b]||0)-(totals[a]||0));
+      const half = Math.floor(ranked.length/2);
+      ranked.forEach((id,i) => {
+        if (i < half) { rec[id].w++; rec[id].bonusW++; }
+        else if (ranked.length - i <= half) { rec[id].l++; rec[id].bonusL++; }
+      });
+    }
+  }
+  return rec;
+}
+
 function viewStandings() {
   if (!LG().teams.length) {
     return `<div class="h1">Standings</div>
@@ -1520,46 +1610,96 @@ function viewStandings() {
     return `<div class="h1">Standings</div>
       <div class="empty"><div class="big">▦</div><div class="msg">Standings appear once the draft is complete.</div></div>`;
   }
-  const curWeek = currentWeekNow();
+  const cur = currentWeekNow();
   const mine = myTeamId();
-  // build rows with season total + this week + best week
+  const rec = computeRecords();
   const rows = LG().teams.map(t => {
-    const season = teamSeasonTotal(t.id);
-    const thisWk = teamWeekTotal(t.id, curWeek);
-    let bestWk = 0, bestWkNum = 0;
-    for (let w=1; w<=curWeek; w++){ const v=teamWeekTotal(t.id,w); if(v>bestWk){bestWk=v;bestWkNum=w;} }
-    const avg = curWeek>0 ? Math.round(season/curWeek*10)/10 : 0;
-    return { t, season, thisWk, bestWk, bestWkNum, avg };
-  }).sort((a,b) => b.season - a.season);
+    const r = rec[t.id];
+    const gp = r.w + r.l + r.t;
+    const pct = gp>0 ? (r.w + r.t*0.5)/gp : 0;
+    return { t, ...r, gp, pct };
+  }).sort((a,b) => b.pct - a.pct || b.pf - a.pf);
 
   const body = rows.map((r,i) => {
     const isMine = String(r.t.id)===String(mine);
-    const rankColor = i===0?'color:var(--amber);font-weight:800':'';
     return `<tr style="${isMine?'background:var(--amber-bg)':''}">
-      <td class="r num" style="${rankColor}">${i+1}</td>
+      <td class="r num" style="${i===0?'color:var(--amber);font-weight:800':''}">${i+1}</td>
       <td><span class="plink" onclick="setViewingTeam('${r.t.id}');go('home')">${esc(r.t.name)}</span>
         ${isMine?'<span class="sub" style="font-size:.6rem"> · you</span>':''}
         ${r.t.owner?`<span class="sub" style="font-size:.6rem;display:block">${esc(r.t.owner)}</span>`:''}</td>
-      <td class="r num cell-best" style="font-weight:700">${r.season.toFixed(0)}</td>
-      <td class="r num" style="font-size:.75rem">${r.avg.toFixed(1)}</td>
-      <td class="r num" style="font-size:.75rem">${r.thisWk.toFixed(0)}</td>
-      <td class="r num" style="font-size:.72rem">${r.bestWk.toFixed(0)}<span class="sub" style="font-size:.55rem"> w${r.bestWkNum||'-'}</span></td>
+      <td class="r num" style="font-weight:700">${r.w}-${r.l}${r.t?('-'+r.t):''}</td>
+      <td class="r num cell-best" style="font-size:.75rem">${r.pf.toFixed(0)}</td>
+      <td class="r num" style="font-size:.72rem">${r.pa.toFixed(0)}</td>
     </tr>`;
   }).join('');
 
   return `
-    <div class="eyebrow">${esc(LG().leagueName)} · through week ${curWeek}</div>
+    <div class="eyebrow">${esc(LG().leagueName)} · through week ${cur}</div>
     <div class="h1">Standings</div>
-    <p class="sub mb" style="font-size:.72rem">Ranked by total points (sum of each week's best-game lineup). League scoring applies.</p>
+    <p class="sub mb" style="font-size:.72rem">Head-to-head record by weekly matchup.${LSET().bonusWin?' <b class="amber">Bonus win ON</b> — top-half scorers earn an extra W each week.':''}</p>
     <div class="card card-tight">
       <table class="tbl">
-        <thead><tr><th class="r">#</th><th>Team</th><th class="r">Total</th><th class="r">Avg</th><th class="r">Wk ${curWeek}</th><th class="r">Best</th></tr></thead>
+        <thead><tr><th class="r">#</th><th>Team</th><th class="r">Record</th><th class="r">PF</th><th class="r">PA</th></tr></thead>
         <tbody>${body}</tbody>
       </table>
     </div>
-    <p class="sub mt" style="font-size:.66rem;text-align:center">Tap a team to view their roster. Avg = points per week. Best = top single week.</p>`;
+    <p class="sub mt" style="font-size:.66rem;text-align:center">PF = points for, PA = points against. Tap a team to view their roster.</p>`;
 }
-function viewMatchups()  { return placeholderView('Matchups', 'Weekly head-to-head with daily best-game breakdowns. Built in Phase 4.'); }
+function viewMatchups() {
+  if (!LG().teams.length || !LG().draft.complete) {
+    return `<div class="h1">Matchups</div>
+      <div class="empty"><div class="big">⚔</div><div class="msg">Matchups appear once the draft is complete.</div></div>`;
+  }
+  const week = activeWeek();
+  const sched = matchupSchedule();
+  const rounds = Object.keys(sched).length;
+  const wk = ((week - 1) % rounds) + 1;
+  const pairs = sched[wk] || [];
+  const mine = myTeamId();
+
+  const cards = pairs.map(([a,b]) => {
+    if (a==='__BYE__' || b==='__BYE__') {
+      const real = a==='__BYE__'?b:a;
+      return `<div class="card"><div class="row-between">
+        <b>${esc(teamById(real).name)}</b><span class="sub">BYE week</span></div></div>`;
+    }
+    const aTot = teamWeekTotal(a, week), bTot = teamWeekTotal(b, week);
+    const aMine = String(a)===String(mine), bMine = String(b)===String(mine);
+    const aWin = aTot > bTot, bWin = bTot > aTot;
+    return `<div class="card" style="${aMine||bMine?'border-color:var(--amber)':''}">
+      <div class="row-between" style="align-items:center">
+        <div style="flex:1">
+          <div class="${aWin?'amber':''}" style="font-weight:${aWin?700:400}">${esc(teamById(a).name)}${aMine?' (you)':''}</div>
+          <div class="sub" style="font-size:.65rem">${esc(teamById(a).owner||'')}</div>
+        </div>
+        <div style="text-align:center;padding:0 .75rem">
+          <div class="num display" style="font-size:1.3rem">
+            <span class="${aWin?'amber':''}">${aTot.toFixed(0)}</span>
+            <span class="sub" style="font-size:.7rem">–</span>
+            <span class="${bWin?'amber':''}">${bTot.toFixed(0)}</span>
+          </div>
+        </div>
+        <div style="flex:1;text-align:right">
+          <div class="${bWin?'amber':''}" style="font-weight:${bWin?700:400}">${esc(teamById(b).name)}${bMine?' (you)':''}</div>
+          <div class="sub" style="font-size:.65rem">${esc(teamById(b).owner||'')}</div>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+
+  return `
+    <div class="eyebrow">${esc(LG().leagueName)}</div>
+    <div class="h1">Matchups</div>
+    <div class="card mt" style="border-color:var(--amber)">
+      <div class="row-between">
+        <button class="btn btn-sm btn-ghost" onclick="changeWeek(-1)" ${week<=1?'disabled':''}>← Wk ${week-1}</button>
+        <span class="display amber">WEEK ${week}</span>
+        <button class="btn btn-sm btn-ghost" onclick="changeWeek(1)" ${week>=26?'disabled':''}>Wk ${week+1} →</button>
+      </div>
+    </div>
+    ${cards || '<p class="sub">No matchups this week.</p>'}
+    <p class="sub mt" style="font-size:.66rem;text-align:center">Each team's score = its starters' best single game that week.</p>`;
+}
 function viewTeams() {
   if (!LG().teams.length) {
     return `<div class="h1">Teams</div>
@@ -2565,6 +2705,7 @@ function renderPlayerModal(p, loading) {
 
 /* drop one of your own players directly from their card */
 window.dropFromCard = function(espnId) {
+  if (LG().draft?.live) { toast('Draft is live — roster moves are locked', 'err'); return; }
   const p = LG().playerPool.find(x=>String(x.espnId)===String(espnId));
   openModal(`
     <div class="h2">Drop ${esc(p?.name||'player')}?</div>
@@ -2582,6 +2723,7 @@ window.confirmDropCard = function(espnId) {
 
 /* add a free agent when roster is FULL — pick someone to drop in the same move */
 window.addWithSwap = function(addId) {
+  if (LG().draft?.live) { toast('Draft is live — use the Draft room', 'err'); return; }
   const addP = LG().playerPool.find(x=>String(x.espnId)===String(addId));
   const roster = teamRoster(myTeamId());
   const rows = roster.map(r => `
@@ -2707,6 +2849,7 @@ window.toggleWeek = function(espnId, week) {
 };
 /* add a free agent straight from the player modal */
 window.addPlayerFromPool = function(espnId) {
+  if (LG().draft?.live) { toast('Draft is live — use the Draft room to pick', 'err'); go('draft'); return; }
   if (!myTeamId()) { toast('Claim your team first', 'err'); return; }
   if (rosterActiveCount(myTeamId()) >= rosterCap()) { toast('Roster full — drop someone first', 'err'); return; }
   const maxPick = LG().draft.picks.reduce((m,pk)=>Math.max(m,pk.pick||0), 0);
@@ -2856,6 +2999,10 @@ function viewSettings() {
         <span class="sub">Salary cap</span>
         <button class="btn btn-sm ${LSET().useSalaryCap?'btn-amber':'btn-ghost'}" onclick="toggleSalaryCap()">${LSET().useSalaryCap?`ON ($${LSET().salaryCap})`:'OFF'}</button>
       </div>
+      <div class="row-between" style="padding:.4rem 0;border-top:1px solid rgba(42,61,48,.4)">
+        <span class="sub">Bonus win<br><span style="font-size:.62rem;color:var(--sage-dim)">extra W for top-half scorers each week</span></span>
+        <button class="btn btn-sm ${LSET().bonusWin?'btn-amber':'btn-ghost'}" onclick="toggleBonusWin()">${LSET().bonusWin?'ON':'OFF'}</button>
+      </div>
       ${isDynasty() ? `<p class="sub mt" style="font-size:.68rem;color:var(--amber)">Dynasty: draft-pick trading up to 3 years out is enabled. Rookie draft available below.</p>` : ''}
     </div>
 
@@ -2892,6 +3039,7 @@ function viewSettings() {
       <div class="h2">Player eligibility</div>
       <p class="sub mb">Re-derive position eligibility from stored data (fixes inflated positions without an ESPN re-pull).</p>
       <button class="btn btn-block" onclick="reDeriveEligibility()">Re-derive eligibility</button>
+      <button class="btn btn-ghost btn-block mt" onclick="diagEligibility()">🔎 Check a player's ESPN slots</button>
     </div>
 
     <div class="card" style="border-color:var(--clay)">
@@ -3312,6 +3460,33 @@ window.reDeriveEligibility = function() {
   renderActive();
 };
 
+/* diagnostic: show a player's RAW ESPN slots vs derived eligibility, so you can
+   confirm whether the app matches ESPN or ESPN itself lists extra positions. */
+window.diagEligibility = function() {
+  openModal(`<div class="h2">Check ESPN slots</div>
+    <p class="sub mb">Type a player name to see the raw ESPN eligible-slot IDs and what we derive from them.</p>
+    <input class="input" id="diag-name" placeholder="Player name" oninput="diagEligLookup(this.value)">
+    <div id="diag-out" class="mt"></div>
+    <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Close</button>`);
+  setTimeout(()=>$('diag-name')?.focus(), 100);
+};
+window.diagEligLookup = function(q) {
+  const out = $('diag-out'); if (!out) return;
+  if (!q || q.length < 2) { out.innerHTML = ''; return; }
+  const matches = LG().playerPool.filter(p => normName(p.name).includes(normName(q))).slice(0,5);
+  if (!matches.length) { out.innerHTML = '<p class="sub">No match.</p>'; return; }
+  const slotNames = {0:'C',1:'1B',2:'2B',3:'3B',4:'SS',5:'OF',6:'2B/SS',7:'1B/3B',8:'OF',9:'OF',10:'OF',11:'DH',12:'UTIL',13:'P',14:'SP',15:'RP',16:'BE',17:'IL',19:'IF'};
+  out.innerHTML = matches.map(p => {
+    const slots = (p.eligSlots||[]).map(s => `${s}=${slotNames[s]||'?'}`).join(', ');
+    const derived = deriveEligibility(p.eligSlots, p.defPosId).join('/');
+    return `<div class="card card-tight" style="margin-bottom:.4rem">
+      <b>${esc(p.name)}</b> <span class="sub">defPos ${p.defPosId}=${posName(p.defPosId)}</span><br>
+      <span class="sub" style="font-size:.7rem">Raw slots: ${esc(slots||'none stored')}</span><br>
+      <span class="sub" style="font-size:.7rem">Derived: <b class="amber">${esc(derived)}</b> · stored: ${esc((p.eligible||[]).join('/'))}</span>
+    </div>`;
+  }).join('');
+};
+
 /* ---- SCORING EDITOR — edit our own point values ---- */
 window.editScoring = function() {
   const vals = scoringValues();
@@ -3586,7 +3761,7 @@ function activeLineupSlots() {
 }
 function LSET() {
   // league settings with defaults (older leagues may lack the object)
-  const d = { leagueType:'redraft', snake:true, secPerPick:90, draftDate:null, useSalaryCap:false, salaryCap:260 };
+  const d = { leagueType:'redraft', snake:true, secPerPick:90, draftDate:null, useSalaryCap:false, salaryCap:260, bonusWin:false };
   return { ...d, ...(LG().settings || {}) };
 }
 function isDynasty() { return LSET().leagueType === 'dynasty'; }
@@ -3725,6 +3900,9 @@ window.toggleSnake = function() {
 window.toggleSalaryCap = function() {
   ensureSettings(); LG().settings.useSalaryCap = !LSET().useSalaryCap; save(); renderActive();
 };
+window.toggleBonusWin = function() {
+  ensureSettings(); LG().settings.bonusWin = !LSET().bonusWin; save(); renderActive();
+};
 window.setSecPerPick = function(v) {
   ensureSettings(); LG().settings.secPerPick = Math.max(15, parseInt(v)||90); save();
 };
@@ -3836,57 +4014,54 @@ window.startLiveDraft = function() {
   go('draft');
 };
 
-/* make a pick (manual click or auto). espnId must be an available player. */
+/* make a pick (manual click). enforces turn order. */
 window.makeDraftPick = function(espnId) {
   if (!LG().draft.live) { toast('Draft is not live', 'err'); return; }
   const team = currentPickTeam();
   if (!team) { finishDraft(); return; }
-  // only the team on the clock (or commissioner) may pick
   const mine = String(team) === String(myTeamId());
   if (!mine && !window._masterUnlocked) { toast("Not your pick", 'err'); return; }
+  commitPick(espnId, team);
+};
+
+/* commit a pick for a team — shared by manual + auto. No turn check here. */
+function commitPick(espnId, team) {
+  if (!team) return;
   const taken = new Set(LG().draft.picks.map(p => String(p.playerId)));
-  if (taken.has(String(espnId))) { toast('Already drafted', 'err'); return; }
+  if (taken.has(String(espnId))) { return; }   // already drafted (sync race) — ignore
   const { round } = pickRoundAndSlot(currentPickIndex());
   LG().draft.picks.push({ pick: currentPickIndex()+1, round, teamId: team, playerId: espnId });
   LG().draft.pickStartedAt = Date.now();   // reset clock for next picker
+  _autoPickGuard = -1;                      // allow auto-pick for the new pick index
   if (draftDone()) { finishDraft(); return; }
   save();
   renderActive();
-};
+}
 
-/* auto-pick: best available that fills an empty roster slot for the team on clock */
+/* auto-pick: best available that fills an empty roster slot for the team on clock.
+   Forced (bypasses turn check) — used on timer expiry for ANY team. */
 function autoPickForCurrent() {
   const team = currentPickTeam();
-  if (!team) return;
+  if (!team) { if (LG().draft.live) finishDraft(); return; }
   const taken = new Set(LG().draft.picks.map(p => String(p.playerId)));
   const myPicks = LG().draft.picks.filter(p => String(p.teamId)===String(team));
-  // figure out which starting slots are still unfilled
   const slots = activeLineupSlots();
-  const filledPos = {};
-  myPicks.forEach(pk => {
-    const pl = LG().playerPool.find(x=>String(x.espnId)===String(pk.playerId));
-    (pl?.eligible||[]).forEach(pos => {});  // (slot assignment is loose pre-lineup)
-  });
-  // need-count by position from unfilled starting slots
   const needPos = {};
   slots.forEach(s => { needPos[s.slot] = (needPos[s.slot]||0)+1; });
   myPicks.forEach(pk => {
     const pl = LG().playerPool.find(x=>String(x.espnId)===String(pk.playerId));
     if (!pl) return;
-    // decrement the first needed slot this player is eligible for
-    const hit = Object.keys(needPos).find(slot => needPos[slot]>0 &&
-      (slotEligible(slot, pl) ));
+    const hit = Object.keys(needPos).find(slot => needPos[slot]>0 && slotEligible(slot, pl));
     if (hit) needPos[hit]--;
   });
   const stillNeed = Object.keys(needPos).filter(s => needPos[s] > 0);
   const pool = [...LG().playerPool].sort((a,b)=>a.adp-b.adp);
   let pick = null;
   if (stillNeed.length) {
-    pick = pool.find(p => !taken.has(String(p.espnId)) &&
-      stillNeed.some(slot => slotEligible(slot, p)));
+    pick = pool.find(p => !taken.has(String(p.espnId)) && stillNeed.some(slot => slotEligible(slot, p)));
   }
   if (!pick) pick = pool.find(p => !taken.has(String(p.espnId)));  // fallback: best available
-  if (pick) makeDraftPick(pick.espnId);
+  if (pick) commitPick(pick.espnId, team);
 }
 /* does a player satisfy a given lineup slot name? */
 function slotEligible(slotName, player) {
