@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Best Game League v5.5</title>
+<title>Best Game League v5.6</title>
 <style>
 /* ============================================================
-   BGL v5.5 — Design System
+   BGL v5.6 — Design System
    Subject: competitive fantasy baseball; hook = best single game/week
    Palette: stadium-at-night
    ============================================================ */
@@ -204,6 +204,11 @@ body {
   animation: spin .7s linear infinite; margin: 1rem auto;
 }
 @keyframes spin { to { transform: rotate(360deg);} }
+.spinner-inline {
+  display: inline-block; width: 12px; height: 12px; border: 2px solid var(--line);
+  border-top-color: var(--amber); border-radius: 50%; vertical-align: middle;
+  animation: spin .7s linear infinite; margin-right: .4rem;
+}
 
 /* ---- log output ---- */
 .log {
@@ -320,7 +325,7 @@ body {
 <div class="topbar">
   <div class="brand" onclick="go('home')">
     <span>BGL<span class="mark">.</span></span>
-    <span class="ver">v5.5</span>
+    <span class="ver">v5.6</span>
   </div>
   <div class="topbar-right">
     <button class="league-chip" id="league-chip" onclick="openLeagueSwitcher()" title="Change league or sport"></button>
@@ -623,6 +628,8 @@ function initFirebase() {
         applyMaster(snap.data().master);
         STATE._loaded = true;
         renderActive();
+        // pool likely just arrived from master — compute points if needed
+        if (typeof ensurePoolPoints === 'function') ensurePoolPoints();
       }
     }, (e) => { fbErr = e.message; });
     // if this device previously joined a league, resubscribe to its shared doc
@@ -640,6 +647,8 @@ function subscribeLeague(docId) {
       applyLeague(snap.data().league);
       saveLocal();
       renderActive();
+      // pool may have just arrived — compute points if needed
+      if (typeof ensurePoolPoints === 'function') ensurePoolPoints();
     }
   }, (e) => { /* denied = not approved; stays local */ });
 }
@@ -1225,7 +1234,9 @@ function renderPage(page) {
     case 'matchups':  el.innerHTML = viewMatchups(); break;
     case 'teams':     el.innerHTML = viewTeams(); break;
     case 'myteam':    el.innerHTML = viewMyTeam(); break;
-    case 'players':   el.innerHTML = viewPlayers(); break;
+    case 'players':   el.innerHTML = viewPlayers();
+                      if (typeof ensurePoolPoints === 'function') ensurePoolPoints();
+                      break;
     case 'settings':  el.innerHTML = viewSettings(); break;
   }
   $('wk-label').textContent = activeWeek();
@@ -2027,10 +2038,9 @@ function viewPlayersReal() {
     <div class="eyebrow">${SP().label} pool · ${LG().playerPool.length} players · ${mappedCount} linked</div>
     <div class="h1">Players</div>
 
-    ${!havePoints ? `<div class="card card-tight mt" style="border-color:var(--amber)">
-      <p class="sub mb" style="font-size:.78rem">Loading player points in the background…
-        if they don't appear shortly, tap below to load now.</p>
-      <button class="btn btn-amber btn-block" onclick="loadPoolPoints()">Load player points</button>
+    ${!havePoints ? `<div class="card card-tight mt">
+      <p class="sub" style="font-size:.75rem;text-align:center"><span class="spinner-inline"></span>
+        Loading player points…</p>
     </div>` : ''}
 
     <div class="field mt">
@@ -2235,7 +2245,7 @@ function renderPlayerModal(p, loading) {
       <button class="btn btn-block mt" style="background:var(--bad);color:#fff" onclick="dropFromCard('${p.espnId}')">Drop ${esc(p.name)}</button>
     ` : ''}
 
-    ${!havePts ? `<p class="sub mt" style="font-size:.72rem">Load player points on the Players page to see scoring.</p>` : ''}
+    ${!havePts ? `<p class="sub mt" style="font-size:.72rem">Points are loading… tap to view once ready.</p>` : ''}
     <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Close</button>
   `);
 };
@@ -3442,6 +3452,22 @@ setTimeout(() => autoPullStats(false), 800);
 // ALWAYS resolve team meta + schedule on load (independent of the stat-pull 6h guard),
 // so upcoming opponents and probable starters appear even when stats are already cached.
 setTimeout(() => { if (myTeamId()) refreshTeamMeta(); }, 1200);
+// ALWAYS compute pool points on load, independent of autoPullStats' guards, so the
+// Players page is populated automatically. Reuses cached logs so it's cheap on refresh.
+setTimeout(() => {
+  if (LG().playerPool.some(p => p.mlbId)) {
+    computePoolPoints(false).then(() => renderActive()).catch(()=>{});
+  }
+}, 1500);
+// re-run when the league doc first syncs in (pool may arrive after boot)
+let _pooledOnce = false;
+function ensurePoolPoints() {
+  if (_pooledOnce) return;
+  if (LG().playerPool.some(p => p.mlbId) && !LG().playerPool.some(p => p.ptsSeason != null)) {
+    _pooledOnce = true;
+    computePoolPoints(false).then(() => renderActive()).catch(()=>{ _pooledOnce = false; });
+  }
+}
 </script>
 </body>
 </html>
