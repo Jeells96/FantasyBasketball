@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Best Game League v5.1</title>
+<title>Best Game League v5.2</title>
 <style>
 /* ============================================================
-   BGL v5.1 — Design System
+   BGL v5.2 — Design System
    Subject: competitive fantasy baseball; hook = best single game/week
    Palette: stadium-at-night
    ============================================================ */
@@ -320,7 +320,7 @@ body {
 <div class="topbar">
   <div class="brand" onclick="go('home')">
     <span>BGL<span class="mark">.</span></span>
-    <span class="ver">v5.1</span>
+    <span class="ver">v5.2</span>
   </div>
   <div class="topbar-right">
     <button class="league-chip" id="league-chip" onclick="openLeagueSwitcher()" title="Change league or sport"></button>
@@ -1117,8 +1117,16 @@ async function computePoolPoints(force, progressFn) {
   if (_poolPtsRunning) return;
   _poolPtsRunning = true;
   try {
-    const pool = LG().playerPool.slice().sort((a,b)=>a.adp-b.adp).slice(0, 200);
-    const mapped = pool.filter(p => p.mlbId);
+    // compute for: top 250 by ADP, PLUS every rostered player, PLUS anyone with a
+    // real ADP (<9999). This covers draftable players and current free agents.
+    const sorted = LG().playerPool.slice().sort((a,b)=>a.adp-b.adp);
+    const rosteredIds = new Set(LG().draft.picks.map(pk => String(pk.playerId)));
+    const pick = new Map();
+    sorted.slice(0, 250).forEach(p => pick.set(String(p.espnId), p));
+    LG().playerPool.forEach(p => {
+      if (rosteredIds.has(String(p.espnId)) || p.adp < 9999) pick.set(String(p.espnId), p);
+    });
+    const mapped = [...pick.values()].filter(p => p.mlbId);
     const today = new Date(); today.setHours(0,0,0,0);
     const cut = (days) => { const d = new Date(today); d.setDate(today.getDate()-days); return ymd(d); };
     const c7 = cut(7), c14 = cut(14), c30 = cut(30);
@@ -1741,6 +1749,8 @@ window.changeWeek = function(delta) {
   const w = activeWeek() + delta;
   LG().viewWeek = Math.max(1, Math.min(26, w));
   renderActive();
+  // load that week's schedule so opponents/probables appear for it
+  getWeekSchedule(activeWeek()).then(() => renderActive()).catch(()=>{});
 };
 window.setViewingTeam = function(teamId) {
   STATE.viewingTeamId = teamId;
@@ -2094,10 +2104,43 @@ window.setSearch = function(v) {
 };
 window.setAvail = function(v) { playerView.avail = v; renderActive(); };
 
+/* compute points for ONE player on demand (when their modal opens) */
+async function computeOnePlayer(p) {
+  if (!p?.mlbId) return;
+  try {
+    const today = new Date(); today.setHours(0,0,0,0);
+    const cut = (days) => { const d = new Date(today); d.setDate(today.getDate()-days); return ymd(d); };
+    const c7 = cut(7), c14 = cut(14), c30 = cut(30);
+    let log = LG().gameLogs?.[p.mlbId];
+    if (!log) {
+      const isPitcher = /SP|RP/.test((p.eligible||[]).join('')) && !/1B|2B|3B|SS|OF|C|DH/.test((p.eligible||[]).join(''));
+      const grp = isPitcher ? 'pitching' : 'hitting';
+      const raw = await mlbGameLog(p.mlbId, grp);
+      log = raw.map(g => ({...g, group: grp}));
+      LG().gameLogs = LG().gameLogs || {};
+      LG().gameLogs[p.mlbId] = log;
+    }
+    let season=0,w7=0,w14=0,w30=0;
+    log.forEach(g => { const pts=gamePoints(g.stat,g.group); season+=pts;
+      if(g.date>=c7)w7+=pts; if(g.date>=c14)w14+=pts; if(g.date>=c30)w30+=pts; });
+    p.ptsSeason=Math.round(season*10)/10; p.pts7=Math.round(w7*10)/10;
+    p.pts14=Math.round(w14*10)/10; p.pts30=Math.round(w30*10)/10; p.seasonPts=p.ptsSeason;
+  } catch(e) {}
+}
+
 window.showPlayer = function(espnId) {
   const p = LG().playerPool.find(x => String(x.espnId) === String(espnId));
   if (!p) return;
-  const pk = LG().draft.picks.find(x => String(x.playerId) === String(espnId));
+  // if this player's points aren't computed yet but they're mapped, fetch on demand
+  if (p.ptsSeason == null && p.mlbId) {
+    renderPlayerModal(p, true);  // show with a loading hint
+    computeOnePlayer(p).then(() => { renderPlayerModal(p, false); });
+    return;
+  }
+  renderPlayerModal(p, false);
+};
+function renderPlayerModal(p, loading) {
+  const pk = LG().draft.picks.find(x => String(x.playerId) === String(p.espnId));
   const onMyTeam = pk && String(pk.teamId) === String(myTeamId());
   const isFreeAgent = !pk;
   const havePts = p.ptsSeason != null;
@@ -2110,7 +2153,7 @@ window.showPlayer = function(espnId) {
       ${p.injured?'· <span class="cell-neg">IL</span>':''}</div>
     <div class="statrow mt mb">
       <div class="stat"><div class="lbl">ADP</div><div class="val amber">${p.adp<9999?p.adp.toFixed(0):'—'}</div></div>
-      <div class="stat"><div class="lbl">Season</div><div class="val">${havePts?p.ptsSeason.toFixed(0):'—'}</div></div>
+      <div class="stat"><div class="lbl">Season</div><div class="val">${loading?'<span class="sub">…</span>':(havePts?p.ptsSeason.toFixed(0):'—')}</div></div>
       <div class="stat"><div class="lbl">Status</div><div class="val" style="font-size:1rem">${pk?(onMyTeam?'Yours':'Rostered'):'Free'}</div></div>
     </div>
     ${havePts ? `<div class="statrow mb">
@@ -3160,32 +3203,33 @@ async function refreshTeamMeta() {
   if (!myTeamId()) return;
   const roster = teamRoster(myTeamId()).filter(p => p.mlbId);
   // batch people lookup for team id + injury status
-  try {
-    const ids = roster.map(p => p.mlbId).join(',');
-    const res = await fetch(`${MLB}/people?personIds=${ids}&hydrate=currentTeam`);
-    if (res.ok) {
-      const data = await res.json();
-      const byId = {}; (data.people||[]).forEach(person => byId[person.id] = person);
-      // update the master pool entries (team id + injury) for these players
-      LG().playerPool.forEach(pl => {
-        const person = byId[pl.mlbId];
-        if (person) {
-          pl.mlbTeamId = person.currentTeam?.id || pl.mlbTeamId;
-          // MLB marks active roster status; 'active' code is 'A'
-          const statusCode = person.currentTeam ? (person.active === false ? 'IL' : '') : '';
-          // injury comes from ESPN pull; keep it but let MLB clear obvious returns
-          if (person.active === true && pl.injured) pl.injured = false;
-        }
-      });
-    }
-  } catch(e) {}
-  // fetch schedule for the viewed week
+  if (roster.length) {
+    try {
+      const ids = roster.map(p => p.mlbId).join(',');
+      const res = await fetch(`${MLB}/people?personIds=${ids}&hydrate=currentTeam`);
+      if (res.ok) {
+        const data = await res.json();
+        const byId = {}; (data.people||[]).forEach(person => byId[person.id] = person);
+        LG().playerPool.forEach(pl => {
+          const person = byId[pl.mlbId];
+          if (person) {
+            pl.mlbTeamId = person.currentTeam?.id || pl.mlbTeamId;
+            if (person.active === true && pl.injured) pl.injured = false;
+          }
+        });
+      }
+    } catch(e) {}
+  }
+  // fetch schedule for the viewed week (so opponents/probables show)
   try { await getWeekSchedule(activeWeek()); } catch(e) {}
   if (STATE.activeLeagueDoc) saveLeague({silent:true}); else saveLocal();
   renderActive();
 }
 // kick off shortly after load
 setTimeout(() => autoPullStats(false), 800);
+// ALWAYS resolve team meta + schedule on load (independent of the stat-pull 6h guard),
+// so upcoming opponents and probable starters appear even when stats are already cached.
+setTimeout(() => { if (myTeamId()) refreshTeamMeta(); }, 1200);
 </script>
 </body>
 </html>
