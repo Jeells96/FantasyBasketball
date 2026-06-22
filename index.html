@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Best Game League v5.6</title>
+<title>Best Game League v6.0</title>
 <style>
 /* ============================================================
-   BGL v5.6 — Design System
+   BGL v6.0 — Design System
    Subject: competitive fantasy baseball; hook = best single game/week
    Palette: stadium-at-night
    ============================================================ */
@@ -134,6 +134,23 @@ body {
 .ps-tag { font-size: .5rem; font-family: var(--mono); color: var(--good);
   font-weight: 700; display: block; margin-top: 1px; }
 .opp-tag { font-size: .5rem; color: var(--sage-dim); display: block; }
+
+/* ---- draft room ---- */
+.draft-timer { font-family: var(--mono); font-size: 2.6rem; font-weight: 800; color: var(--chalk); letter-spacing: 1px; }
+.draft-timer.urgent { color: var(--bad); animation: pulse .8s ease-in-out infinite; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.45} }
+.on-clock-mine { border-color: var(--amber) !important; box-shadow: 0 0 0 1px var(--amber); }
+.draft-order-strip { display: flex; gap: .4rem; overflow-x: auto; padding-bottom: .5rem; }
+.draft-team { flex: 0 0 auto; min-width: 88px; background: var(--field-2); border: 1px solid var(--line);
+  border-radius: 8px; padding: .4rem .5rem; text-align: center; position: relative; }
+.draft-team.now { border-color: var(--amber); background: var(--amber-bg); }
+.draft-team.next { border-color: var(--sage); }
+.draft-team .dt-pos { font-family: var(--mono); font-size: .6rem; color: var(--sage-dim); display: block; }
+.draft-team .dt-name { font-size: .72rem; font-weight: 600; color: var(--chalk); display: block;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100px; }
+.draft-team .dt-tag { font-size: .52rem; font-family: var(--mono); color: var(--amber); text-transform: uppercase; letter-spacing: 1px; }
+.draft-team .dt-tag.next { color: var(--sage); }
+.draft-pick-row .btn { flex: 0 0 auto; }
 
 /* ---- page container ---- */
 .page { padding: 1rem; max-width: 980px; margin: 0 auto; display: none; }
@@ -325,7 +342,7 @@ body {
 <div class="topbar">
   <div class="brand" onclick="go('home')">
     <span>BGL<span class="mark">.</span></span>
-    <span class="ver">v5.6</span>
+    <span class="ver">v6.0</span>
   </div>
   <div class="topbar-right">
     <button class="league-chip" id="league-chip" onclick="openLeagueSwitcher()" title="Change league or sport"></button>
@@ -347,6 +364,7 @@ body {
 <!-- ============ BOTTOM NAV ============ -->
 <div class="botnav">
   <button data-nav="home" onclick="go('home')"><span class="ic">★</span>My Page</button>
+  <button data-nav="draft" id="nav-draft" onclick="go('draft')" style="display:none"><span class="ic">◷</span>Draft</button>
   <button data-nav="standings" onclick="go('standings')"><span class="ic">▦</span>Standings</button>
   <button data-nav="matchups" onclick="go('matchups')"><span class="ic">⚔</span>Matchups</button>
   <button data-nav="players" onclick="go('players')"><span class="ic">◎</span>Players</button>
@@ -408,10 +426,13 @@ const SPORTS = {
     // Generic slots (UTIL/P/BE/IL) confer NO specific position and are omitted —
     // otherwise every hitter eligible for UTIL would wrongly gain 'SP'.
     eligMap: {
+      // ONLY atomic single-position slots. ESPN flex slots (6=2B/SS, 7=1B/3B,
+      // 19=IF, 12=UTIL) are combinations any qualifying player gets — mapping them
+      // inflates eligibility (e.g. a 3B-only like Chapman wrongly gaining 1B/2B/SS).
+      // Real per-position eligibility comes from these atomic slots only.
       0:['C'], 1:['1B'], 2:['2B'], 3:['3B'], 4:['SS'], 5:['OF'],
-      6:['2B','SS'], 7:['1B','3B'], 8:['OF'], 9:['OF'], 10:['OF'],
-      11:['DH'], 14:['SP'], 15:['RP'], 19:['1B','2B','3B','SS'],
-      // 12 (UTIL), 13 (P generic), 16 (bench), 17 (IL) intentionally omitted
+      8:['OF'], 9:['OF'], 10:['OF'], 11:['DH'], 14:['SP'], 15:['RP'],
+      // 6,7,19 (flex), 12 (UTIL), 13 (P generic), 16 (bench), 17 (IL) omitted on purpose
     },
     irSlots: [17],              // IL slot id(s)
     benchSlots: [16,17],
@@ -501,7 +522,8 @@ function blankLeague(name) {
     leagueName: name,
     currentWeek: 1,
     teams: [],
-    draft: { started:false, complete:false, order:[], picks:[], currentPick:0 },
+    draft: { started:false, complete:false, order:[], picks:[], currentPick:0,
+             live:false, pickStartedAt:null, paused:false },
     playerPool: [],
     customScoring: {},          // our own scoring: {categoryId: pointValue} overrides
     stats: {},
@@ -515,6 +537,17 @@ function blankLeague(name) {
     viewWeek: null,             // week the user is viewing (null = auto current)
     schedule: { opener: null, durations: {} },  // custom week schedule
     rosterOverride: null,       // commissioner roster slot override (null = use sport default)
+    settings: {                 // league-wide commissioner settings
+      leagueType: 'redraft',    // 'redraft' | 'dynasty'
+      snake: true,              // snake draft vs linear
+      secPerPick: 90,           // seconds per pick (auto-pick on expiry)
+      draftDate: null,          // ISO datetime string for live draft start
+      useSalaryCap: false,      // real salaries + cap toggle (rules TBD)
+      salaryCap: 260,           // cap amount when enabled
+    },
+    draftPicks: {},             // dynasty future picks: draftPicks[year][round] = teamId (owner)
+    rookieDraft: { enabled:false, started:false, complete:false, order:[], picks:[], currentPick:0,
+                   draftDate:null, secPerPick:90, snake:true },
   };
 }
 
@@ -681,6 +714,9 @@ function leaguePayload() {
     schedule: lg.schedule,
     customScoring: lg.customScoring || {},   // per-league scoring (commissioner)
     rosterOverride: lg.rosterOverride || null,
+    settings: lg.settings || {},        // league-wide commissioner settings
+    draftPicks: lg.draftPicks || {},    // dynasty future picks ownership
+    rookieDraft: lg.rookieDraft || {},  // separate rookie draft state
     trades: lg.trades || [],
     lineups: lg.lineups || {},          // {teamId: {week: {assignments}}}
     members: lg.members || {},          // {memberId: {name, teamId, joined}}
@@ -721,6 +757,9 @@ function applyLeague(league) {
   if (league.schedule) lg.schedule = league.schedule;
   if (league.customScoring) lg.customScoring = league.customScoring;
   if (league.rosterOverride !== undefined) lg.rosterOverride = league.rosterOverride;
+  if (league.settings) lg.settings = { ...lg.settings, ...league.settings };
+  if (league.draftPicks) lg.draftPicks = league.draftPicks;
+  if (league.rookieDraft) lg.rookieDraft = { ...lg.rookieDraft, ...league.rookieDraft };
   if (league.trades) lg.trades = league.trades;
   if (league.lineups) lg.lineups = league.lineups;
   if (league.members) lg.members = league.members;
@@ -1245,6 +1284,37 @@ function renderPage(page) {
   if (chip) {
     chip.textContent = STATE.activeLeagueDoc ? `${SP().icon} ${LG().leagueName}` : '';
   }
+  // draft tab appears only while a draft is live
+  const navDraft = $('nav-draft');
+  if (navDraft) navDraft.style.display = (LG().draft?.live) ? '' : 'none';
+  // run the draft clock only while viewing a live draft
+  manageDraftTimer(page);
+}
+
+/* drive the 1-second draft clock; auto-pick when it hits zero */
+let _draftTimer = null;
+function manageDraftTimer(page) {
+  const live = LG().draft?.live && !LG().draft?.paused;
+  const onDraftPage = page === 'draft';
+  if (live && onDraftPage) {
+    if (!_draftTimer) {
+      _draftTimer = setInterval(() => {
+        if (!LG().draft?.live || LG().draft?.paused) { clearInterval(_draftTimer); _draftTimer=null; return; }
+        const left = draftSecondsLeft();
+        // update just the timer element to avoid a full re-render every second
+        const t = document.querySelector('.draft-timer');
+        if (t) { t.textContent = fmtClock(left); t.classList.toggle('urgent', left<=10); }
+        if (left <= 0) {
+          clearInterval(_draftTimer); _draftTimer=null;
+          // only the team on the clock (or commissioner) auto-picks, to avoid double-picks
+          const onClock = currentPickTeam();
+          if (String(onClock)===String(myTeamId()) || window._masterUnlocked) autoPickForCurrent();
+        }
+      }, 1000);
+    }
+  } else if (_draftTimer) {
+    clearInterval(_draftTimer); _draftTimer = null;
+  }
 }
 
 /* ============================================================
@@ -1301,8 +1371,194 @@ function checkRow(label, done, hint) {
   </div>`;
 }
 
-function viewDraft()     { return placeholderView('Draft', 'Snake draft from the ESPN player pool. Built in Phase 2.'); }
-function viewStandings() { return placeholderView('Standings', 'Win/loss records from weekly best-game matchups. Built in Phase 4.'); }
+function viewDraft() {
+  const d = LG().draft;
+  if (!d.live && !d.complete) {
+    return `<div class="h1">Draft</div>
+      <div class="empty"><div class="big">◷</div>
+      <div class="msg">No draft is live yet.${LSET().draftDate?`<br><br>Scheduled: <b>${esc(new Date(LSET().draftDate).toLocaleString())}</b>`:''}</div>
+      ${window._masterUnlocked?'<button class="btn" onclick="go(\'settings\')">Open draft setup</button>':'<p class="sub">Your commissioner will open the draft room when it\'s time.</p>'}</div>`;
+  }
+  if (d.complete) {
+    return `<div class="h1">Draft complete</div>
+      <div class="empty"><div class="big">✓</div><div class="msg">All ${d.picks.length} picks are in.</div>
+      <button class="btn" onclick="go('teams')">View rosters</button></div>`;
+  }
+  // LIVE draft room
+  const seq = draftSequence();
+  const idx = currentPickIndex();
+  const onClock = currentPickTeam();
+  const { round, slotInRound } = pickRoundAndSlot(idx);
+  const mine = String(onClock) === String(myTeamId());
+  const secLeft = draftSecondsLeft();
+
+  // draft order strip with live highlight (current + on-deck)
+  const order = d.order || [];
+  const orderStrip = order.map((tid,i) => {
+    // find this team's position in the current round
+    const isNow = String(tid)===String(onClock);
+    const seqPos = seq.findIndex((t,si) => si>=idx && String(t)===String(tid));
+    const isNext = seqPos === idx+1;
+    return `<div class="draft-team ${isNow?'now':''} ${isNext?'next':''}">
+      <span class="dt-pos">${i+1}</span>
+      <span class="dt-name">${esc(teamById(tid).name)}</span>
+      ${isNow?'<span class="dt-tag">on clock</span>':isNext?'<span class="dt-tag next">on deck</span>':''}
+    </div>`;
+  }).join('');
+
+  // available players (reuse player filters)
+  const taken = new Set(d.picks.map(p=>String(p.playerId)));
+  const avail = filteredPool().filter(p => !taken.has(String(p.espnId))).slice(0, 80);
+  const playerRows = avail.map(p => `
+    <div class="row-between draft-pick-row" style="padding:.4rem 0;border-bottom:1px solid rgba(42,61,48,.4)">
+      <span class="plink" onclick="showPlayer('${p.espnId}')">${esc(p.name)}
+        <span class="sub" style="font-size:.65rem">${esc((p.eligible||[]).join('/'))} · ${esc(p.proTeam||'')} · ADP ${p.adp<9999?p.adp.toFixed(0):'—'}${p.bestAvg!=null?` · ${p.bestAvg.toFixed(1)}avg`:''}</span></span>
+      ${(mine||window._masterUnlocked)?`<button class="btn btn-sm btn-amber" onclick="makeDraftPick('${p.espnId}')">Draft</button>`:''}
+    </div>`).join('');
+
+  // recent picks
+  const recent = d.picks.slice(-6).reverse().map(pk => {
+    const pl = LG().playerPool.find(x=>String(x.espnId)===String(pk.playerId));
+    return `<div class="sub" style="font-size:.72rem;padding:.15rem 0">
+      <b>#${pk.pick}</b> ${esc(teamById(pk.teamId).abbrev||teamById(pk.teamId).name)} — ${esc(pl?.name||'?')}</div>`;
+  }).join('');
+
+  return `
+    <div class="eyebrow">Round ${round} · Pick ${slotInRound} of ${order.length} · #${idx+1} overall</div>
+    <div class="h1">Draft room</div>
+
+    <div class="card ${mine?'on-clock-mine':''}" style="text-align:center">
+      <div class="sub">${d.paused?'⏸ PAUSED':'On the clock'}</div>
+      <div class="h2" style="margin:.2rem 0;color:${mine?'var(--amber)':'var(--chalk)'}">${esc(teamById(onClock).name)}${mine?' (you)':''}</div>
+      <div class="draft-timer ${secLeft<=10?'urgent':''}">${d.paused?'—':fmtClock(secLeft)}</div>
+      ${window._masterUnlocked?`<div class="row" style="justify-content:center;gap:.4rem;margin-top:.5rem">
+        <button class="btn btn-sm btn-ghost" onclick="pauseDraft()">${d.paused?'▶ Resume':'⏸ Pause'}</button>
+        <button class="btn btn-sm btn-ghost" onclick="commishForcePick()">Force pick</button>
+      </div>`:''}
+    </div>
+
+    <div class="divlabel">Draft order</div>
+    <div class="draft-order-strip">${orderStrip}</div>
+
+    ${recent?`<div class="divlabel">Recent picks</div><div class="card card-tight">${recent}</div>`:''}
+
+    <div class="divlabel">Available players</div>
+    ${draftFilterBar()}
+    <div class="card card-tight">${playerRows || '<p class="sub">No players match.</p>'}</div>
+  `;
+}
+
+/* seconds left on the current pick clock */
+function draftSecondsLeft() {
+  const d = LG().draft;
+  if (d.paused || !d.pickStartedAt) return LSET().secPerPick;
+  const elapsed = Math.floor((Date.now() - d.pickStartedAt)/1000);
+  return Math.max(0, LSET().secPerPick - elapsed);
+}
+function fmtClock(s) { const m=Math.floor(s/60), ss=s%60; return `${m}:${String(ss).padStart(2,'0')}`; }
+
+/* compact filter bar for the draft room (mirrors the players page filters) */
+function draftFilterBar() {
+  const allPos = SP().posFilters;
+  const posBtn = (pos) => `<button class="btn btn-sm ${playerView.posFilter===pos?'btn-amber':'btn-ghost'}" onclick="setPosFilter('${pos}')">${pos}</button>`;
+  return `
+    <div class="field"><input class="input" placeholder="Search…" value="${esc(playerView.search)}" oninput="setSearch(this.value)"></div>
+    ${SP().key==='flb'?`<div class="row" style="gap:.3rem;margin-top:.4rem">
+      <button class="btn btn-sm ${playerView.grpFilter==='all'?'btn-amber':'btn-ghost'}" onclick="setGrpFilter('all')">All</button>
+      <button class="btn btn-sm ${playerView.grpFilter==='batters'?'btn-amber':'btn-ghost'}" onclick="setGrpFilter('batters')">Batters</button>
+      <button class="btn btn-sm ${playerView.grpFilter==='pitchers'?'btn-amber':'btn-ghost'}" onclick="setGrpFilter('pitchers')">Pitchers</button>
+    </div>`:''}
+    <div class="row" style="gap:.3rem;overflow-x:auto;margin-top:.4rem;padding-bottom:.3rem">${allPos.map(posBtn).join('')}</div>`;
+}
+
+/* the filtered+sorted pool used by both the players page and draft room */
+function filteredPool() {
+  const draftedIds = new Set(LG().draft.picks.map(pk => String(pk.playerId)));
+  let list = LG().playerPool.filter(p => {
+    if (playerView.search && !normName(p.name).includes(normName(playerView.search))) return false;
+    if (playerView.grpFilter && playerView.grpFilter !== 'all') {
+      const elig = (p.eligible||[]).join(' ');
+      const isPitcher = /\bSP\b|\bRP\b/.test(elig) && !/\bC\b|1B|2B|3B|SS|\bOF\b|\bDH\b/.test(elig);
+      if (playerView.grpFilter==='pitchers' && !isPitcher) return false;
+      if (playerView.grpFilter==='batters' && isPitcher) return false;
+    }
+    if (playerView.posFilter !== 'ALL') {
+      const elig = (p.eligible||[]).join(' ') + ' ' + (p.pos||'');
+      if (!elig.includes(playerView.posFilter)) return false;
+    }
+    return true;
+  });
+  list.sort((a,b)=>a.adp-b.adp);
+  return list;
+}
+/* a team's total for a given week = sum of its starters' best single game */
+function teamWeekTotal(teamId, week) {
+  const roster = teamRoster(teamId);
+  const starters = getStarters(teamId, week);
+  let total = 0;
+  starters.forEach(pid => {
+    const p = roster.find(r => String(r.espnId)===String(pid));
+    if (p?.mlbId) { const bg = playerBestGame(p.mlbId, week); if (bg) total += bg.pts; }
+  });
+  return Math.round(total*10)/10;
+}
+/* a team's season total across all weeks up to (and including) the current week */
+function teamSeasonTotal(teamId) {
+  const upTo = currentWeekNow();
+  let total = 0;
+  for (let w = 1; w <= upTo; w++) total += teamWeekTotal(teamId, w);
+  return Math.round(total*10)/10;
+}
+
+function viewStandings() {
+  if (!LG().teams.length) {
+    return `<div class="h1">Standings</div>
+      <div class="empty"><div class="big">▦</div><div class="msg">No teams yet.</div>
+      <button class="btn" onclick="go('settings')">Open Settings</button></div>`;
+  }
+  if (!LG().draft.complete) {
+    return `<div class="h1">Standings</div>
+      <div class="empty"><div class="big">▦</div><div class="msg">Standings appear once the draft is complete.</div></div>`;
+  }
+  const curWeek = currentWeekNow();
+  const mine = myTeamId();
+  // build rows with season total + this week + best week
+  const rows = LG().teams.map(t => {
+    const season = teamSeasonTotal(t.id);
+    const thisWk = teamWeekTotal(t.id, curWeek);
+    let bestWk = 0, bestWkNum = 0;
+    for (let w=1; w<=curWeek; w++){ const v=teamWeekTotal(t.id,w); if(v>bestWk){bestWk=v;bestWkNum=w;} }
+    const avg = curWeek>0 ? Math.round(season/curWeek*10)/10 : 0;
+    return { t, season, thisWk, bestWk, bestWkNum, avg };
+  }).sort((a,b) => b.season - a.season);
+
+  const body = rows.map((r,i) => {
+    const isMine = String(r.t.id)===String(mine);
+    const rankColor = i===0?'color:var(--amber);font-weight:800':'';
+    return `<tr style="${isMine?'background:var(--amber-bg)':''}">
+      <td class="r num" style="${rankColor}">${i+1}</td>
+      <td><span class="plink" onclick="setViewingTeam('${r.t.id}');go('home')">${esc(r.t.name)}</span>
+        ${isMine?'<span class="sub" style="font-size:.6rem"> · you</span>':''}
+        ${r.t.owner?`<span class="sub" style="font-size:.6rem;display:block">${esc(r.t.owner)}</span>`:''}</td>
+      <td class="r num cell-best" style="font-weight:700">${r.season.toFixed(0)}</td>
+      <td class="r num" style="font-size:.75rem">${r.avg.toFixed(1)}</td>
+      <td class="r num" style="font-size:.75rem">${r.thisWk.toFixed(0)}</td>
+      <td class="r num" style="font-size:.72rem">${r.bestWk.toFixed(0)}<span class="sub" style="font-size:.55rem"> w${r.bestWkNum||'-'}</span></td>
+    </tr>`;
+  }).join('');
+
+  return `
+    <div class="eyebrow">${esc(LG().leagueName)} · through week ${curWeek}</div>
+    <div class="h1">Standings</div>
+    <p class="sub mb" style="font-size:.72rem">Ranked by total points (sum of each week's best-game lineup). League scoring applies.</p>
+    <div class="card card-tight">
+      <table class="tbl">
+        <thead><tr><th class="r">#</th><th>Team</th><th class="r">Total</th><th class="r">Avg</th><th class="r">Wk ${curWeek}</th><th class="r">Best</th></tr></thead>
+        <tbody>${body}</tbody>
+      </table>
+    </div>
+    <p class="sub mt" style="font-size:.66rem;text-align:center">Tap a team to view their roster. Avg = points per week. Best = top single week.</p>`;
+}
 function viewMatchups()  { return placeholderView('Matchups', 'Weekly head-to-head with daily best-game breakdowns. Built in Phase 4.'); }
 function viewTeams() {
   if (!LG().teams.length) {
@@ -1505,6 +1761,11 @@ function viewMyTeam() {
       </div>` : `<button class="btn btn-sm btn-amber" onclick="viewMyOwnTeam()">← My team</button>`}
     </div>
 
+    <div class="row" style="gap:.35rem;margin-top:.5rem">
+      <button class="btn btn-sm ${teamViewMode==='lineup'?'btn-amber':'btn-ghost'}" onclick="setTeamView('lineup')">📋 Lineup</button>
+      <button class="btn btn-sm ${teamViewMode==='stats'?'btn-amber':'btn-ghost'}" onclick="setTeamView('stats')">📊 Stats</button>
+    </div>
+
     <div class="card" style="padding:.5rem .75rem;margin-top:.5rem">
       <label class="sub" style="font-size:.65rem">View team</label>
       <select class="select" style="width:100%;margin-top:.25rem" onchange="setViewingTeam(this.value)">
@@ -1544,25 +1805,60 @@ function viewMyTeam() {
       </div>
     </div>
 
-    ${!haveLogs ? `<div class="card"><p class="sub">No game data cached yet. Pull stats to see daily scoring.
-      <button class="btn btn-sm btn-block mt" onclick="pullAllStats()">Pull MLB stats for my roster</button></p></div>`
-      : (teamTotal===0 ? `<div class="card"><p class="sub" style="font-size:.78rem">
-        No games found for your starters in week ${week} (${dayLabel(start)}–${dayLabel(end)}).
-        ${currentWeekNow()!==week?`Today is week ${currentWeekNow()} — `:''}use the week arrows above to find a week with games,
-        or re-pull stats.</p>
-        <button class="btn btn-sm btn-ghost btn-block mt" onclick="pullAllStats()">Re-pull MLB stats</button></div>` : '')}
+    ${teamViewMode === 'stats'
+      ? renderTeamStats(roster, slotOf)
+      : `${!haveLogs ? `<div class="card"><p class="sub">No game data cached yet. Pull stats to see daily scoring.
+          <button class="btn btn-sm btn-block mt" onclick="pullAllStats()">Pull MLB stats for my roster</button></p></div>`
+          : (teamTotal===0 ? `<div class="card"><p class="sub" style="font-size:.78rem">
+            No games found for your starters in week ${week} (${dayLabel(start)}–${dayLabel(end)}).
+            ${currentWeekNow()!==week?`Today is week ${currentWeekNow()} — `:''}use the week arrows above to find a week with games,
+            or re-pull stats.</p>
+            <button class="btn btn-sm btn-ghost btn-block mt" onclick="pullAllStats()">Re-pull MLB stats</button></div>` : '')}
 
-    <div class="divlabel">Starters · ${starters.length}</div>
-    ${starterCards || '<p class="sub">No starters set. Tap "Set lineup".</p>'}
+        <div class="divlabel">Starters · ${starters.length}</div>
+        ${starterCards || '<p class="sub">No starters set. Tap "Set lineup".</p>'}
 
-    ${benchCards ? `<div class="divlabel mt">Bench</div>${benchCards}` : ''}
+        ${benchCards ? `<div class="divlabel mt">Bench</div>${benchCards}` : ''}
 
-    <p class="sub mt" style="font-size:.7rem;text-align:center">
-      Tap a player's <b>position badge</b> to move them or bench them.
-      Tap any daily score for a breakdown. Amber = kept (best) game.
-      Lineups lock Sundays 11:00 AM.</p>
+        <p class="sub mt" style="font-size:.7rem;text-align:center">
+          Tap a player's <b>position badge</b> to move them or bench them.
+          Tap any daily score for a breakdown. Amber = kept (best) game.
+          Lineups lock Sundays 11:00 AM.</p>`}
   `;
 }
+
+/* STATS view: all-stats table for a roster (best-avg, total, 7/14/30d at once) */
+function renderTeamStats(roster, slotOf) {
+  if (!roster.length) return '<p class="sub">No players on this roster yet.</p>';
+  // make sure each player has computed fields (compute missing in background)
+  const missing = roster.filter(p => p.mlbId && p.ptsSeason == null);
+  if (missing.length) { Promise.all(missing.map(computeOnePlayer)).then(()=>renderActive()); }
+  const sorted = [...roster].sort((a,b) => (b.bestAvg ?? -1) - (a.bestAvg ?? -1));
+  const rows = sorted.map(p => {
+    const isStarter = !!slotOf[String(p.espnId)];
+    return `<tr style="${isStarter?'':'opacity:.7'}">
+      <td><span class="plink" onclick="showPlayer('${p.espnId}')">${esc(p.name)}</span>
+        ${p.injured?'<span class="il-badge">IL</span>':''}
+        <span class="sub" style="font-size:.6rem;display:block">${esc((p.eligible||[]).join('/'))}${isStarter?' · '+slotOf[String(p.espnId)].label:' · bench'}</span></td>
+      <td class="r num cell-best" style="font-weight:700">${p.bestAvg!=null?p.bestAvg.toFixed(1):'—'}</td>
+      <td class="r num">${p.ptsSeason!=null?p.ptsSeason.toFixed(0):'—'}</td>
+      <td class="r num" style="font-size:.72rem">${p.pts30!=null?p.pts30.toFixed(0):'—'}</td>
+      <td class="r num" style="font-size:.72rem">${p.pts14!=null?p.pts14.toFixed(0):'—'}</td>
+      <td class="r num" style="font-size:.72rem">${p.pts7!=null?p.pts7.toFixed(0):'—'}</td>
+    </tr>`;
+  }).join('');
+  return `
+    <div class="divlabel">Roster stats · sorted by best-avg</div>
+    <div class="card card-tight">
+      <table class="tbl">
+        <thead><tr><th>Player</th><th class="r">Best<br>Avg</th><th class="r">Total</th><th class="r">30d</th><th class="r">14d</th><th class="r">7d</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    <p class="sub mt" style="font-size:.68rem;text-align:center">
+      Best Avg = average of each week's best single game (your kept score). Tap a name for the weekly breakdown.</p>`;
+}
+window.setTeamView = function(m) { teamViewMode = m; renderActive(); };
 
 /* roster (array of player objects) for a team */
 function teamRoster(teamId) {
@@ -1965,7 +2261,8 @@ function placeholderView(title, msg) {
 }
 
 /* Players view works in Phase 1 once pool is loaded — proves the data layer */
-const playerView = { sort: 'adp', dir: 1, posFilter: 'ALL', search: '', avail: 'all', ptsWindow: 'season', grpFilter: 'all' };
+const playerView = { sort: 'adp', dir: 1, posFilter: 'ALL', search: '', avail: 'all', ptsWindow: 'season', grpFilter: 'all', minGames: 0, minWeeks: 0 };
+let teamViewMode = 'lineup';  // 'lineup' (day grid) | 'stats' (all-stats table)
 
 function viewPlayersReal() {
   if (!LG().playerPool.length) {
@@ -1993,6 +2290,8 @@ function viewPlayersReal() {
     }
     if (playerView.avail === 'avail' && draftedIds.has(String(p.espnId))) return false;
     if (playerView.avail === 'drafted' && !draftedIds.has(String(p.espnId))) return false;
+    if (playerView.minGames > 0 && (p.gamesPlayed ?? 0) < playerView.minGames) return false;
+    if (playerView.minWeeks > 0 && (p.weeksPlayed ?? 0) < playerView.minWeeks) return false;
     return true;
   });
 
@@ -2054,7 +2353,7 @@ function viewPlayersReal() {
     <div class="row" style="gap:.35rem;overflow-x:auto;padding-bottom:.4rem;margin-top:.4rem">${allPos.map(posBtn).join('')}</div>
     <div class="row" style="gap:.35rem;margin-top:.4rem;flex-wrap:wrap">
       <span class="sub" style="align-self:center;font-size:.68rem">Sort:</span>
-      ${sortBtn('adp','ADP')} ${sortBtn('pts','Pts')} ${sortBtn('owned','Owned')} ${sortBtn('name','Name')}
+      ${sortBtn('adp','ADP')} ${sortBtn('pts','Pts')} ${sortBtn('name','Name')}
     </div>
     <div class="row" style="gap:.35rem;margin-top:.4rem;flex-wrap:wrap">
       <span class="sub" style="align-self:center;font-size:.68rem">Show stat:</span>
@@ -2064,6 +2363,15 @@ function viewPlayersReal() {
       <span class="sub" style="align-self:center;font-size:.68rem">Show:</span>
       <button class="btn btn-sm ${playerView.avail==='all'?'btn-amber':'btn-ghost'}" onclick="setAvail('all')">All</button>
       <button class="btn btn-sm ${playerView.avail==='avail'?'btn-amber':'btn-ghost'}" onclick="setAvail('avail')">Available</button>
+    </div>
+    <div class="row" style="gap:.5rem;margin-top:.4rem;flex-wrap:wrap;align-items:center">
+      <span class="sub" style="font-size:.68rem">Min games</span>
+      <input class="input" type="number" min="0" value="${playerView.minGames}" style="width:64px;text-align:center;padding:.3rem"
+        onchange="setMinGames(this.value)">
+      <span class="sub" style="font-size:.68rem">Min weeks</span>
+      <input class="input" type="number" min="0" value="${playerView.minWeeks}" style="width:64px;text-align:center;padding:.3rem"
+        onchange="setMinWeeks(this.value)">
+      ${(playerView.minGames||playerView.minWeeks)?`<button class="btn btn-sm btn-ghost" onclick="clearMinFilters()">clear</button>`:''}
     </div>
     <div class="card card-tight mt">
       <table class="tbl">
@@ -2114,6 +2422,9 @@ window.setSearch = function(v) {
   }
 };
 window.setAvail = function(v) { playerView.avail = v; renderActive(); };
+window.setMinGames = function(v) { playerView.minGames = Math.max(0, parseInt(v)||0); renderActive(); };
+window.setMinWeeks = function(v) { playerView.minWeeks = Math.max(0, parseInt(v)||0); renderActive(); };
+window.clearMinFilters = function() { playerView.minGames = 0; playerView.minWeeks = 0; renderActive(); };
 
 /* SINGLE source of truth for a player's computed point fields from a game log.
    Sets ptsSeason, pts7/14/30, and bestAvg (avg of each week's best single game). */
@@ -2135,6 +2446,8 @@ function applyPointFields(p, log) {
   p.ptsSeason=Math.round(season*10)/10; p.pts7=Math.round(w7*10)/10;
   p.pts14=Math.round(w14*10)/10; p.pts30=Math.round(w30*10)/10;
   p.bestAvg=Math.round(bestAvg*10)/10; p.seasonPts=p.ptsSeason;
+  p.gamesPlayed = log.length;                  // total games in the log
+  p.weeksPlayed = Object.keys(weekBest).length; // distinct fantasy weeks played
 }
 
 /* compute points for ONE player on demand (when their modal opens) */
@@ -2525,6 +2838,62 @@ function viewSettings() {
       <button class="btn btn-ghost btn-block mt" onclick="manageTeams()">Manage teams (${LG().teams.length})</button>
     </div>
 
+    <div class="card">
+      <div class="h2">League rules</div>
+      <p class="sub mb">League type, draft format, and salary cap. Editable until the draft starts.</p>
+      <div class="row-between" style="padding:.4rem 0">
+        <span class="sub">League type</span>
+        <div class="row" style="gap:.3rem">
+          <button class="btn btn-sm ${LSET().leagueType==='redraft'?'btn-amber':'btn-ghost'}" onclick="setLeagueType('redraft')">Redraft</button>
+          <button class="btn btn-sm ${LSET().leagueType==='dynasty'?'btn-amber':'btn-ghost'}" onclick="setLeagueType('dynasty')">Dynasty</button>
+        </div>
+      </div>
+      <div class="row-between" style="padding:.4rem 0;border-top:1px solid rgba(42,61,48,.4)">
+        <span class="sub">Snake draft</span>
+        <button class="btn btn-sm ${LSET().snake?'btn-amber':'btn-ghost'}" onclick="toggleSnake()">${LSET().snake?'ON (snake)':'OFF (linear)'}</button>
+      </div>
+      <div class="row-between" style="padding:.4rem 0;border-top:1px solid rgba(42,61,48,.4)">
+        <span class="sub">Salary cap</span>
+        <button class="btn btn-sm ${LSET().useSalaryCap?'btn-amber':'btn-ghost'}" onclick="toggleSalaryCap()">${LSET().useSalaryCap?`ON ($${LSET().salaryCap})`:'OFF'}</button>
+      </div>
+      ${isDynasty() ? `<p class="sub mt" style="font-size:.68rem;color:var(--amber)">Dynasty: draft-pick trading up to 3 years out is enabled. Rookie draft available below.</p>` : ''}
+    </div>
+
+    <div class="card">
+      <div class="h2">Draft setup</div>
+      <p class="sub mb">Set the order, date/time, and clock. The draft room opens to members when the draft is live.</p>
+      <div class="row-between" style="padding:.3rem 0">
+        <span class="sub">Order</span>
+        <span class="sub" style="font-size:.7rem">${LG().draft.order?.length ? LG().draft.order.length+' teams set' : 'not set'}</span>
+      </div>
+      <div class="row" style="gap:.35rem">
+        <button class="btn btn-sm btn-ghost" onclick="randomizeDraftOrder()">🎲 Randomize</button>
+        <button class="btn btn-sm btn-ghost" onclick="setDraftOrderManual()">Set manually</button>
+      </div>
+      <div class="row-between mt" style="padding:.3rem 0;border-top:1px solid rgba(42,61,48,.4)">
+        <span class="sub">Seconds per pick</span>
+        <input class="input" id="set-secperpick" type="number" min="15" step="15" value="${LSET().secPerPick}"
+          style="width:90px;text-align:right" onchange="setSecPerPick(this.value)">
+      </div>
+      <div class="row-between" style="padding:.3rem 0">
+        <span class="sub">Draft date/time</span>
+        <input class="input" id="set-draftdate" type="datetime-local" value="${LSET().draftDate||''}"
+          style="width:200px" onchange="setDraftDate(this.value)">
+      </div>
+      <button class="btn btn-amber btn-block mt" onclick="startLiveDraft()"
+        ${LG().draft.order?.length && LG().teams.length>=2 ? '' : 'disabled'}>
+        ${LG().draft.live ? '● Draft is LIVE' : '▶ Open draft room (go live)'}</button>
+      ${LG().draft.complete ? '<p class="sub mt" style="font-size:.7rem;color:var(--good)">✓ Draft complete</p>' : ''}
+      ${isDynasty() ? `<button class="btn btn-ghost btn-block mt" onclick="toggleRookieDraft()">
+        ${LG().rookieDraft?.enabled ? 'Rookie draft: ENABLED' : 'Enable rookie draft'}</button>` : ''}
+    </div>
+
+    <div class="card">
+      <div class="h2">Player eligibility</div>
+      <p class="sub mb">Re-derive position eligibility from stored data (fixes inflated positions without an ESPN re-pull).</p>
+      <button class="btn btn-block" onclick="reDeriveEligibility()">Re-derive eligibility</button>
+    </div>
+
     <div class="card" style="border-color:var(--clay)">
       <div class="h2">⚡ Quick test</div>
       <p class="sub mb">Spin up a full draft instantly to check functionality.</p>
@@ -2876,29 +3245,8 @@ window.doPullPool = async function() {
     const raw = await fetchPlayerPool(slog);
     LG().playerPool = raw.map(pp => {
       const pl = pp.player || pp;
-      const order = ['C','1B','2B','3B','SS','OF','DH','SP','RP'];
-      const eligMap = SP().eligMap || {};
-      // expand each ESPN eligibleSlot to atomic positions, dedupe, order
-      const atomic = new Set();
-      (pl.eligibleSlots||[]).forEach(slotId => {
-        (eligMap[slotId]||[]).forEach(pos => atomic.add(pos));
-      });
-      // always include the player's default position so eligibility is never empty/wrong
+      const eligible = deriveEligibility(pl.eligibleSlots, pl.defaultPositionId);
       const defPos = posName(pl.defaultPositionId);
-      if (defPos && defPos !== '?') atomic.add(defPos);
-      // GUARD (baseball): a player is either a pitcher or a hitter, never both.
-      // defaultPositionId 1=SP, 11=RP are the pitcher ids. Use that as truth and
-      // strip cross-contamination (prevents "every hitter eligible for SP").
-      if (SP().key === 'flb') {
-        const isPitcher = pl.defaultPositionId === 1 || pl.defaultPositionId === 11;
-        if (isPitcher) {
-          ['C','1B','2B','3B','SS','OF','DH'].forEach(h => atomic.delete(h));
-          if (!atomic.has('SP') && !atomic.has('RP')) atomic.add(defPos); // ensure has one
-        } else {
-          atomic.delete('SP'); atomic.delete('RP');
-        }
-      }
-      const eligible = [...atomic].sort((a,b) => order.indexOf(a) - order.indexOf(b));
       const adpRaw = pl.ownership?.averageDraftPosition || 0;
       const adp = (adpRaw > 0) ? adpRaw : 9999;
       return {
@@ -2906,7 +3254,7 @@ window.doPullPool = async function() {
         name: pl.fullName || `${pl.firstName||''} ${pl.lastName||''}`.trim(),
         pos: defPos,
         defPosId: pl.defaultPositionId,
-        eligible: eligible.length ? eligible : [defPos],
+        eligible,
         proTeam: proTeamAbbr(pl.proTeamId),
         eligSlots: pl.eligibleSlots || [],   // raw, for re-deriving eligibility later
         adp: Math.round(adp * 10) / 10,
@@ -2926,6 +3274,42 @@ window.doPullPool = async function() {
     toast('Player pool loaded', 'ok');
     renderActive();
   } catch(e) { slog('Pool fetch failed: ' + e.message, 'err'); toast(e.message, 'err'); }
+};
+
+/* compute atomic eligibility from raw ESPN slots + default position id.
+   Shared by the pool pull and the re-derive button so they never diverge. */
+function deriveEligibility(eligSlots, defaultPositionId) {
+  const order = ['C','1B','2B','3B','SS','OF','DH','SP','RP'];
+  const eligMap = SP().eligMap || {};
+  const atomic = new Set();
+  (eligSlots||[]).forEach(slotId => (eligMap[slotId]||[]).forEach(pos => atomic.add(pos)));
+  const defPos = posName(defaultPositionId);
+  if (defPos && defPos !== '?') atomic.add(defPos);
+  if (SP().key === 'flb') {
+    const isPitcher = defaultPositionId === 1 || defaultPositionId === 11;
+    if (isPitcher) {
+      ['C','1B','2B','3B','SS','OF','DH'].forEach(h => atomic.delete(h));
+      if (!atomic.has('SP') && !atomic.has('RP')) atomic.add(defPos);
+    } else {
+      atomic.delete('SP'); atomic.delete('RP');
+    }
+  }
+  const eligible = [...atomic].sort((a,b) => order.indexOf(a) - order.indexOf(b));
+  return eligible.length ? eligible : [defPos];
+}
+
+/* re-derive eligibility for the WHOLE pool from stored raw slots — no ESPN re-pull.
+   Use after changing eligMap rules. */
+window.reDeriveEligibility = function() {
+  let changed = 0;
+  LG().playerPool.forEach(p => {
+    const before = (p.eligible||[]).join('/');
+    p.eligible = deriveEligibility(p.eligSlots, p.defPosId);
+    if ((p.eligible||[]).join('/') !== before) changed++;
+  });
+  save({master:true});
+  toast(`Eligibility re-derived · ${changed} players updated`, 'ok');
+  renderActive();
 };
 
 /* ---- SCORING EDITOR — edit our own point values ---- */
@@ -3200,6 +3584,12 @@ window.removeTeam = function(id) {
 function activeLineupSlots() {
   return LG().rosterOverride?.lineupSlots || SP().lineupSlots || [];
 }
+function LSET() {
+  // league settings with defaults (older leagues may lack the object)
+  const d = { leagueType:'redraft', snake:true, secPerPick:90, draftDate:null, useSalaryCap:false, salaryCap:260 };
+  return { ...d, ...(LG().settings || {}) };
+}
+function isDynasty() { return LSET().leagueType === 'dynasty'; }
 function rosterBenchCount() {
   return LG().rosterOverride?.benchCount ?? SP().benchCount ?? 5;
 }
@@ -3319,6 +3709,206 @@ window.doGenerateTeams = function() {
   save();
   closeModal(); toast(`${n} teams generated`, 'ok'); renderActive();
 };
+
+/* ============================================================
+   COMMISSIONER SETTINGS HANDLERS (league rules + draft setup)
+   ============================================================ */
+function ensureSettings() { if (!LG().settings) LG().settings = {}; }
+window.setLeagueType = function(t) {
+  if (LG().draft.live || LG().draft.complete) { toast('Cannot change after draft starts', 'err'); return; }
+  ensureSettings(); LG().settings.leagueType = t; save(); renderActive();
+};
+window.toggleSnake = function() {
+  if (LG().draft.live) { toast('Cannot change during live draft', 'err'); return; }
+  ensureSettings(); LG().settings.snake = !LSET().snake; save(); renderActive();
+};
+window.toggleSalaryCap = function() {
+  ensureSettings(); LG().settings.useSalaryCap = !LSET().useSalaryCap; save(); renderActive();
+};
+window.setSecPerPick = function(v) {
+  ensureSettings(); LG().settings.secPerPick = Math.max(15, parseInt(v)||90); save();
+};
+window.setDraftDate = function(v) {
+  ensureSettings(); LG().settings.draftDate = v || null; save(); renderActive();
+};
+window.randomizeDraftOrder = function() {
+  if (LG().teams.length < 2) { toast('Generate teams first', 'err'); return; }
+  const ids = LG().teams.map(t => t.id);
+  for (let i = ids.length - 1; i > 0; i--) { const j = Math.floor(Math.random()*(i+1)); [ids[i],ids[j]]=[ids[j],ids[i]]; }
+  LG().draft.order = ids;
+  save();
+  const names = ids.map((id,i) => `${i+1}. ${teamById(id).name}`).join('\n');
+  openModal(`<div class="h2">🎲 Draft order set</div>
+    <pre class="sub" style="white-space:pre-wrap;font-size:.8rem;line-height:1.6">${esc(names)}</pre>
+    <button class="btn btn-block mt" onclick="closeModal()">Done</button>
+    <button class="btn btn-ghost btn-block mt" onclick="randomizeDraftOrder()">🎲 Re-randomize</button>`);
+};
+window.setDraftOrderManual = function() {
+  if (LG().teams.length < 2) { toast('Generate teams first', 'err'); return; }
+  const cur = LG().draft.order?.length ? LG().draft.order : LG().teams.map(t=>t.id);
+  const rows = cur.map((id,i) => `
+    <div class="row-between" style="padding:.35rem 0;border-bottom:1px solid rgba(42,61,48,.4)">
+      <span><b>${i+1}.</b> ${esc(teamById(id).name)}</span>
+      <div class="row" style="gap:.2rem">
+        <button class="btn btn-sm btn-ghost" onclick="moveDraftSlot(${i},-1)" ${i===0?'disabled':''}>▲</button>
+        <button class="btn btn-sm btn-ghost" onclick="moveDraftSlot(${i},1)" ${i===cur.length-1?'disabled':''}>▼</button>
+      </div>
+    </div>`).join('');
+  window._draftOrderTmp = [...cur];
+  openModal(`<div class="h2">Set draft order</div>
+    <p class="sub mb">Reorder teams. Pick 1 is at the top.</p>
+    <div id="draft-order-list">${rows}</div>
+    <button class="btn btn-block mt" onclick="saveDraftOrder()">Save order</button>
+    <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Cancel</button>`);
+};
+window.moveDraftSlot = function(i, dir) {
+  const arr = window._draftOrderTmp; const j = i+dir;
+  if (j<0||j>=arr.length) return;
+  [arr[i],arr[j]]=[arr[j],arr[i]];
+  setDraftOrderManualRefresh();
+};
+function setDraftOrderManualRefresh() {
+  const cur = window._draftOrderTmp;
+  const rows = cur.map((id,i) => `
+    <div class="row-between" style="padding:.35rem 0;border-bottom:1px solid rgba(42,61,48,.4)">
+      <span><b>${i+1}.</b> ${esc(teamById(id).name)}</span>
+      <div class="row" style="gap:.2rem">
+        <button class="btn btn-sm btn-ghost" onclick="moveDraftSlot(${i},-1)" ${i===0?'disabled':''}>▲</button>
+        <button class="btn btn-sm btn-ghost" onclick="moveDraftSlot(${i},1)" ${i===cur.length-1?'disabled':''}>▼</button>
+      </div>
+    </div>`).join('');
+  const el = $('draft-order-list'); if (el) el.innerHTML = rows;
+}
+window.saveDraftOrder = function() {
+  LG().draft.order = [...window._draftOrderTmp];
+  save(); toast('Draft order saved', 'ok'); closeModal(); renderActive();
+};
+window.toggleRookieDraft = function() {
+  if (!LG().rookieDraft) LG().rookieDraft = { enabled:false };
+  LG().rookieDraft.enabled = !LG().rookieDraft.enabled;
+  save(); toast(LG().rookieDraft.enabled ? 'Rookie draft enabled' : 'Rookie draft disabled', 'ok'); renderActive();
+};
+
+/* ============================================================
+   LIVE DRAFT ENGINE — snake/linear, timer, auto-pick fills empty slots
+   ============================================================ */
+
+/* total rounds = starting slots + bench (everyone fills a full roster) */
+function draftRounds() {
+  return (activeLineupSlots()?.length || 0) + rosterBenchCount();
+}
+/* the full pick order across all rounds, honoring snake setting.
+   returns an array of teamIds, length = rounds * teams. */
+function draftSequence() {
+  const order = LG().draft.order || [];
+  const rounds = draftRounds();
+  const seq = [];
+  for (let r = 0; r < rounds; r++) {
+    const roundOrder = (LSET().snake && r % 2 === 1) ? [...order].reverse() : order;
+    roundOrder.forEach(tid => seq.push(tid));
+  }
+  return seq;
+}
+/* whose pick is it right now? index into the sequence = picks already made */
+function currentPickIndex() { return LG().draft.picks.length; }
+function currentPickTeam() {
+  const seq = draftSequence();
+  const idx = currentPickIndex();
+  return idx < seq.length ? seq[idx] : null;
+}
+function pickRoundAndSlot(idx) {
+  const teams = (LG().draft.order||[]).length || 1;
+  return { round: Math.floor(idx / teams) + 1, slotInRound: (idx % teams) + 1 };
+}
+/* is the draft fully done? */
+function draftDone() { return currentPickIndex() >= draftSequence().length; }
+
+window.startLiveDraft = function() {
+  if (!(LG().draft.order?.length) || LG().teams.length < 2) { toast('Set the draft order first', 'err'); return; }
+  if (LG().draft.complete) { toast('Draft already complete', 'err'); return; }
+  LG().draft.started = true;
+  LG().draft.live = true;
+  LG().draft.paused = false;
+  LG().draft.pickStartedAt = Date.now();
+  if (!LG().draft.picks) LG().draft.picks = [];
+  save();
+  toast('Draft room is live', 'ok');
+  go('draft');
+};
+
+/* make a pick (manual click or auto). espnId must be an available player. */
+window.makeDraftPick = function(espnId) {
+  if (!LG().draft.live) { toast('Draft is not live', 'err'); return; }
+  const team = currentPickTeam();
+  if (!team) { finishDraft(); return; }
+  // only the team on the clock (or commissioner) may pick
+  const mine = String(team) === String(myTeamId());
+  if (!mine && !window._masterUnlocked) { toast("Not your pick", 'err'); return; }
+  const taken = new Set(LG().draft.picks.map(p => String(p.playerId)));
+  if (taken.has(String(espnId))) { toast('Already drafted', 'err'); return; }
+  const { round } = pickRoundAndSlot(currentPickIndex());
+  LG().draft.picks.push({ pick: currentPickIndex()+1, round, teamId: team, playerId: espnId });
+  LG().draft.pickStartedAt = Date.now();   // reset clock for next picker
+  if (draftDone()) { finishDraft(); return; }
+  save();
+  renderActive();
+};
+
+/* auto-pick: best available that fills an empty roster slot for the team on clock */
+function autoPickForCurrent() {
+  const team = currentPickTeam();
+  if (!team) return;
+  const taken = new Set(LG().draft.picks.map(p => String(p.playerId)));
+  const myPicks = LG().draft.picks.filter(p => String(p.teamId)===String(team));
+  // figure out which starting slots are still unfilled
+  const slots = activeLineupSlots();
+  const filledPos = {};
+  myPicks.forEach(pk => {
+    const pl = LG().playerPool.find(x=>String(x.espnId)===String(pk.playerId));
+    (pl?.eligible||[]).forEach(pos => {});  // (slot assignment is loose pre-lineup)
+  });
+  // need-count by position from unfilled starting slots
+  const needPos = {};
+  slots.forEach(s => { needPos[s.slot] = (needPos[s.slot]||0)+1; });
+  myPicks.forEach(pk => {
+    const pl = LG().playerPool.find(x=>String(x.espnId)===String(pk.playerId));
+    if (!pl) return;
+    // decrement the first needed slot this player is eligible for
+    const hit = Object.keys(needPos).find(slot => needPos[slot]>0 &&
+      (slotEligible(slot, pl) ));
+    if (hit) needPos[hit]--;
+  });
+  const stillNeed = Object.keys(needPos).filter(s => needPos[s] > 0);
+  const pool = [...LG().playerPool].sort((a,b)=>a.adp-b.adp);
+  let pick = null;
+  if (stillNeed.length) {
+    pick = pool.find(p => !taken.has(String(p.espnId)) &&
+      stillNeed.some(slot => slotEligible(slot, p)));
+  }
+  if (!pick) pick = pool.find(p => !taken.has(String(p.espnId)));  // fallback: best available
+  if (pick) makeDraftPick(pick.espnId);
+}
+/* does a player satisfy a given lineup slot name? */
+function slotEligible(slotName, player) {
+  const def = activeLineupSlots().find(s => s.slot === slotName);
+  const elig = def?.eligible || [slotName];
+  return (player.eligible||[]).some(pos => elig.includes(pos));
+}
+
+function finishDraft() {
+  LG().draft.live = false;
+  LG().draft.complete = true;
+  LG().draft.currentPick = LG().draft.picks.length;
+  save();
+  toast('Draft complete!', 'ok');
+  go('teams');
+}
+window.pauseDraft = function() {
+  LG().draft.paused = !LG().draft.paused;
+  if (!LG().draft.paused) LG().draft.pickStartedAt = Date.now(); // resume resets clock
+  save(); renderActive();
+};
+window.commishForcePick = function() { autoPickForCurrent(); };
 
 /* ---- AUTODRAFT — snake, best available by ADP ---- */
 window.autodraft = function() {
