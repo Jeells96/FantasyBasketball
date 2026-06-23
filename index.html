@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Best Game League v6.7</title>
+<title>Best Game League v6.8</title>
 <style>
 /* ============================================================
-   BGL v6.7 — Design System
+   BGL v6.8 — Design System
    Subject: competitive fantasy baseball; hook = best single game/week
    Palette: stadium-at-night
    ============================================================ */
@@ -342,7 +342,7 @@ body {
 <div class="topbar">
   <div class="brand" onclick="go('home')">
     <span>BGL<span class="mark">.</span></span>
-    <span class="ver">v6.7</span>
+    <span class="ver">v6.8</span>
   </div>
   <div class="topbar-right">
     <button class="league-chip" id="league-chip" onclick="openLeagueSwitcher()" title="Change league or sport"></button>
@@ -3123,9 +3123,11 @@ function viewSettings() {
       <div class="h2">League</div>
       ${STATE.activeLeagueDoc
         ? `<p class="sub mb">You're in <b class="amber">${esc(LG().leagueName)}</b> — shared data syncs live.</p>
-           <button class="btn btn-ghost btn-block" onclick="leaveLeague()">Leave / switch league</button>`
-        : `<p class="sub mb">Not in a synced league (local only). Join one to share teams & draft with your group.</p>
-           <button class="btn btn-block" onclick="promptLeagueName()">Join a league</button>`}
+           <button class="btn btn-ghost btn-block mt" onclick="forcePushLeague()">⬆ Force-sync my data to Firebase</button>
+           <button class="btn btn-ghost btn-block mt" onclick="leaveLeague()">Leave / switch league</button>`
+        : `<p class="sub mb">Not in a synced league (local only). ${LG().teams.length||LG().draft.complete?'You have local teams/draft that are not synced yet — bind to a League ID to push them up.':'Join one to share teams & draft with your group.'}</p>
+           <button class="btn btn-block" onclick="bindToLeaguePrompt()">${LG().teams.length||LG().draft.complete?'Bind & sync to a League ID':'Join a league'}</button>`}
+    </div>
 
     <div class="card" style="border-color:${unlocked?'var(--amber)':'var(--line)'}">
       <div class="row-between">
@@ -3438,15 +3440,24 @@ window.saveApproval = function() {
     created: Date.now(),
   };
   save({master:true});
+  // CRITICAL: the commissioner must JOIN the league they just created, so that all
+  // their setup (teams, draft, settings) syncs to the league doc in Firebase. Without
+  // this, activeLeagueDoc stays null and every save goes local-only — other devices
+  // would join and see nothing.
+  STATE.activeLeagueDoc = 'league_' + id;
+  LG().leagueName = STATE.approvals[id].leagueName;
+  saveLocal();
+  subscribeLeague('league_' + id);
   const shownName = leagueName || ('League ' + id);
   openModal(`<div class="h2">League created 🎉</div>
-    <p class="sub mb">Share this League ID with your members. They enter it to join.</p>
+    <p class="sub mb">You're now in this league. Share the ID with your members so they can join.</p>
     <div style="text-align:center;padding:1rem;background:var(--field-2);border-radius:8px;margin-bottom:1rem">
       <div class="sub" style="font-size:.65rem;letter-spacing:2px">LEAGUE ID</div>
       <div class="display amber" style="font-size:2.5rem;letter-spacing:6px">${id}</div>
       <div class="sub" style="font-size:.7rem">${esc(shownName)}</div>
     </div>
-    <button class="btn btn-block" onclick="openCommishLog()">Done</button>`);
+    <button class="btn btn-block" onclick="closeModal();renderActive()">Done</button>
+    <button class="btn btn-ghost btn-block mt" onclick="openCommishLog()">Back to commissioner log</button>`);
 };
 window.toggleApproval = function(key) {
   if (!STATE.approvals?.[key]) return;
@@ -3604,6 +3615,41 @@ window.confirmLeaveLeague = function() {
   closeModal();
   toast('Left league', 'ok');
   showGate('sport');   // back to the blocking gate
+};
+
+/* Bind this device's LOCAL league data to a League ID and push it to Firebase.
+   For a commissioner who set everything up locally before joining a doc. */
+window.bindToLeaguePrompt = function() {
+  const ids = Object.keys(STATE.approvals || {});
+  const opts = ids.map(id => {
+    const a = STATE.approvals[id];
+    return `<option value="${id}">${esc(a.leagueName||('League '+id))} · ${id}</option>`;
+  }).join('');
+  openModal(`<div class="h2">Bind & sync</div>
+    <p class="sub mb">Push your local teams & draft up to a League ID. Members who join with that ID will then see everything.</p>
+    ${ids.length ? `<label class="sub">Choose a league you created</label>
+      <select class="select mb" id="bind-id" style="width:100%">${opts}</select>` :
+      `<label class="sub">Enter the 5-digit League ID</label>
+      <input class="input mb" id="bind-id-manual" inputmode="numeric" maxlength="5" placeholder="5-digit ID" style="text-align:center;font-size:1.4rem;letter-spacing:6px">`}
+    <button class="btn btn-amber btn-block" onclick="confirmBindLeague()">Bind & push my data</button>
+    <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Cancel</button>`);
+};
+window.confirmBindLeague = function() {
+  const id = ($('bind-id')?.value || $('bind-id-manual')?.value || '').trim();
+  if (!/^\d{5}$/.test(id)) { toast('Pick or enter a valid 5-digit ID', 'err'); return; }
+  const appr = STATE.approvals?.[id];
+  STATE.activeLeagueDoc = 'league_' + id;
+  if (appr?.leagueName) LG().leagueName = appr.leagueName;
+  saveLocal();
+  subscribeLeague('league_' + id);
+  closeModal();
+  // force the push (allowEmpty:false still guards a truly-blank league)
+  saveLeague({}).then(() => { toast('Synced to Firebase', 'ok'); renderActive(); });
+};
+/* Force-push current local league data to Firebase (manual re-sync). */
+window.forcePushLeague = function() {
+  if (!STATE.activeLeagueDoc) { toast('Not bound to a league yet', 'err'); return; }
+  saveLeague({}).then(() => { toast('Force-synced to Firebase', 'ok'); });
 };
 
 /* ---- FAILED MAPPINGS — see & fix unmapped players ---- */
