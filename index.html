@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Best Game League v7.5</title>
+<title>Best Game League v7.6</title>
 <style>
 /* ============================================================
-   BGL v7.5 — Design System
+   BGL v7.6 — Design System
    Subject: competitive fantasy baseball; hook = best single game/week
    Palette: stadium-at-night
    ============================================================ */
@@ -342,7 +342,7 @@ body {
 <div class="topbar">
   <div class="brand" onclick="go('home')">
     <span>BGL<span class="mark">.</span></span>
-    <span class="ver">v7.5</span>
+    <span class="ver">v7.6</span>
   </div>
   <div class="topbar-right">
     <button class="league-chip" id="league-chip" onclick="openLeagueSwitcher()" title="Change league or sport"></button>
@@ -3969,22 +3969,29 @@ function normLeague(name) {
 }
 window.openCommishLog = function() {
   const approvals = STATE.approvals || {};
-  const rows = Object.entries(approvals).map(([key, a]) => `
+  const rows = Object.entries(approvals).map(([key, a]) => {
+    const isNumeric = /^\d{5}$/.test(key);
+    return `
     <div class="card" style="padding:.6rem;margin-bottom:.5rem;border-color:${a.approved?'var(--good)':'var(--bad)'}">
       <div class="row-between">
         <div>
           <b>${esc(a.leagueName)}</b><br>
           <span class="sub" style="font-size:.7rem">${esc(a.commish||'—')}</span><br>
-          <span class="sub" style="font-size:.62rem;letter-spacing:1px">ID</span>
-          <span class="display amber" style="font-size:1.1rem;letter-spacing:3px">${esc(key)}</span>
+          <span class="sub" style="font-size:.62rem;letter-spacing:1px">${isNumeric?'ID':'OLD KEY (no 5-digit ID)'}</span>
+          <span class="display ${isNumeric?'amber':'cell-neg'}" style="font-size:1.1rem;letter-spacing:${isNumeric?'3px':'0'}">${esc(key)}</span>
         </div>
         <div style="text-align:right">
           <button class="btn btn-sm ${a.approved?'btn-amber':'btn-ghost'}" onclick="toggleApproval('${key}')">
             ${a.approved?'✓ Approved':'○ Off'}</button>
         </div>
       </div>
+      ${!isNumeric ? `<div class="card card-tight mt" style="border-color:var(--amber)">
+        <p class="sub" style="font-size:.68rem">⚠ This league has no 5-digit ID, so members can't join it. Generate one — it keeps all existing data.</p>
+        <button class="btn btn-sm btn-amber btn-block mt" onclick="migrateLeagueId('${key}')">Generate 5-digit ID</button>
+      </div>` : ''}
       <button class="btn btn-ghost btn-sm mt" style="font-size:.65rem" onclick="removeApproval('${key}')">Remove</button>
-    </div>`).join('') || '<p class="sub">No leagues yet.</p>';
+    </div>`;
+  }).join('') || '<p class="sub">No leagues yet.</p>';
   openModal(`
     <div class="h2">Commissioner log</div>
     <p class="sub mb">Each league gets a 5-digit ID. Share it with members so they can join.
@@ -4013,6 +4020,34 @@ function genLeagueId() {
   do { id = String(Math.floor(10000 + Math.random() * 90000)); } while (used.has(id));
   return id;
 }
+/* Give an OLD name-based league a 5-digit ID. The new approval points at the SAME
+   existing data doc (e.g. league_jarens-league), so no data moves — members can now
+   join with the 5-digit ID and reach the commissioner's existing teams/draft. */
+window.migrateLeagueId = function(oldKey) {
+  const old = STATE.approvals?.[oldKey];
+  if (!old) return;
+  const newId = genLeagueId();
+  STATE.approvals[newId] = {
+    ...old,
+    leagueId: newId,
+    // KEEP the original data doc so existing data is reachable via the new ID
+    leagueDocId: old.leagueDocId || ('league_' + oldKey),
+    migratedFrom: oldKey,
+    approved: true,
+  };
+  // If THIS device is the commissioner currently bound to the old doc, keep it bound
+  // (the doc didn't change) and just remember the new ID for sharing.
+  save({ master:true });
+  openModal(`<div class="h2">5-digit ID created 🎉</div>
+    <p class="sub mb">Share this ID with your members. It points to your existing league data — nothing was moved.</p>
+    <div style="text-align:center;padding:1rem;background:var(--field-2);border-radius:8px;margin-bottom:1rem">
+      <div class="sub" style="font-size:.65rem;letter-spacing:2px">LEAGUE ID</div>
+      <div class="display amber" style="font-size:2.5rem;letter-spacing:6px">${newId}</div>
+      <div class="sub" style="font-size:.7rem">${esc(old.leagueName||'')}</div>
+    </div>
+    <p class="sub" style="font-size:.66rem">The old text key still works too. You can remove it later once everyone has joined with the new ID.</p>
+    <button class="btn btn-block" onclick="openCommishLog()">Done</button>`);
+};
 window.saveApproval = function() {
   const commish = $('ap-commish')?.value.trim() || '';
   const leagueName = $('ap-league')?.value.trim() || '';   // optional
