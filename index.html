@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Best Game League v7.8</title>
+<title>Best Game League v7.9</title>
 <style>
 /* ============================================================
-   BGL v7.8 — Design System
+   BGL v7.9 — Design System
    Subject: competitive fantasy baseball; hook = best single game/week
    Palette: stadium-at-night
    ============================================================ */
@@ -342,7 +342,7 @@ body {
 <div class="topbar">
   <div class="brand" onclick="go('home')">
     <span>BGL<span class="mark">.</span></span>
-    <span class="ver">v7.8</span>
+    <span class="ver">v7.9</span>
   </div>
   <div class="topbar-right">
     <button class="league-chip" id="league-chip" onclick="openLeagueSwitcher()" title="Change league or sport"></button>
@@ -570,6 +570,7 @@ function blankLeague(name) {
     deadCap: {},                // teamId -> [{playerId, amount, year}] dead-cap hits from drops
     moneyTrades: [],            // [{from,to,amount,perYear,years,startYear}] cash considerations
     seasonApplied: null,        // last season-year penalties/escalators were applied
+    seasonYear: null,           // explicit current season year (set by rollover)
     rookieDraft: { enabled:false, started:false, complete:false, live:false, order:[], picks:[],
                    currentPick:0, draftDate:null, secPerPick:90, snake:true, rounds:4,
                    pickStartedAt:null, paused:false },
@@ -789,6 +790,7 @@ function leaguePayload() {
     deadCap: lg.deadCap || {},
     moneyTrades: lg.moneyTrades || [],
     seasonApplied: lg.seasonApplied || null,
+    seasonYear: lg.seasonYear || null,
     rookieDraft: lg.rookieDraft || {},
     trades: lg.trades || [],
     lineups: lg.lineups || {},
@@ -872,6 +874,7 @@ function applyLeague(league) {
   if (league.deadCap) lg.deadCap = league.deadCap;
   if (league.moneyTrades) lg.moneyTrades = league.moneyTrades;
   if (league.seasonApplied !== undefined) lg.seasonApplied = league.seasonApplied;
+  if (league.seasonYear !== undefined) lg.seasonYear = league.seasonYear;
   if (league.rookieDraft) lg.rookieDraft = { ...lg.rookieDraft, ...league.rookieDraft };
   if (league.trades) lg.trades = league.trades;
   if (league.lineups) lg.lineups = league.lineups;
@@ -1020,7 +1023,14 @@ function leagueCap() {
   if (ov && ov > 0) return ov;
   return SALCFG().defaultCap;
 }
-function currentSeasonYear() { return SEASON_OPENERS ? Math.max(...Object.keys(SEASON_OPENERS).map(Number).filter(y=>y<=new Date().getFullYear()+1)) : new Date().getFullYear(); }
+function currentSeasonYear() {
+  // The fantasy season year = current calendar year. (Previously this added +1,
+  // which wrongly jumped to next year during the current season.) A commissioner
+  // advances the year explicitly via the season rollover.
+  const lg = LG();
+  if (lg && lg.seasonYear) return lg.seasonYear;   // explicit league season year if set
+  return new Date().getFullYear();
+}
 
 /* a player's CONTRACT record (signed), or null */
 function playerContract(p) { return (LG().contracts || {})[String(p.espnId)] || null; }
@@ -2483,18 +2493,18 @@ function renderTeamStats(roster, slotOf) {
 window.setTeamView = function(m) { teamViewMode = m; renderActive(); };
 
 /* CONTRACTS view: a multi-year TABLE. Rows = players; columns = next N seasons.
-   A signed player's escalated salary fills each contract year; blank otherwise.
-   Column totals show team salary per year and cap space (extra money) per year. */
+   Each player has an inline text box to set their fantasy contract length. A signed
+   player's escalated salary fills each contract year. Arb players show the flat arb
+   rate across all years (placeholder — they never lock and can't be given a term). */
 function renderTeamContracts(teamId, isMine) {
   const roster = teamRoster(teamId);
   if (!roster.length) return '<div class="card"><p class="sub">No players on this roster yet.</p></div>';
   const locked = rostersLocked() || !signingOpen();
   const startYr = currentSeasonYear();
-  const YEARS = 10;
+  const YEARS = 8;
   const years = Array.from({length:YEARS}, (_,i) => startYr + i);
   const capGrowth = (SALCFG().capGrowthPct||0)/100;
 
-  // sort: signed (longest remaining first), then arb, then unsigned
   const ranked = [...roster].sort((a,b) => {
     const ca = playerContract(a), cb = playerContract(b);
     const ra = ca ? 0 : (isArbPlayer(a) ? 2 : 1);
@@ -2503,7 +2513,6 @@ function renderTeamContracts(teamId, isMine) {
     return (playerCapHit(b)||0) - (playerCapHit(a)||0);
   });
 
-  // build rows + per-year column totals
   const colTotal = years.map(()=>0);
   const bodyRows = ranked.map(p => {
     const c = playerContract(p);
@@ -2511,35 +2520,46 @@ function renderTeamContracts(teamId, isMine) {
     const cells = years.map((yr,idx) => {
       let val = 0, txt = '';
       if (c) {
-        val = contractSalaryForYear(c, yr);          // 0 outside the term
+        val = contractSalaryForYear(c, yr);
         txt = val>0 ? fmtMoney(val) : '';
       } else if (arb) {
-        // arb players only "count" the current year (year-to-year, no term)
-        if (idx === 0) { val = SALCFG().arbSalary; txt = fmtMoney(val)+'*'; }
-      } else {
-        // unsigned w/ AAV: only this year's placeholder
-        if (idx === 0) { val = playerCapHit(p, yr); txt = fmtMoney(val); }
+        // arb fills EVERY year at the flat arb rate (placeholder; never escalates/locks)
+        val = SALCFG().arbSalary; txt = fmtMoney(val);
+      } else if (idx === 0) {
+        val = playerCapHit(p, yr); txt = fmtMoney(val);   // unsigned placeholder, this yr
       }
       colTotal[idx] += val;
-      const cls = idx===0 ? 'color:var(--chalk)' : 'color:var(--sage)';
-      return `<td class="r num" style="font-size:.64rem;${val>0?cls:'color:transparent'}">${txt||'·'}</td>`;
+      const color = idx===0 ? 'var(--chalk)' : (arb ? 'var(--sage-dim)' : 'var(--sage)');
+      return `<td class="r num" style="font-size:.64rem;color:${val>0?color:'transparent'}">${txt||'·'}</td>`;
     }).join('');
-    const tag = c ? '<span class="ps-tag" style="display:inline;background:var(--good)">S</span>'
-              : arb ? '<span class="ps-tag" style="display:inline">A</span>' : '';
-    const action = isMine && !locked
-      ? `<span class="plink" style="font-size:.6rem" onclick="openSignModal('${p.espnId}')">${c?'edit':arb?'':'sign'}</span>`
-      : '';
+
+    // inline term box (your team only, when not locked, and only for signable players)
+    let termBox;
+    if (arb) {
+      termBox = `<span class="sub" style="font-size:.58rem">arb</span>`;
+    } else if (isMine && !locked) {
+      const cur = c ? c.termYears : '';
+      termBox = `<input class="input" type="number" min="0" max="${SALCFG().maxTerm}" value="${cur}" placeholder="yrs"
+        style="width:42px;text-align:center;font-size:.62rem;padding:.15rem"
+        onchange="setContractTerm('${p.espnId}',this.value)" title="Type contract length in years">`;
+    } else {
+      termBox = c ? `<span class="sub" style="font-size:.58rem">${c.termYears}yr</span>` : '';
+    }
+
     return `<tr>
-      <td style="font-size:.7rem;white-space:nowrap"><span class="plink" onclick="showPlayer('${p.espnId}')">${esc(p.name.length>14?p.name.slice(0,13)+'…':p.name)}</span> ${tag} ${action}</td>
+      <td style="font-size:.68rem;white-space:nowrap">
+        <span class="plink" onclick="showPlayer('${p.espnId}')">${esc(p.name.length>13?p.name.slice(0,12)+'…':p.name)}</span>
+        ${c?'<span class="ps-tag" style="display:inline;background:var(--good)">S</span>':''}
+      </td>
+      <td style="text-align:center">${termBox}</td>
       ${cells}
     </tr>`;
   }).join('');
 
-  // dead cap per year (add into column totals)
+  // dead cap + money per year into totals
   const dead = (LG().deadCap||{})[teamId] || [];
   const deadByYear = years.map(yr => dead.filter(d=>d.year===yr).reduce((s,d)=>s+d.amount,0));
   deadByYear.forEach((v,i)=>colTotal[i]+=v);
-  // money trades per year
   years.forEach((yr,idx) => {
     (LG().moneyTrades||[]).forEach(mt => {
       const yrs=mt.years||1, start=mt.startYear||startYr;
@@ -2548,9 +2568,9 @@ function renderTeamContracts(teamId, isMine) {
     });
   });
 
-  const yearHead = years.map((yr,i) => `<th class="r" style="font-size:.6rem;${i===0?'color:var(--amber)':''}">${String(yr).slice(2)}</th>`).join('');
+  const yearHead = years.map((yr,i) => `<th class="r" style="font-size:.62rem;${i===0?'color:var(--amber)':''}">${yr}</th>`).join('');
   const totalRow = colTotal.map((v,i) => `<td class="r num" style="font-size:.62rem;font-weight:700;${i===0?'color:var(--amber)':''}">${fmtMoney(v)}</td>`).join('');
-  const deadRow = deadByYear.some(v=>v>0) ? `<tr><td class="sub" style="font-size:.6rem">dead cap</td>${deadByYear.map(v=>`<td class="r num" style="font-size:.6rem;color:var(--bad)">${v>0?fmtMoney(v):'·'}</td>`).join('')}</tr>` : '';
+  const deadRow = deadByYear.some(v=>v>0) ? `<tr><td class="sub" style="font-size:.6rem" colspan="2">dead cap</td>${deadByYear.map(v=>`<td class="r num" style="font-size:.6rem;color:var(--bad)">${v>0?fmtMoney(v):'·'}</td>`).join('')}</tr>` : '';
   const capRow = years.map((yr,i) => {
     const cap = Math.round(leagueCap()*Math.pow(1+capGrowth,i));
     const space = cap - colTotal[i];
@@ -2559,22 +2579,49 @@ function renderTeamContracts(teamId, isMine) {
 
   return `
     <div class="divlabel">Contract table · ${esc(teamById(teamId).name)}</div>
-    <p class="sub" style="font-size:.64rem;margin-bottom:.4rem">Each column is a season. Signed players (S) fill every contract year; blank = not under contract that year. <b>Total</b> = team salary that year; <b>Space</b> = room under the cap (green = money to spend). * = arb.</p>
+    <p class="sub" style="font-size:.64rem;margin-bottom:.4rem">Type a number in the <b>yrs</b> box to sign a player for that many years (blank/0 = unsigned). Signed (S) fills every contract year; arb fills at the flat arb rate. <b>Total</b> = team salary that year; <b>Space</b> = cap room (green = money to spend).</p>
     <div class="card card-tight" style="overflow-x:auto">
-      <table class="tbl" style="min-width:520px">
-        <thead><tr><th style="font-size:.62rem">Player</th>${yearHead}</tr></thead>
+      <table class="tbl" style="min-width:560px">
+        <thead><tr><th style="font-size:.62rem">Player</th><th style="font-size:.6rem">Term</th>${yearHead}</tr></thead>
         <tbody>
           ${bodyRows}
-          <tr style="border-top:2px solid var(--amber)"><td style="font-size:.62rem;font-weight:700">TOTAL</td>${totalRow}</tr>
+          <tr style="border-top:2px solid var(--amber)"><td style="font-size:.62rem;font-weight:700" colspan="2">TOTAL</td>${totalRow}</tr>
           ${deadRow}
-          <tr><td class="sub" style="font-size:.62rem">cap space</td>${capRow}</tr>
+          <tr><td class="sub" style="font-size:.62rem" colspan="2">cap space</td>${capRow}</tr>
         </tbody>
       </table>
     </div>
     ${locked ? `<p class="sub mt" style="font-size:.7rem;color:var(--bad)">🔒 Contracts are locked (past the trade deadline / playoffs).</p>`
-             : isMine ? `<p class="sub mt" style="font-size:.66rem;text-align:center">Tap <b>sign</b>/<b>edit</b> next to a player to set their term. Year 1 = ${SALCFG().signingDiscount}× AAV, then +${(SALCFG().escalatorGrowth*100)}%/yr. Locks at trade deadline (week ${LSET().tradeDeadlineWeek||20}).</p>`
+             : isMine ? `<p class="sub mt" style="font-size:.66rem;text-align:center">Year 1 = ${SALCFG().signingDiscount}× AAV, then +${(SALCFG().escalatorGrowth*100)}%/yr. Locks at trade deadline (week ${LSET().tradeDeadlineWeek||20}). Signed players can't be dropped without a 2× dead-cap hit.</p>`
              : `<p class="sub mt" style="font-size:.66rem;text-align:center">Viewing ${esc(teamById(teamId).name)}'s contracts.</p>`}`;
 }
+/* set/clear a player's fantasy contract term directly from the table text box */
+window.setContractTerm = function(espnId, val) {
+  const p = LG().playerPool.find(x=>String(x.espnId)===String(espnId));
+  if (!p) return;
+  if (!signingOpen()) { toast('Signing is closed (past trade deadline)', 'err'); renderActive(); return; }
+  if (isArbPlayer(p)) { toast('Arb players can\u2019t be signed to a term', 'err'); renderActive(); return; }
+  const term = Math.max(0, Math.min(SALCFG().maxTerm, parseInt(val)||0));
+  LG().contracts = LG().contracts || {};
+  const existing = playerContract(p);
+  if (term === 0) {
+    delete LG().contracts[String(espnId)];           // unsign
+    toast(`${p.name} unsigned`, 'ok');
+  } else {
+    const aav = existing ? existing.baseAAV : importedAAV(p);   // freeze AAV at first signing
+    if (aav == null) { toast('No AAV on record — add MLB contract info first', 'err'); renderActive(); return; }
+    LG().contracts[String(espnId)] = {
+      baseAAV: aav,
+      signedYear: existing ? existing.signedYear : currentSeasonYear(),
+      termYears: term,
+      teamId: existing ? existing.teamId : myTeamId(),
+    };
+    toast(`${p.name} signed ${term}yr`, 'ok');
+  }
+  save();
+  syncExtraIfRostered(espnId);
+  renderActive();
+};
 
 /* 10-year salary lookahead for a team: each future season's committed cap hit. */
 function renderSalaryLookahead(teamId) {
@@ -3077,10 +3124,19 @@ function viewPlayersReal() {
   });
   // salary sub-filter (all / signed / arb / unsigned)
   if (useSal && playerView.salFilter && playerView.salFilter !== 'all') {
+    const yr = currentSeasonYear();
     list = list.filter(p => {
       if (playerView.salFilter === 'signed') return !!playerContract(p);
       if (playerView.salFilter === 'arb') return isArbPlayer(p);
       if (playerView.salFilter === 'unsigned') return !playerContract(p) && importedAAV(p)!=null;
+      if (playerView.salFilter === 'expiring') {
+        // rostered + signed contract whose FINAL year is the current season = about to
+        // hit free agency at the next rollover.
+        const c = playerContract(p);
+        if (!c) return false;
+        const lastYear = c.signedYear + c.termYears - 1;
+        return lastYear === yr;
+      }
       return true;
     });
   }
@@ -3141,6 +3197,7 @@ function viewPlayersReal() {
       <button class="btn btn-sm ${playerView.salFilter==='signed'?'btn-amber':'btn-ghost'}" onclick="setSalFilter('signed')">📝 Signed</button>
       <button class="btn btn-sm ${playerView.salFilter==='unsigned'?'btn-amber':'btn-ghost'}" onclick="setSalFilter('unsigned')">Unsigned</button>
       <button class="btn btn-sm ${playerView.salFilter==='arb'?'btn-amber':'btn-ghost'}" onclick="setSalFilter('arb')">A Arb</button>
+      <button class="btn btn-sm ${playerView.salFilter==='expiring'?'btn-amber':'btn-ghost'}" onclick="setSalFilter('expiring')">⏳ Expiring</button>
     </div>`:''}
     <div class="row" style="gap:.35rem;margin-top:.4rem;flex-wrap:wrap">
       <span class="sub" style="align-self:center;font-size:.68rem">Show stat:</span>
@@ -3403,11 +3460,29 @@ function renderPlayerModal(p, loading) {
       <div class="stat"><div class="lbl">ADP</div><div class="val amber">${p.adp<9999?p.adp.toFixed(0):'—'}</div></div>
       <div class="stat"><div class="lbl">Season</div><div class="val">${loading?'<span class="sub">…</span>':(havePts?p.ptsSeason.toFixed(0):'—')}</div></div>
       ${LSET().useSalaryCap
-        ? `<div class="stat"><div class="lbl">AAV</div><div class="val" style="font-size:1rem">${fmtMoney(playerSalary(p))}</div></div>`
+        ? `<div class="stat"><div class="lbl">Base AAV</div><div class="val" style="font-size:1rem">${fmtMoney(importedAAV(p))}</div></div>`
         : `<div class="stat"><div class="lbl">Status</div><div class="val" style="font-size:1rem">${pk?(onMyTeam?'Yours':'Rostered'):'Free'}</div></div>`}
     </div>
-    ${LSET().useSalaryCap && salaryDB()[normName(p.name)] ? (()=>{ const r=salaryDB()[normName(p.name)];
-      return `<div class="sub mb" style="font-size:.72rem">Contract: ${fmtMoney(r.total)} total · ${r.start||'?'}–${r.end||'?'}${r.years?` (${r.years}yr)`:''}</div>`; })() : ''}
+    ${LSET().useSalaryCap ? (()=>{ const r=salaryDB()[normName(p.name)]; const c=playerContract(p);
+      let html = '<div class="card card-tight mb" style="font-size:.72rem">';
+      // age + real MLB contract
+      if (r) {
+        html += `<div class="row-between"><span class="sub">Age</span><b>${r.age||'—'}</b></div>`;
+        html += `<div class="row-between"><span class="sub">MLB contract</span><b>${r.start||'?'}–${r.end||'?'}${r.years?` (${r.years}yr)`:''}</b></div>`;
+        html += `<div class="row-between"><span class="sub">MLB total / AAV</span><b>${fmtMoney(r.total)} · ${fmtMoney(r.aav)}</b></div>`;
+      } else {
+        html += `<div class="row-between"><span class="sub">MLB contract</span><b class="cell-neg">none on file (arb)</b></div>`;
+      }
+      // fantasy contract (signed)
+      if (c) {
+        const curSal = contractSalaryForYear(c, currentSeasonYear());
+        html += `<div class="row-between" style="border-top:1px solid rgba(42,61,48,.4);padding-top:.3rem;margin-top:.3rem"><span class="sub">Fantasy deal</span><b class="amber">${c.termYears}yr · ${c.signedYear}–${c.signedYear+c.termYears-1}</b></div>`;
+        html += `<div class="row-between"><span class="sub">This year / discount</span><b>${fmtMoney(curSal)} <span class="sub">(${importedAAV(p)?Math.round(curSal/importedAAV(p)*100):'?'}% of AAV)</span></b></div>`;
+      }
+      html += '</div>';
+      return html;
+    })() : ''}
+    ${LSET().useSalaryCap && window._masterUnlocked ? `<button class="btn btn-ghost btn-block mb" style="font-size:.7rem" onclick="openContractInfo('${p.espnId}')">✏ Add/edit MLB contract info</button>` : ''}
     ${havePts ? `<div class="statrow mb">
       <div class="stat"><div class="lbl">Last 7d</div><div class="val">${p.pts7?.toFixed(0)??'0'}</div></div>
       <div class="stat"><div class="lbl">Last 14d</div><div class="val">${p.pts14?.toFixed(0)??'0'}</div></div>
@@ -4661,6 +4736,54 @@ window.setPenaltyPicks = function(idx, val) {
     save({master:true});
   }
 };
+
+/* Add or edit a player's REAL MLB contract info (commissioner only). Writing an AAV
+   moves them out of "arb" status so they can be signed to a fantasy term. */
+window.openContractInfo = function(espnId) {
+  if (!window._masterUnlocked) {
+    const pin = prompt('Commissioner PIN to edit contract info:');
+    if (pin !== ADMIN_PIN) { if (pin!==null) toast('Wrong PIN', 'err'); return; }
+    window._masterUnlocked = true;
+  }
+  const p = LG().playerPool.find(x=>String(x.espnId)===String(espnId));
+  if (!p) return;
+  const r = salaryDB()[normName(p.name)] || {};
+  openModal(`<div class="h2">MLB contract · ${esc(p.name)}</div>
+    <p class="sub mb">Add the player's real MLB deal. Setting an AAV makes them signable (no longer arb). Leave AAV blank to treat them as an arb player.</p>
+    <div class="field"><label>Age</label><input class="input" id="ci-age" type="number" value="${r.age||''}" placeholder="Age"></div>
+    <div class="row" style="gap:.4rem">
+      <div class="field" style="flex:1"><label>Start year</label><input class="input" id="ci-start" type="number" value="${r.start||''}" placeholder="2025"></div>
+      <div class="field" style="flex:1"><label>End year</label><input class="input" id="ci-end" type="number" value="${r.end||''}" placeholder="2030"></div>
+    </div>
+    <div class="field"><label>Total contract ($)</label><input class="input" id="ci-total" type="number" value="${r.total||''}" placeholder="e.g. 200000000"></div>
+    <div class="field"><label>AAV — base salary ($)</label><input class="input" id="ci-aav" type="number" value="${r.aav||''}" placeholder="e.g. 25000000"></div>
+    <button class="btn btn-amber btn-block mt" onclick="saveContractInfo('${espnId}')">Save contract info</button>
+    ${r.aav?`<button class="btn btn-ghost btn-block mt" style="font-size:.7rem;color:var(--bad)" onclick="clearContractInfo('${espnId}')">Remove (make arb)</button>`:''}
+    <button class="btn btn-ghost btn-block mt" onclick="showPlayer('${espnId}')">Cancel</button>`);
+};
+window.saveContractInfo = function(espnId) {
+  const p = LG().playerPool.find(x=>String(x.espnId)===String(espnId));
+  if (!p) return;
+  const age = parseInt($('ci-age')?.value)||null;
+  const start = parseInt($('ci-start')?.value)||null;
+  const end = parseInt($('ci-end')?.value)||null;
+  const total = parseInt(($('ci-total')?.value||'').replace(/[^0-9]/g,''))||null;
+  const aav = parseInt(($('ci-aav')?.value||'').replace(/[^0-9]/g,''))||null;
+  const years = (start&&end) ? (end-start+1) : null;
+  STATE.salaryDB = STATE.salaryDB || {};
+  STATE.salaryDB[STATE.sport] = STATE.salaryDB[STATE.sport] || {};
+  STATE.salaryDB[STATE.sport][normName(p.name)] = { name:p.name, pos:p.pos||'', team:p.proTeam||'', age, start, end, years, total, aav };
+  save({master:true});
+  toast(`Saved contract info for ${p.name}`, 'ok');
+  showPlayer(espnId);
+};
+window.clearContractInfo = function(espnId) {
+  const p = LG().playerPool.find(x=>String(x.espnId)===String(espnId));
+  if (!p) return;
+  if (STATE.salaryDB?.[STATE.sport]) { delete STATE.salaryDB[STATE.sport][normName(p.name)]; save({master:true}); }
+  toast(`${p.name} is now treated as arb`, 'ok');
+  showPlayer(espnId);
+};
 /* list ROSTERED players with no imported contract — likely arb players. They get
    the flat arb salary and can't be signed to a term until they have a real contract. */
 window.showArbPlayers = function() {
@@ -4736,11 +4859,30 @@ window.confirmSeasonRollover = function() {
   //    Contracts are stored by signedYear+term; "aging" = drop any whose last year was yr.
   const contracts = LG().contracts || {};
   let expired = 0;
+  const expiredPids = [];
   Object.keys(contracts).forEach(pid => {
     const c = contracts[pid];
     const lastYear = c.signedYear + c.termYears - 1;
-    if (lastYear <= yr) { delete contracts[pid]; expired++; log(`Contract expired: player ${pid}`); }
+    if (lastYear <= yr) {
+      delete contracts[pid];
+      expiredPids.push(pid);
+      expired++;
+      const pl = LG().playerPool.find(x=>String(x.espnId)===String(pid));
+      log(`Contract expired — ${pl?.name||pid} becomes a free agent`);
+    }
   });
+  // 3b) AUTO-KICK expired players off rosters — their fantasy contract is up, so they
+  //     leave the team and return to the free-agent pool for the new season.
+  if (expiredPids.length) {
+    const expSet = new Set(expiredPids.map(String));
+    LG().draft.picks = (LG().draft.picks||[]).filter(pk => !expSet.has(String(pk.playerId)));
+    // also clear them from any lineup assignments
+    Object.values(LG().lineups||{}).forEach(weeks => Object.values(weeks||{}).forEach(wk => {
+      if (wk?.assignments) for (const k of Object.keys(wk.assignments)) {
+        if (expSet.has(String(wk.assignments[k]))) delete wk.assignments[k];
+      }
+    }));
+  }
   // 4) DEAD-CAP EXPIRY — clear hits dated this season or earlier
   const dc = LG().deadCap || {};
   Object.keys(dc).forEach(tid => {
@@ -4749,11 +4891,12 @@ window.confirmSeasonRollover = function() {
   });
   // money trades that have fully elapsed
   LG().moneyTrades = (LG().moneyTrades || []).filter(mt => (mt.startYear + (mt.years||1) - 1) > yr);
-  // record advance
+  // record advance + set the new explicit season year
   LG().seasonApplied = yr;
+  LG().seasonYear = yr + 1;
   save();
   openModal(`<div class="h2">✓ Advanced to ${yr+1}</div>
-    <p class="sub mb">${expired} contract${expired!==1?'s':''} expired. Cap is now ${fmtMoney(leagueCap())}.</p>
+    <p class="sub mb">${expired} contract${expired!==1?'s':''} expired — those players were released to free agency. Cap is now ${fmtMoney(leagueCap())}.</p>
     ${logs.length?`<div class="card card-tight" style="max-height:40vh;overflow-y:auto"><div class="sub" style="font-size:.7rem;line-height:1.6">${logs.map(esc).join('<br>')}</div></div>`:''}
     <button class="btn btn-block mt" onclick="closeModal();renderActive()">Done</button>`);
 };
