@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Best Game League v7.7</title>
+<title>Best Game League v7.8</title>
 <style>
 /* ============================================================
-   BGL v7.7 — Design System
+   BGL v7.8 — Design System
    Subject: competitive fantasy baseball; hook = best single game/week
    Palette: stadium-at-night
    ============================================================ */
@@ -342,7 +342,7 @@ body {
 <div class="topbar">
   <div class="brand" onclick="go('home')">
     <span>BGL<span class="mark">.</span></span>
-    <span class="ver">v7.7</span>
+    <span class="ver">v7.8</span>
   </div>
   <div class="topbar-right">
     <button class="league-chip" id="league-chip" onclick="openLeagueSwitcher()" title="Change league or sport"></button>
@@ -1013,7 +1013,13 @@ function SALCFG() {
   return { ...d, ...(STATE.salaryConfig || {}) };
 }
 /* this league's cap (league override or master default) */
-function leagueCap() { return LSET().salaryCap || SALCFG().defaultCap; }
+function leagueCap() {
+  // league can override the master default. The override may be stored in millions
+  // (e.g. 260) or full dollars (e.g. 260000000); normalize small values to millions.
+  const ov = LSET().salaryCapDollars;          // explicit full-dollar override
+  if (ov && ov > 0) return ov;
+  return SALCFG().defaultCap;
+}
 function currentSeasonYear() { return SEASON_OPENERS ? Math.max(...Object.keys(SEASON_OPENERS).map(Number).filter(y=>y<=new Date().getFullYear()+1)) : new Date().getFullYear(); }
 
 /* a player's CONTRACT record (signed), or null */
@@ -2222,21 +2228,19 @@ function viewPlayers()   { return viewPlayersReal(); }
    MY TEAM — pick once (permanent), then see roster + daily scoring
    ============================================================ */
 function viewMyTeam() {
-  if (!LG().teams.length) {
-    return `<div class="h1">My Team</div>
-      <div class="empty"><div class="big">★</div>
-      <div class="msg">No teams yet. Set up the league first.</div>
-      <button class="btn" onclick="go('settings')">Open Settings</button></div>`;
-  }
-  // not chosen yet → prompt selection
+  // not chosen yet → prompt selection (only OPEN teams) or auto-create
   if (!myTeamId()) {
-    const opts = LG().teams.map(t =>
+    const claimedTeamIds = new Set(Object.values(LG().members||{}).map(m => String(m.teamId)));
+    const openTeams = (LG().teams||[]).filter(t => !claimedTeamIds.has(String(t.id)));
+    const opts = openTeams.map(t =>
       `<button class="btn btn-ghost btn-block mt" onclick="pickMyTeam('${t.id}')"
-        style="text-align:left">${esc(t.name)} <span class="sub">· ${esc(t.owner||'')}</span></button>`).join('');
+        style="text-align:left">${esc(t.name)}</button>`).join('');
     return `<div class="eyebrow">One-time choice</div>
       <div class="h1">Pick your team</div>
-      <p class="sub mt mb">Choose which team is yours. <b>This is permanent</b> — it can't be changed later.</p>
-      ${opts}`;
+      ${openTeams.length
+        ? `<p class="sub mt mb">Choose an open team, or create your own. <b>This is permanent</b> — it can't be changed later.</p>${opts}`
+        : `<p class="sub mt mb">No open teams right now. Create your own to join the league.</p>`}
+      <button class="btn btn-amber btn-block mt" onclick="createMyTeam()">+ Create my own team</button>`;
   }
 
   const mine = myTeamId();
@@ -2478,76 +2482,98 @@ function renderTeamStats(roster, slotOf) {
 }
 window.setTeamView = function(m) { teamViewMode = m; renderActive(); };
 
-/* CONTRACTS view: per-player contract status + sign/edit term (locked at deadline). */
+/* CONTRACTS view: a multi-year TABLE. Rows = players; columns = next N seasons.
+   A signed player's escalated salary fills each contract year; blank otherwise.
+   Column totals show team salary per year and cap space (extra money) per year. */
 function renderTeamContracts(teamId, isMine) {
   const roster = teamRoster(teamId);
   if (!roster.length) return '<div class="card"><p class="sub">No players on this roster yet.</p></div>';
   const locked = rostersLocked() || !signingOpen();
-  const yr = currentSeasonYear();
-  const spent = teamSalaryTotal(teamId, yr);
-  const cap = leagueCap();
+  const startYr = currentSeasonYear();
+  const YEARS = 10;
+  const years = Array.from({length:YEARS}, (_,i) => startYr + i);
+  const capGrowth = (SALCFG().capGrowthPct||0)/100;
 
-  // sort: signed first, then unsigned-with-AAV, then arb
+  // sort: signed (longest remaining first), then arb, then unsigned
   const ranked = [...roster].sort((a,b) => {
-    const rank = p => playerContract(p) ? 0 : (importedAAV(p)!=null ? 1 : 2);
-    return rank(a) - rank(b) || (playerCapHit(b)||0) - (playerCapHit(a)||0);
+    const ca = playerContract(a), cb = playerContract(b);
+    const ra = ca ? 0 : (isArbPlayer(a) ? 2 : 1);
+    const rb = cb ? 0 : (isArbPlayer(b) ? 2 : 1);
+    if (ra !== rb) return ra - rb;
+    return (playerCapHit(b)||0) - (playerCapHit(a)||0);
   });
 
-  const rows = ranked.map(p => {
+  // build rows + per-year column totals
+  const colTotal = years.map(()=>0);
+  const bodyRows = ranked.map(p => {
     const c = playerContract(p);
     const arb = isArbPlayer(p);
-    const hit = playerCapHit(p, yr);
-    let right;
-    if (c) {
-      const left = (c.signedYear + c.termYears - 1) - yr + 1;
-      right = `<div style="text-align:right">
-        <div class="amber" style="font-weight:700;font-size:.8rem">${fmtMoney(hit)}</div>
-        <div class="sub" style="font-size:.62rem">${c.termYears}yr · ${left>0?`${left} left`:'final yr'}</div>
-        ${isMine && !locked ? `<button class="btn btn-sm btn-ghost mt" style="font-size:.6rem" onclick="openSignModal('${p.espnId}')">Edit/Re-sign</button>` : ''}
-      </div>`;
-    } else if (arb) {
-      right = `<div style="text-align:right">
-        <div style="font-weight:700;font-size:.8rem">${fmtMoney(hit)}</div>
-        <div class="sub" style="font-size:.62rem">arb · no term</div>
-      </div>`;
-    } else {
-      // unsigned with AAV → can sign
-      right = `<div style="text-align:right">
-        <div style="font-weight:700;font-size:.8rem">${fmtMoney(hit)}</div>
-        <div class="sub" style="font-size:.62rem">unsigned</div>
-        ${isMine && !locked ? `<button class="btn btn-sm btn-amber mt" style="font-size:.6rem" onclick="openSignModal('${p.espnId}')">Sign</button>` : ''}
-      </div>`;
-    }
-    return `<div class="row-between" style="padding:.5rem 0;border-bottom:1px solid rgba(42,61,48,.4);align-items:flex-start">
-      <div style="flex:1">
-        <span class="plink" onclick="showPlayer('${p.espnId}')" style="font-size:.85rem">${esc(p.name)}</span>
-        ${c?'<span class="ps-tag" style="display:inline;background:var(--good)">signed</span>':arb?'<span class="ps-tag" style="display:inline">arb</span>':''}
-        <div class="sub" style="font-size:.62rem">${esc((p.eligible||[]).join('/'))}${p.injured?' · IL':''}</div>
-      </div>
-      ${right}
-    </div>`;
+    const cells = years.map((yr,idx) => {
+      let val = 0, txt = '';
+      if (c) {
+        val = contractSalaryForYear(c, yr);          // 0 outside the term
+        txt = val>0 ? fmtMoney(val) : '';
+      } else if (arb) {
+        // arb players only "count" the current year (year-to-year, no term)
+        if (idx === 0) { val = SALCFG().arbSalary; txt = fmtMoney(val)+'*'; }
+      } else {
+        // unsigned w/ AAV: only this year's placeholder
+        if (idx === 0) { val = playerCapHit(p, yr); txt = fmtMoney(val); }
+      }
+      colTotal[idx] += val;
+      const cls = idx===0 ? 'color:var(--chalk)' : 'color:var(--sage)';
+      return `<td class="r num" style="font-size:.64rem;${val>0?cls:'color:transparent'}">${txt||'·'}</td>`;
+    }).join('');
+    const tag = c ? '<span class="ps-tag" style="display:inline;background:var(--good)">S</span>'
+              : arb ? '<span class="ps-tag" style="display:inline">A</span>' : '';
+    const action = isMine && !locked
+      ? `<span class="plink" style="font-size:.6rem" onclick="openSignModal('${p.espnId}')">${c?'edit':arb?'':'sign'}</span>`
+      : '';
+    return `<tr>
+      <td style="font-size:.7rem;white-space:nowrap"><span class="plink" onclick="showPlayer('${p.espnId}')">${esc(p.name.length>14?p.name.slice(0,13)+'…':p.name)}</span> ${tag} ${action}</td>
+      ${cells}
+    </tr>`;
   }).join('');
 
-  // dead cap currently on this team's books
+  // dead cap per year (add into column totals)
   const dead = (LG().deadCap||{})[teamId] || [];
-  const deadThisYr = dead.filter(d => d.year >= yr);
-  const deadHtml = deadThisYr.length ? `<div class="divlabel mt">Dead cap</div>
-    <div class="card card-tight">${deadThisYr.map(d => `<div class="row-between" style="font-size:.72rem"><span class="sub">${esc(d.name||'player')} (${d.year})</span><b class="cell-neg">${fmtMoney(d.amount)}</b></div>`).join('')}</div>` : '';
+  const deadByYear = years.map(yr => dead.filter(d=>d.year===yr).reduce((s,d)=>s+d.amount,0));
+  deadByYear.forEach((v,i)=>colTotal[i]+=v);
+  // money trades per year
+  years.forEach((yr,idx) => {
+    (LG().moneyTrades||[]).forEach(mt => {
+      const yrs=mt.years||1, start=mt.startYear||startYr;
+      if (yr>=start && yr<start+yrs){ const k=yr-start; const per=mt.perYearList?(mt.perYearList[k]||0):(mt.perYear!=null?mt.perYear:Math.round(mt.amount/yrs));
+        if(String(mt.to)===String(teamId))colTotal[idx]-=per; if(String(mt.from)===String(teamId))colTotal[idx]+=per; }
+    });
+  });
+
+  const yearHead = years.map((yr,i) => `<th class="r" style="font-size:.6rem;${i===0?'color:var(--amber)':''}">${String(yr).slice(2)}</th>`).join('');
+  const totalRow = colTotal.map((v,i) => `<td class="r num" style="font-size:.62rem;font-weight:700;${i===0?'color:var(--amber)':''}">${fmtMoney(v)}</td>`).join('');
+  const deadRow = deadByYear.some(v=>v>0) ? `<tr><td class="sub" style="font-size:.6rem">dead cap</td>${deadByYear.map(v=>`<td class="r num" style="font-size:.6rem;color:var(--bad)">${v>0?fmtMoney(v):'·'}</td>`).join('')}</tr>` : '';
+  const capRow = years.map((yr,i) => {
+    const cap = Math.round(leagueCap()*Math.pow(1+capGrowth,i));
+    const space = cap - colTotal[i];
+    return `<td class="r num" style="font-size:.62rem;${space<0?'color:var(--bad)':'color:var(--good)'}">${fmtMoney(space)}</td>`;
+  }).join('');
 
   return `
-    <div class="card" style="border-color:${spent>cap?'var(--bad)':'var(--good)'}">
-      <div class="row-between">
-        <span class="sub">Cap ${yr}</span>
-        <span class="${spent>cap?'cell-neg':'amber'}" style="font-weight:700">${fmtMoney(spent)} / ${fmtMoney(cap)}</span>
-      </div>
-      ${locked ? `<p class="sub mt" style="font-size:.7rem;color:var(--bad)">🔒 Contracts are locked (past the trade deadline / playoffs). No signing or edits.</p>`
-               : isMine ? `<p class="sub mt" style="font-size:.7rem">Sign players to lock their salary. Year 1 gets the ${SALCFG().signingDiscount}× discount, then +${(SALCFG().escalatorGrowth*100)}%/yr. Locks at the trade deadline (week ${LSET().tradeDeadlineWeek||20}).</p>`
-               : `<p class="sub mt" style="font-size:.7rem">👁 Viewing ${esc(teamById(teamId).name)}'s contracts.</p>`}
+    <div class="divlabel">Contract table · ${esc(teamById(teamId).name)}</div>
+    <p class="sub" style="font-size:.64rem;margin-bottom:.4rem">Each column is a season. Signed players (S) fill every contract year; blank = not under contract that year. <b>Total</b> = team salary that year; <b>Space</b> = room under the cap (green = money to spend). * = arb.</p>
+    <div class="card card-tight" style="overflow-x:auto">
+      <table class="tbl" style="min-width:520px">
+        <thead><tr><th style="font-size:.62rem">Player</th>${yearHead}</tr></thead>
+        <tbody>
+          ${bodyRows}
+          <tr style="border-top:2px solid var(--amber)"><td style="font-size:.62rem;font-weight:700">TOTAL</td>${totalRow}</tr>
+          ${deadRow}
+          <tr><td class="sub" style="font-size:.62rem">cap space</td>${capRow}</tr>
+        </tbody>
+      </table>
     </div>
-    <div class="divlabel">Roster contracts</div>
-    <div class="card card-tight">${rows}</div>
-    ${deadHtml}
-    ${isMine && !locked ? `<p class="sub mt" style="font-size:.66rem;text-align:center">Tap Sign/Edit to set or change a contract length. Dropping a signed player costs 2× their current salary in dead cap.</p>` : ''}`;
+    ${locked ? `<p class="sub mt" style="font-size:.7rem;color:var(--bad)">🔒 Contracts are locked (past the trade deadline / playoffs).</p>`
+             : isMine ? `<p class="sub mt" style="font-size:.66rem;text-align:center">Tap <b>sign</b>/<b>edit</b> next to a player to set their term. Year 1 = ${SALCFG().signingDiscount}× AAV, then +${(SALCFG().escalatorGrowth*100)}%/yr. Locks at trade deadline (week ${LSET().tradeDeadlineWeek||20}).</p>`
+             : `<p class="sub mt" style="font-size:.66rem;text-align:center">Viewing ${esc(teamById(teamId).name)}'s contracts.</p>`}`;
 }
 
 /* 10-year salary lookahead for a team: each future season's committed cap hit. */
@@ -2733,14 +2759,25 @@ window.pickMyTeam = function(teamId) {
   }
   openModal(`
     <div class="h2">Claim ${esc(t.name)}</div>
-    <p class="sub mt mb">Enter your name to lock in as this team's owner.
-      <b>This is permanent</b> — name and team can't be changed.</p>
+    <p class="sub mt mb">Name your team and enter your name to lock in as the owner.
+      <b>This is permanent.</b></p>
+    <div class="field"><label>Team name</label><input class="input" id="mb-team" value="${esc(t.name||'')}" placeholder="Team name"></div>
     <div class="field"><label>First name</label><input class="input" id="mb-first" placeholder="First"></div>
     <div class="field"><label>Last name</label><input class="input" id="mb-last" placeholder="Last"></div>
-    <button class="btn btn-amber btn-block" onclick="confirmMyTeam('${teamId}')">Lock in as ${esc(t.name)}</button>
+    <button class="btn btn-amber btn-block" onclick="confirmMyTeam('${teamId}')">Lock in</button>
     <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Cancel</button>
   `);
-  setTimeout(()=>$('mb-first')?.focus(), 100);
+  setTimeout(()=>$('mb-team')?.focus(), 100);
+};
+/* auto-create a new team for a joiner, then take them to name/claim it */
+window.createMyTeam = function() {
+  const n = (LG().teams?.length || 0) + 1;
+  const id = 't' + Date.now();
+  LG().teams = LG().teams || [];
+  LG().teams.push({ id, name: `Team ${n}`, owner:'', abbrev:`T${n}` });
+  save();
+  // go straight to the claim flow for the new team
+  pickMyTeam(id);
 };
 window.confirmMyTeam = function(teamId) {
   const first = $('mb-first')?.value.trim();
@@ -2754,7 +2791,11 @@ window.confirmMyTeam = function(teamId) {
   LG().members[memberId] = { name: `${first} ${last}`, teamId, joined: Date.now() };
   // also set the team's owner name (so the generic "Team N" shows the owner)
   const team = LG().teams.find(t => String(t.id)===String(teamId));
-  if (team) { team.owner = `${first} ${last}`; team.claimed = true; }
+  if (team) {
+    const tname = $('mb-team')?.value.trim();
+    if (tname) { team.name = tname; team.abbrev = tname.slice(0,3).toUpperCase(); }
+    team.owner = `${first} ${last}`; team.claimed = true;
+  }
   STATE.memberId = memberId;            // this device is now this member (locked)
   saveLocal();                           // persist identity pointer
   save();                                // sync members + teams to league doc
@@ -3723,21 +3764,24 @@ function viewSettings() {
 
     <div class="card" style="border-color:${unlocked?'var(--amber)':'var(--line)'}">
       <div class="row-between">
-        <div class="h2" style="margin:0">${unlocked?'🔓':'🔒'} Master settings</div>
+        <div class="h2" style="margin:0">${unlocked?'🔓':'🔒'} Commissioner settings</div>
         ${unlocked
-          ? `<button class="btn btn-sm btn-ghost" onclick="lockMaster()">Lock</button>`
+          ? `<div class="row" style="gap:.3rem">
+              <button class="btn btn-sm btn-ghost" onclick="toggleCommish()">${window._commishExpanded?'▲ Collapse':'▼ Expand'}</button>
+              <button class="btn btn-sm btn-ghost" onclick="lockMaster()">Lock</button>
+            </div>`
           : `<button class="btn btn-sm" onclick="unlockMaster()">Unlock</button>`}
       </div>
       <p class="sub mt" style="font-size:.72rem">
         League-wide settings shared with everyone: player pool, ${SP().statsApi.toUpperCase()} mapping,
-        scoring, and schedule. ${unlocked?'You can edit these now.':'PIN required to edit.'}</p>
+        scoring, schedule${LSET().useSalaryCap?', salaries':''}. ${unlocked?(window._commishExpanded?'':'Tap Expand to edit.'):'PIN required to edit.'}</p>
       <p class="sub" style="font-size:.68rem">
         Pool: ${havePool?`✓ ${LG().playerPool.length}`:'○ none'} ·
         Mapped: ${LG().playerPool.filter(p=>p.mlbId).length} ·
         Firebase: ${fbReady?'<span class="amber">live</span>':esc(fbErr||'offline')}</p>
     </div>
 
-    ${unlocked ? `
+    ${unlocked && window._commishExpanded ? `
     <div class="card">
       <div class="h2">Player pool</div>
       <p class="sub mb">Pull the ${SP().label} player pool from ESPN for season
@@ -3822,9 +3866,8 @@ function viewSettings() {
 
     <div class="card">
       <div class="h2">Teams</div>
-      <p class="sub mb">Generate generic teams (Team 1, Team 2…). Owners name them when they join.</p>
-      <button class="btn btn-block" onclick="generateTeamsPrompt()">Generate teams</button>
-      <button class="btn btn-ghost btn-block mt" onclick="manageTeams()">Manage teams (${LG().teams.length})</button>
+      <p class="sub mb">Add and manage teams. Members name and claim them when they join. If someone joins and there's no open team, one is created for them automatically.</p>
+      <button class="btn btn-block" onclick="manageTeams()">Manage teams (${LG().teams.length})</button>
     </div>
 
     <div class="card">
@@ -3843,7 +3886,7 @@ function viewSettings() {
       </div>
       <div class="row-between" style="padding:.4rem 0;border-top:1px solid rgba(42,61,48,.4)">
         <span class="sub">Salary cap</span>
-        <button class="btn btn-sm ${LSET().useSalaryCap?'btn-amber':'btn-ghost'}" onclick="toggleSalaryCap()">${LSET().useSalaryCap?`ON ($${LSET().salaryCap})`:'OFF'}</button>
+        <button class="btn btn-sm ${LSET().useSalaryCap?'btn-amber':'btn-ghost'}" onclick="toggleSalaryCap()">${LSET().useSalaryCap?`ON (${fmtMoney(leagueCap())})`:'OFF'}</button>
       </div>
       <div class="row-between" style="padding:.4rem 0;border-top:1px solid rgba(42,61,48,.4)">
         <span class="sub">Bonus win<br><span style="font-size:.62rem;color:var(--sage-dim)">extra W for top-half scorers each week</span></span>
@@ -3976,12 +4019,17 @@ window.tryMaster = function() {
   const pin = $('master-pin')?.value;
   if (pin === ADMIN_PIN) {
     window._masterUnlocked = true;
-    closeModal(); toast('Master settings unlocked', 'ok'); renderActive();
+    window._commishExpanded = true;   // expand on unlock so settings are visible
+    closeModal(); toast('Commissioner settings unlocked', 'ok'); renderActive();
   } else { toast('Wrong PIN', 'err'); }
+};
+window.toggleCommish = function() {
+  window._commishExpanded = !window._commishExpanded; renderActive();
 };
 window.lockMaster = function() {
   window._masterUnlocked = false;
-  toast('Master settings locked', 'ok'); renderActive();
+  window._commishExpanded = false;
+  toast('Commissioner settings locked', 'ok'); renderActive();
 };
 
 /* ============================================================
@@ -4683,7 +4731,7 @@ window.confirmSeasonRollover = function() {
   });
   // 2) CAP GROWTH — bake the grown cap into this league's setting
   ensureSettings();
-  LG().settings.salaryCap = Math.round(leagueCap() * (1 + (SALCFG().capGrowthPct||0)/100));
+  LG().settings.salaryCapDollars = Math.round(leagueCap() * (1 + (SALCFG().capGrowthPct||0)/100));
   // 3) CONTRACT AGING — advance signedYear bookkeeping by expiring finished deals.
   //    Contracts are stored by signedYear+term; "aging" = drop any whose last year was yr.
   const contracts = LG().contracts || {};
@@ -4950,19 +4998,54 @@ window.dumpState = function() {
 
 /* ---- team management (basic; expanded in Phase 2) ---- */
 window.manageTeams = function() {
-  const rows = LG().teams.map((t,i) => `
-    <div class="row-between" style="padding:.4rem 0;border-bottom:1px solid rgba(42,61,48,.4)">
-      <span>${esc(t.name)} <span class="sub">· ${esc(t.owner||'')}</span></span>
-      <button class="btn btn-ghost btn-sm" onclick="removeTeam('${t.id}')">Remove</button>
-    </div>`).join('') || '<p class="sub">No teams yet.</p>';
+  const rows = LG().teams.map((t,i) => {
+    const member = Object.entries(LG().members||{}).find(([mid,m]) => String(m.teamId)===String(t.id));
+    const ownerName = member ? member[1].name : (t.owner||'');
+    return `
+    <div style="padding:.5rem 0;border-bottom:1px solid rgba(42,61,48,.4)">
+      <div class="row-between">
+        <span style="font-size:.85rem"><b>${esc(t.name)}</b></span>
+        <button class="btn btn-ghost btn-sm" onclick="removeTeam('${t.id}')" style="font-size:.62rem">Remove team</button>
+      </div>
+      <div class="row-between mt" style="align-items:center">
+        <span class="sub" style="font-size:.72rem">${ownerName ? `Owner: <b>${esc(ownerName)}</b>` : '<i>unclaimed</i>'}</span>
+        ${ownerName ? `<button class="btn btn-ghost btn-sm" onclick="removeOwner('${t.id}')" style="font-size:.6rem;color:var(--bad)">Remove owner</button>` : ''}
+      </div>
+    </div>`;
+  }).join('') || '<p class="sub">No teams yet.</p>';
   openModal(`
     <div class="h2">Teams</div>
+    <p class="sub mb" style="font-size:.7rem">Remove an owner to free their team for someone else (their roster stays).</p>
     <div class="mt mb">${rows}</div>
     <div class="field"><label>Team name</label><input class="input" id="nt-name" placeholder="The Sandlot"></div>
-    <div class="field"><label>Owner</label><input class="input" id="nt-owner" placeholder="Name"></div>
+    <div class="field"><label>Owner (optional)</label><input class="input" id="nt-owner" placeholder="Name"></div>
     <button class="btn btn-block" onclick="addTeam()">Add team</button>
     <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Done</button>
   `);
+};
+window.removeOwner = function(teamId) {
+  const team = LG().teams.find(t => String(t.id)===String(teamId));
+  if (!team) return;
+  openModal(`<div class="h2">Remove owner?</div>
+    <p class="sub mt mb">This unclaims <b>${esc(team.name)}</b> and removes its owner. The roster stays; someone else can claim the team. ${esc(team.name)} won't be tied to that person anymore.</p>
+    <button class="btn btn-block" style="background:var(--bad);color:#fff" onclick="confirmRemoveOwner('${teamId}')">Remove owner</button>
+    <button class="btn btn-ghost btn-block mt" onclick="manageTeams()">Cancel</button>`);
+};
+window.confirmRemoveOwner = function(teamId) {
+  // remove the member record(s) tied to this team
+  const members = LG().members || {};
+  Object.keys(members).forEach(mid => {
+    if (String(members[mid].teamId) === String(teamId)) {
+      // if THIS device was that member, clear its identity too
+      if (STATE.memberId === mid) { STATE.memberId = null; saveLocal(); }
+      delete members[mid];
+    }
+  });
+  const team = LG().teams.find(t => String(t.id)===String(teamId));
+  if (team) { team.owner = ''; team.claimed = false; }
+  save();
+  toast('Owner removed — team is now open', 'ok');
+  manageTeams();
 };
 window.addTeam = function() {
   const name = $('nt-name').value.trim();
