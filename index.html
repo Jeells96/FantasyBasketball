@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Best Game League v7.1</title>
+<title>Best Game League v7.2</title>
 <style>
 /* ============================================================
-   BGL v7.1 — Design System
+   BGL v7.2 — Design System
    Subject: competitive fantasy baseball; hook = best single game/week
    Palette: stadium-at-night
    ============================================================ */
@@ -342,7 +342,7 @@ body {
 <div class="topbar">
   <div class="brand" onclick="go('home')">
     <span>BGL<span class="mark">.</span></span>
-    <span class="ver">v7.1</span>
+    <span class="ver">v7.2</span>
   </div>
   <div class="topbar-right">
     <button class="league-chip" id="league-chip" onclick="openLeagueSwitcher()" title="Change league or sport"></button>
@@ -920,38 +920,70 @@ function normName(name) {
 const SALARY_POS = new Set(['C','1B','2B','3B','SS','OF','LF','CF','RF','DH','SP','RP','P','UTIL','PG','SG','SF','PF','G','F']);
 function parseMoney(s) { const m = String(s).replace(/[^0-9]/g, ''); return m ? parseInt(m) : null; }
 function parseSalaryPaste(text) {
-  const lines = String(text||'').split('\n').map(l => l.trim());
+  const rawLines = String(text||'').split('\n');
+  // Detect ROW format: a line split by tabs (or 2+ spaces) yields many fields with
+  // two $ amounts. Spreadsheet/table pastes look like this. Else use newline mode.
+  const splitRow = (ln) => ln.indexOf('\t') >= 0 ? ln.split('\t') : ln.split(/\s{2,}/);
+  const looksRow = rawLines.filter(l => l.trim()).slice(0, 6).filter(l => {
+    const f = splitRow(l).filter(x => x.trim());
+    return f.length >= 5 && f.filter(x => x.trim().startsWith('$')).length >= 2;
+  }).length;
+
+  if (looksRow >= 1) {
+    // ROW MODE: one player per line. Fields: name, pos, [team], age, start, end, [years], $total, $aav
+    const players = [];
+    rawLines.forEach(line => {
+      if (!line.trim()) return;
+      const f = splitRow(line).map(x => x.trim()).filter(x => x !== '');
+      if (f.length < 3) return;
+      const moneys = f.filter(x => x.startsWith('$')).map(parseMoney);
+      const nonMoney = f.filter(x => !x.startsWith('$'));
+      const name = (nonMoney[0] || '').replace(/\s+[a-z]$/, '').trim();
+      let pos = '', team = '', age = null, start = null, end = null, years = null;
+      for (let k = 1; k < nonMoney.length; k++) {
+        const v = nonMoney[k];
+        if (!pos && SALARY_POS.has(v.toUpperCase())) { pos = v.toUpperCase(); continue; }
+        if (/^(19|20)\d\d$/.test(v)) { if (start === null) start = parseInt(v); else if (end === null) end = parseInt(v); continue; }
+        if (/^\d{1,2}$/.test(v)) { if (age === null) age = parseInt(v); else if (years === null) years = parseInt(v); continue; }
+        if (/[A-Za-z]/.test(v) && !team) { team = v.replace(/^[^A-Za-z]+/, '').trim(); continue; }
+      }
+      if (name) players.push({ name, pos, team, age, start, end, years, total: moneys[0] ?? null, aav: moneys[1] ?? null });
+    });
+    return players;
+  }
+
+  // NEWLINE MODE: each field on its own line; two $ lines anchor each block.
+  const lines = rawLines.map(l => l.trim());
   const players = [];
   let i = 0;
   while (i < lines.length) {
     if (!lines[i]) { i++; continue; }
-    // NAME line (strip a trailing stray single letter like "Soto i")
     const name = lines[i].replace(/\s+[a-z]$/, '').trim();
     i++;
     const blk = { pos:'', team:'', age:null, start:null, end:null, years:null, total:null, aav:null };
     const moneys = [];
     while (i < lines.length) {
-      if (moneys.length >= 2) break;            // two $ = block complete
+      if (moneys.length >= 2) break;
       const ln = lines[i];
       if (ln === '') { i++; continue; }
       if (ln.startsWith('$')) { moneys.push(parseMoney(ln)); i++; continue; }
       if (SALARY_POS.has(ln)) { if (!blk.pos) blk.pos = ln; i++; continue; }
-      if (/^(19|20)\d\d$/.test(ln)) {           // 4-digit year
+      if (/^(19|20)\d\d$/.test(ln)) {
         if (blk.start === null) blk.start = parseInt(ln);
         else if (blk.end === null) blk.end = parseInt(ln);
         i++; continue;
       }
-      if (/^\d{1,2}$/.test(ln)) {                // small number = age then years
+      if (/^\d{1,2}$/.test(ln)) {
         if (blk.age === null) blk.age = parseInt(ln);
         else if (blk.years === null) blk.years = parseInt(ln);
         i++; continue;
       }
-      if (/[A-Za-z]/.test(ln)) {                 // team line (strip prefix junk)
+      if (/[A-Za-z]/.test(ln)) {
         const team = ln.replace(/^[^A-Za-z]+/, '').trim();
         if (!blk.team) blk.team = team;
         i++; continue;
       }
-      i++;                                        // unknown line, skip
+      i++;
     }
     blk.total = moneys[0] ?? null;
     blk.aav = moneys[1] ?? null;
@@ -4306,7 +4338,7 @@ $765,000,000
 $51,000,000
 ..." style="font-family:monospace;font-size:.7rem"></textarea>
     <button class="btn btn-amber btn-block mt" onclick="parseSalaryData()">Parse & save</button>
-    <button class="btn btn-ghost btn-block mt" onclick="renderActive();closeModal()">Cancel</button>`);
+    <button class="btn btn-ghost btn-block mt" onclick="closeModal();renderActive()">Cancel</button>`);
   setTimeout(()=>$('sal-paste')?.focus(), 100);
 };
 window.parseSalaryData = function() {
@@ -4328,7 +4360,7 @@ window.parseSalaryData = function() {
   openModal(`<div class="h2">✓ ${parsed.length} salaries saved</div>
     <p class="sub mb">${withAav} have an AAV value (counts vs cap). Sample:</p>
     <div class="card card-tight"><div class="sub" style="font-size:.75rem">${sample}</div></div>
-    <button class="btn btn-block mt" onclick="renderActive();closeModal()">Done</button>`);
+    <button class="btn btn-block mt" onclick="closeModal();renderActive()">Done</button>`);
 };
 window.openSalaryConfig = function() {
   const c = SALCFG();
