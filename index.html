@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Best Game League v7.6</title>
+<title>Best Game League v7.7</title>
 <style>
 /* ============================================================
-   BGL v7.6 — Design System
+   BGL v7.7 — Design System
    Subject: competitive fantasy baseball; hook = best single game/week
    Palette: stadium-at-night
    ============================================================ */
@@ -342,7 +342,7 @@ body {
 <div class="topbar">
   <div class="brand" onclick="go('home')">
     <span>BGL<span class="mark">.</span></span>
-    <span class="ver">v7.6</span>
+    <span class="ver">v7.7</span>
   </div>
   <div class="topbar-right">
     <button class="league-chip" id="league-chip" onclick="openLeagueSwitcher()" title="Change league or sport"></button>
@@ -1555,7 +1555,10 @@ async function computePoolPoints(force, progressFn) {
 async function resolveMlbIds(logFn, progressFn) {
   const api = SP().statsApi;
   if (api === 'mlb') return resolveIds(logFn, progressFn, mlbLookup, 'MLB');
-  if (api === 'nba') return resolveIds(logFn, progressFn, nbaLookup, 'NBA');
+  if (api === 'nba') {
+    logFn?.('NBA stats provider is not yet integrated — players cannot be auto-mapped to NBA IDs. ESPN ADP/roster data still works; live NBA stats are pending.', 'err');
+    return { mapped: 0, failed: LG().playerPool.length, failures: [] };
+  }
   logFn?.(`No stat provider for ${SP().label}`, 'err');
   return { mapped: 0, failed: 0, failures: [] };
 }
@@ -3137,6 +3140,12 @@ function viewPlayersReal() {
    LOCAL-ONLY extras list (not synced to Firebase, so the doc stays small). */
 window.loadExtraPlayer = async function(name) {
   if (!name) return;
+  if (SP().statsApi !== 'mlb') {
+    openModal(`<div class="h2">Not available for ${SP().label}</div>
+      <p class="sub mb">Loading individual players by search is currently only wired for MLB. For ${SP().label}, re-pull the full pool from Settings instead.</p>
+      <button class="btn btn-ghost btn-block" onclick="closeModal()">Close</button>`);
+    return;
+  }
   openModal(`<div class="h2">Searching MLB…</div><div class="spinner"></div>
     <p class="sub" style="text-align:center">Looking for "${esc(name)}"</p>`);
   try {
@@ -3685,12 +3694,31 @@ function viewSettings() {
 
     <div class="card" style="border-color:${STATE.activeLeagueDoc?'var(--good)':'var(--line)'}">
       <div class="h2">League</div>
-      ${STATE.activeLeagueDoc
-        ? `<p class="sub mb">You're in <b class="amber">${esc(LG().leagueName)}</b> — shared data syncs live.</p>
-           <button class="btn btn-ghost btn-block mt" onclick="forcePushLeague()">⬆ Force-sync my data to Firebase</button>
-           <button class="btn btn-ghost btn-block mt" onclick="leaveLeague()">Leave / switch league</button>`
-        : `<p class="sub mb">Not in a synced league (local only). ${LG().teams.length||LG().draft.complete?'You have local teams/draft that are not synced yet — bind to a League ID to push them up.':'Join one to share teams & draft with your group.'}</p>
-           <button class="btn btn-block" onclick="bindToLeaguePrompt()">${LG().teams.length||LG().draft.complete?'Bind & sync to a League ID':'Join a league'}</button>`}
+      ${(() => {
+        if (!STATE.activeLeagueDoc) {
+          return `<p class="sub mb">Not in a synced league (local only). ${LG().teams.length||LG().draft.complete?'You have local teams/draft that are not synced yet — bind to a League ID to push them up.':'Join one to share teams & draft with your group.'}</p>
+            <button class="btn btn-block" onclick="bindToLeaguePrompt()">${LG().teams.length||LG().draft.complete?'Bind & sync to a League ID':'Join a league'}</button>`;
+        }
+        // which 5-digit ID corresponds to the doc this device is bound to?
+        const boundDoc = STATE.activeLeagueDoc;
+        const matchEntry = Object.entries(STATE.approvals||{}).find(([k,a]) => (a.leagueDocId||('league_'+k)) === boundDoc);
+        const myId = matchEntry ? matchEntry[0] : null;
+        // any 5-digit approvals whose doc DOESN'T match where we're writing = mismatch
+        const numericIds = Object.keys(STATE.approvals||{}).filter(k => /^\d{5}$/.test(k));
+        const mismatch = myId == null && numericIds.length > 0;
+        return `
+          <p class="sub mb">You're in <b class="amber">${esc(LG().leagueName)}</b> — shared data syncs live.</p>
+          ${myId ? `<div style="text-align:center;padding:.6rem;background:var(--field-2);border-radius:8px;margin-bottom:.6rem">
+            <div class="sub" style="font-size:.62rem;letter-spacing:2px">SHARE THIS LEAGUE ID</div>
+            <div class="display amber" style="font-size:2rem;letter-spacing:6px">${myId}</div>
+          </div>` : ''}
+          ${mismatch ? `<div class="card card-tight mb" style="border-color:var(--bad)">
+            <p class="sub" style="font-size:.7rem;color:var(--bad)">⚠ Your data is syncing to <b>${esc(boundDoc)}</b>, but your League ID(s) point to a different doc — that's why members joining by ID see nothing. Push your data to the correct 5-digit ID below.</p>
+          </div>` : ''}
+          <button class="btn ${mismatch?'btn-amber':'btn-ghost'} btn-block mt" onclick="bindToLeaguePrompt()">⬆ Push my data to a 5-digit League ID</button>
+          <button class="btn btn-ghost btn-block mt" onclick="forcePushLeague()">Re-sync to current doc</button>
+          <button class="btn btn-ghost btn-block mt" onclick="leaveLeague()">Leave / switch league</button>`;
+      })()}
     </div>
 
     <div class="card" style="border-color:${unlocked?'var(--amber)':'var(--line)'}">
