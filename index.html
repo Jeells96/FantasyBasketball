@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Best Game League v7.4</title>
+<title>Best Game League v7.5</title>
 <style>
 /* ============================================================
-   BGL v7.4 — Design System
+   BGL v7.5 — Design System
    Subject: competitive fantasy baseball; hook = best single game/week
    Palette: stadium-at-night
    ============================================================ */
@@ -342,7 +342,7 @@ body {
 <div class="topbar">
   <div class="brand" onclick="go('home')">
     <span>BGL<span class="mark">.</span></span>
-    <span class="ver">v7.4</span>
+    <span class="ver">v7.5</span>
   </div>
   <div class="topbar-right">
     <button class="league-chip" id="league-chip" onclick="openLeagueSwitcher()" title="Change league or sport"></button>
@@ -734,13 +734,17 @@ function subscribeLeague(docId) {
   let firstSnap = true;
   _leagueUnsub = onSnapshot(doc(db, 'leagues', docId), (snap) => {
     if (snap.exists() && snap.data().league) {
-      applyLeague(snap.data().league);
+      const incoming = snap.data().league;
+      // adopt the league's sport so the joiner sees the data even if they picked a
+      // different sport at the gate (the league doc isn't sport-namespaced).
+      if (incoming.sport && STATE.leagues[incoming.sport] && STATE.sport !== incoming.sport) {
+        STATE.sport = incoming.sport;
+      }
+      applyLeague(incoming);
       saveLocal();
       renderActive();
       if (typeof ensurePoolPoints === 'function') ensurePoolPoints();
     } else if (firstSnap) {
-      // Doc is empty or missing. If THIS device has no local teams either, the
-      // commissioner hasn't pushed their setup yet — tell the user plainly.
       const haveLocal = (LG().teams && LG().teams.length) || (LG().draft && LG().draft.picks && LG().draft.picks.length);
       if (!haveLocal) {
         toast('Joined, but this league has no data yet — the commissioner needs to sync from their device.', 'err');
@@ -4235,7 +4239,7 @@ window.confirmBindLeague = function() {
   saveLeague({}).then(() => { toast('Synced to Firebase', 'ok'); renderActive(); });
 };
 /* Force-push current local league data to Firebase (manual re-sync). */
-window.forcePushLeague = function() {
+window.forcePushLeague = async function() {
   if (!STATE.activeLeagueDoc) { toast('Not bound to a league yet', 'err'); return; }
   const p = leaguePayload();
   const teamN = (p.teams||[]).length;
@@ -4243,9 +4247,28 @@ window.forcePushLeague = function() {
   if (teamN === 0 && pickN === 0) {
     toast('Nothing to sync — no teams or draft on this device', 'err'); return;
   }
-  saveLeague({ silent:true }).then(() => {
-    toast(`Synced ${teamN} teams, ${pickN} picks to Firebase`, 'ok');
-  });
+  const docId = STATE.activeLeagueDoc;
+  try {
+    await setDoc(doc(db, 'leagues', docId), { league: stripUndefined(p) }, { merge: true });
+    // READ BACK to confirm the write actually persisted to Firebase
+    const check = await getDoc(doc(db, 'leagues', docId));
+    const back = check.exists() ? check.data()?.league : null;
+    const backTeams = back?.teams?.length || 0;
+    openModal(`<div class="h2">${backTeams>0?'✓ Sync confirmed':'⚠ Sync problem'}</div>
+      <p class="sub mb">Wrote to doc: <b>${esc(docId)}</b></p>
+      <div class="card card-tight"><div class="sub" style="font-size:.74rem">
+        Sent: ${teamN} teams, ${pickN} picks<br>
+        Read back from Firebase: <b class="${backTeams>0?'amber':'cell-neg'}">${backTeams} teams</b><br>
+        Sport: ${esc(p.sport)}
+      </div></div>
+      ${backTeams>0
+        ? `<p class="sub mt" style="font-size:.72rem">Data is on Firebase. On the other device, make sure it selected the <b>same sport (${esc(p.sport)})</b> and the same League ID, then rejoin.</p>`
+        : `<p class="sub mt" style="font-size:.72rem;color:var(--bad)">The write didn't persist — likely the Firestore rule is blocking writes. Publish the open rule and try again.</p>`}
+      <button class="btn btn-block mt" onclick="closeModal()">Done</button>`);
+  } catch(e) {
+    toast('Sync failed: ' + (e?.code || e?.message || 'unknown'), 'err');
+    console.error('forcePush error:', e);
+  }
 };
 
 /* ---- FAILED MAPPINGS — see & fix unmapped players ---- */
@@ -4344,7 +4367,8 @@ window.doPullPool = async function() {
         adp: Math.round(adp * 10) / 10,
         seasonPts: seasonPointsFromEspn(pl),   // 0 until MLB stats are pulled
         owned: Math.round((pl.ownership?.percentOwned || 0) * 10) / 10,
-        injured: !!pl.injured,
+        injured: !!pl.injured || (pl.injuryStatus && pl.injuryStatus !== 'ACTIVE' && pl.injuryStatus !== 'NORMAL' && pl.injuryStatus !== 'INJURY_STATUS_NORMAL'),
+        injuryStatus: pl.injuryStatus || null,
         mlbId: null,
       };
     }).filter(p => p.name);
@@ -5901,7 +5925,9 @@ async function refreshTeamMeta() {
           const person = byId[pl.mlbId];
           if (person) {
             pl.mlbTeamId = person.currentTeam?.id || pl.mlbTeamId;
-            if (person.active === true && pl.injured) pl.injured = false;
+            // NOTE: do NOT clear pl.injured here. MLB's person.active means "not retired",
+            // not "healthy" — injured players are still active, so this would wrongly wipe
+            // the IL tag from nearly everyone. Injury status comes from the ESPN pool pull.
           }
         });
       }
