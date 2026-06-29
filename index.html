@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Best Game League v7.9</title>
+<title>Best Game League v8.0</title>
 <style>
 /* ============================================================
-   BGL v7.9 — Design System
+   BGL v8.0 — Design System
    Subject: competitive fantasy baseball; hook = best single game/week
    Palette: stadium-at-night
    ============================================================ */
@@ -342,7 +342,7 @@ body {
 <div class="topbar">
   <div class="brand" onclick="go('home')">
     <span>BGL<span class="mark">.</span></span>
-    <span class="ver">v7.9</span>
+    <span class="ver">v8.0</span>
   </div>
   <div class="topbar-right">
     <button class="league-chip" id="league-chip" onclick="openLeagueSwitcher()" title="Change league or sport"></button>
@@ -882,6 +882,15 @@ function applyLeague(league) {
   if (league.gameLogs) lg.gameLogs = league.gameLogs;
   if (league.scheduleCache) lg.scheduleCache = league.scheduleCache;
   if (league.irStash) lg.irStash = league.irStash;
+  // MIGRATION: contracts signed while the year bug returned 2027 have signedYear in the
+  // future. Pull any contract whose signedYear is later than the current season back so
+  // year 1 of the deal lands on the current season (where it belongs).
+  const csy = (lg.seasonYear || new Date().getFullYear());
+  if (lg.contracts) {
+    Object.values(lg.contracts).forEach(c => {
+      if (c && c.signedYear && c.signedYear > csy) c.signedYear = csy;
+    });
+  }
 }
 
 async function saveMaster() {
@@ -2501,62 +2510,83 @@ function renderTeamContracts(teamId, isMine) {
   if (!roster.length) return '<div class="card"><p class="sub">No players on this roster yet.</p></div>';
   const locked = rostersLocked() || !signingOpen();
   const startYr = currentSeasonYear();
-  const YEARS = 8;
+  const YEARS = 7;
   const years = Array.from({length:YEARS}, (_,i) => startYr + i);
   const capGrowth = (SALCFG().capGrowthPct||0)/100;
 
-  const ranked = [...roster].sort((a,b) => {
-    const ca = playerContract(a), cb = playerContract(b);
-    const ra = ca ? 0 : (isArbPlayer(a) ? 2 : 1);
-    const rb = cb ? 0 : (isArbPlayer(b) ? 2 : 1);
-    if (ra !== rb) return ra - rb;
-    return (playerCapHit(b)||0) - (playerCapHit(a)||0);
+  // ORDER BY STARTER POSITION: walk the lineup slots in order, placing each assigned
+  // player first (in slot order), then any remaining roster players (bench) after.
+  const week = activeWeek();
+  const lu = getLineup(teamId, week);
+  const slotOrder = activeLineupSlots();
+  const assignments = lu.assignments || {};
+  const ordered = [];
+  const seen = new Set();
+  // assigned starters, in slot order
+  slotOrder.forEach(slot => {
+    const pid = assignments[slot];
+    if (pid && !seen.has(String(pid))) {
+      const p = roster.find(x => String(x.espnId)===String(pid));
+      if (p) { ordered.push(p); seen.add(String(pid)); }
+    }
   });
+  // any other assignment keys not in slotOrder (safety)
+  Object.values(assignments).forEach(pid => {
+    if (pid && !seen.has(String(pid))) {
+      const p = roster.find(x => String(x.espnId)===String(pid));
+      if (p) { ordered.push(p); seen.add(String(pid)); }
+    }
+  });
+  // bench: remaining roster players
+  roster.forEach(p => { if (!seen.has(String(p.espnId))) { ordered.push(p); seen.add(String(p.espnId)); } });
+  const ranked = ordered;
 
   const colTotal = years.map(()=>0);
   const bodyRows = ranked.map(p => {
     const c = playerContract(p);
     const arb = isArbPlayer(p);
+    const aav = importedAAV(p);
+    const rec = salaryDB()[normName(p.name)];
+    const age = rec?.age;
     const cells = years.map((yr,idx) => {
       let val = 0, txt = '';
       if (c) {
         val = contractSalaryForYear(c, yr);
         txt = val>0 ? fmtMoney(val) : '';
       } else if (arb) {
-        // arb fills EVERY year at the flat arb rate (placeholder; never escalates/locks)
         val = SALCFG().arbSalary; txt = fmtMoney(val);
       } else if (idx === 0) {
-        val = playerCapHit(p, yr); txt = fmtMoney(val);   // unsigned placeholder, this yr
+        val = playerCapHit(p, yr); txt = fmtMoney(val);
       }
       colTotal[idx] += val;
       const color = idx===0 ? 'var(--chalk)' : (arb ? 'var(--sage-dim)' : 'var(--sage)');
-      return `<td class="r num" style="font-size:.64rem;color:${val>0?color:'transparent'}">${txt||'·'}</td>`;
+      return `<td class="r num" style="font-size:.62rem;color:${val>0?color:'transparent'}">${txt||'·'}</td>`;
     }).join('');
 
-    // inline term box (your team only, when not locked, and only for signable players)
     let termBox;
     if (arb) {
-      termBox = `<span class="sub" style="font-size:.58rem">arb</span>`;
+      termBox = `<span class="sub" style="font-size:.56rem">arb</span>`;
     } else if (isMine && !locked) {
       const cur = c ? c.termYears : '';
-      termBox = `<input class="input" type="number" min="0" max="${SALCFG().maxTerm}" value="${cur}" placeholder="yrs"
-        style="width:42px;text-align:center;font-size:.62rem;padding:.15rem"
-        onchange="setContractTerm('${p.espnId}',this.value)" title="Type contract length in years">`;
+      termBox = `<input class="input" type="number" min="0" max="${SALCFG().maxTerm}" value="${cur}" placeholder="yr"
+        style="width:38px;text-align:center;font-size:.6rem;padding:.15rem"
+        onchange="setContractTerm('${p.espnId}',this.value)" title="Contract length in years">`;
     } else {
-      termBox = c ? `<span class="sub" style="font-size:.58rem">${c.termYears}yr</span>` : '';
+      termBox = c ? `<span class="sub" style="font-size:.56rem">${c.termYears}yr</span>` : '';
     }
 
     return `<tr>
-      <td style="font-size:.68rem;white-space:nowrap">
-        <span class="plink" onclick="showPlayer('${p.espnId}')">${esc(p.name.length>13?p.name.slice(0,12)+'…':p.name)}</span>
+      <td style="font-size:.66rem;white-space:nowrap">
+        <span class="plink" onclick="showPlayer('${p.espnId}')">${esc(p.name.length>11?p.name.slice(0,10)+'…':p.name)}</span>
         ${c?'<span class="ps-tag" style="display:inline;background:var(--good)">S</span>':''}
       </td>
+      <td class="r sub" style="font-size:.58rem">${age||'·'}</td>
+      <td class="r num" style="font-size:.58rem;color:var(--sage)">${aav!=null?fmtMoney(aav):'·'}</td>
       <td style="text-align:center">${termBox}</td>
       ${cells}
     </tr>`;
   }).join('');
 
-  // dead cap + money per year into totals
   const dead = (LG().deadCap||{})[teamId] || [];
   const deadByYear = years.map(yr => dead.filter(d=>d.year===yr).reduce((s,d)=>s+d.amount,0));
   deadByYear.forEach((v,i)=>colTotal[i]+=v);
@@ -2568,26 +2598,26 @@ function renderTeamContracts(teamId, isMine) {
     });
   });
 
-  const yearHead = years.map((yr,i) => `<th class="r" style="font-size:.62rem;${i===0?'color:var(--amber)':''}">${yr}</th>`).join('');
-  const totalRow = colTotal.map((v,i) => `<td class="r num" style="font-size:.62rem;font-weight:700;${i===0?'color:var(--amber)':''}">${fmtMoney(v)}</td>`).join('');
-  const deadRow = deadByYear.some(v=>v>0) ? `<tr><td class="sub" style="font-size:.6rem" colspan="2">dead cap</td>${deadByYear.map(v=>`<td class="r num" style="font-size:.6rem;color:var(--bad)">${v>0?fmtMoney(v):'·'}</td>`).join('')}</tr>` : '';
+  const yearHead = years.map((yr,i) => `<th class="r" style="font-size:.6rem;${i===0?'color:var(--amber)':''}">${yr}</th>`).join('');
+  const totalRow = colTotal.map((v,i) => `<td class="r num" style="font-size:.6rem;font-weight:700;${i===0?'color:var(--amber)':''}">${fmtMoney(v)}</td>`).join('');
+  const deadRow = deadByYear.some(v=>v>0) ? `<tr><td class="sub" style="font-size:.58rem" colspan="4">dead cap</td>${deadByYear.map(v=>`<td class="r num" style="font-size:.58rem;color:var(--bad)">${v>0?fmtMoney(v):'·'}</td>`).join('')}</tr>` : '';
   const capRow = years.map((yr,i) => {
     const cap = Math.round(leagueCap()*Math.pow(1+capGrowth,i));
     const space = cap - colTotal[i];
-    return `<td class="r num" style="font-size:.62rem;${space<0?'color:var(--bad)':'color:var(--good)'}">${fmtMoney(space)}</td>`;
+    return `<td class="r num" style="font-size:.6rem;${space<0?'color:var(--bad)':'color:var(--good)'}">${fmtMoney(space)}</td>`;
   }).join('');
 
   return `
     <div class="divlabel">Contract table · ${esc(teamById(teamId).name)}</div>
-    <p class="sub" style="font-size:.64rem;margin-bottom:.4rem">Type a number in the <b>yrs</b> box to sign a player for that many years (blank/0 = unsigned). Signed (S) fills every contract year; arb fills at the flat arb rate. <b>Total</b> = team salary that year; <b>Space</b> = cap room (green = money to spend).</p>
+    <p class="sub" style="font-size:.64rem;margin-bottom:.4rem">In starter-position order. Type a number in the <b>yr</b> box to sign a player (blank/0 = unsigned). Signed (S) fills every contract year; arb fills at the flat arb rate. <b>AAV</b> = base salary (see your discount). <b>Total</b>/<b>Space</b> = team salary and cap room per year (green = money to spend).</p>
     <div class="card card-tight" style="overflow-x:auto">
-      <table class="tbl" style="min-width:560px">
-        <thead><tr><th style="font-size:.62rem">Player</th><th style="font-size:.6rem">Term</th>${yearHead}</tr></thead>
+      <table class="tbl" style="min-width:600px">
+        <thead><tr><th style="font-size:.6rem">Player</th><th class="r" style="font-size:.58rem">Age</th><th class="r" style="font-size:.58rem">AAV</th><th style="font-size:.58rem">Term</th>${yearHead}</tr></thead>
         <tbody>
           ${bodyRows}
-          <tr style="border-top:2px solid var(--amber)"><td style="font-size:.62rem;font-weight:700" colspan="2">TOTAL</td>${totalRow}</tr>
+          <tr style="border-top:2px solid var(--amber)"><td style="font-size:.6rem;font-weight:700" colspan="4">TOTAL</td>${totalRow}</tr>
           ${deadRow}
-          <tr><td class="sub" style="font-size:.62rem" colspan="2">cap space</td>${capRow}</tr>
+          <tr><td class="sub" style="font-size:.6rem" colspan="4">cap space</td>${capRow}</tr>
         </tbody>
       </table>
     </div>
