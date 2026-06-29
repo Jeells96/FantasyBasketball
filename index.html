@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Best Game League v7.2</title>
+<title>Best Game League v7.4</title>
 <style>
 /* ============================================================
-   BGL v7.2 — Design System
+   BGL v7.4 — Design System
    Subject: competitive fantasy baseball; hook = best single game/week
    Palette: stadium-at-night
    ============================================================ */
@@ -342,7 +342,7 @@ body {
 <div class="topbar">
   <div class="brand" onclick="go('home')">
     <span>BGL<span class="mark">.</span></span>
-    <span class="ver">v7.2</span>
+    <span class="ver">v7.4</span>
   </div>
   <div class="topbar-right">
     <button class="league-chip" id="league-chip" onclick="openLeagueSwitcher()" title="Change league or sport"></button>
@@ -731,15 +731,23 @@ let _leagueUnsub = null;
 function subscribeLeague(docId) {
   if (!fbReady || !docId) return;
   if (_leagueUnsub) { try { _leagueUnsub(); } catch(e){} _leagueUnsub = null; }
+  let firstSnap = true;
   _leagueUnsub = onSnapshot(doc(db, 'leagues', docId), (snap) => {
     if (snap.exists() && snap.data().league) {
       applyLeague(snap.data().league);
       saveLocal();
       renderActive();
-      // pool may have just arrived — compute points if needed
       if (typeof ensurePoolPoints === 'function') ensurePoolPoints();
+    } else if (firstSnap) {
+      // Doc is empty or missing. If THIS device has no local teams either, the
+      // commissioner hasn't pushed their setup yet — tell the user plainly.
+      const haveLocal = (LG().teams && LG().teams.length) || (LG().draft && LG().draft.picks && LG().draft.picks.length);
+      if (!haveLocal) {
+        toast('Joined, but this league has no data yet — the commissioner needs to sync from their device.', 'err');
+      }
     }
-  }, (e) => { /* denied = not approved; stays local */ });
+    firstSnap = false;
+  }, (e) => { console.error('subscribeLeague snapshot error:', e?.code, e); });
 }
 
 /* save LOCAL always; save MASTER only when unlocked (commissioner) */
@@ -1052,7 +1060,8 @@ function teamSalaryTotal(teamId, year) {
   (LG().moneyTrades || []).forEach(mt => {
     const yrs = mt.years || 1, start = mt.startYear || year;
     if (year >= start && year < start + yrs) {
-      const per = mt.perYear != null ? mt.perYear : Math.round(mt.amount / yrs);
+      const idx = year - start;
+      const per = mt.perYearList ? (mt.perYearList[idx]||0) : (mt.perYear != null ? mt.perYear : Math.round(mt.amount / yrs));
       if (String(mt.to) === String(teamId)) total -= per;
       if (String(mt.from) === String(teamId)) total += per;
     }
@@ -2336,6 +2345,7 @@ function viewMyTeam() {
     <div class="row" style="gap:.35rem;margin-top:.5rem">
       <button class="btn btn-sm ${teamViewMode==='lineup'?'btn-amber':'btn-ghost'}" onclick="setTeamView('lineup')">📋 Lineup</button>
       <button class="btn btn-sm ${teamViewMode==='stats'?'btn-amber':'btn-ghost'}" onclick="setTeamView('stats')">📊 Stats</button>
+      ${LSET().useSalaryCap?`<button class="btn btn-sm ${teamViewMode==='contracts'?'btn-amber':'btn-ghost'}" onclick="setTeamView('contracts')">📝 Contracts</button>`:''}
     </div>
 
     <div class="card" style="padding:.5rem .75rem;margin-top:.5rem">
@@ -2359,6 +2369,7 @@ function viewMyTeam() {
       <span class="sub" style="font-size:.72rem">👁 Read-only — you can view but not edit another team's lineup.</span>
     </div>`}
 
+    ${teamViewMode === 'contracts' ? '' : `
     <div class="card mt" style="border-color:var(--amber)">
       <div class="row-between" style="margin-bottom:.5rem">
         <button class="btn btn-sm btn-ghost" onclick="changeWeek(-1)" ${week<=1?'disabled':''}>← Wk ${week-1}</button>
@@ -2375,9 +2386,11 @@ function viewMyTeam() {
           <div class="sub" style="font-size:.6rem">WEEK TOTAL</div>
         </div>
       </div>
-    </div>
+    </div>`}
 
-    ${teamViewMode === 'stats'
+    ${teamViewMode === 'contracts'
+      ? renderTeamContracts(viewingId, isMine)
+      : teamViewMode === 'stats'
       ? renderTeamStats(roster, slotOf)
       : `${!haveLogs ? `<div class="card"><p class="sub">No game data cached yet. Pull stats to see daily scoring.
           <button class="btn btn-sm btn-block mt" onclick="pullAllStats()">Pull MLB stats for my roster</button></p></div>`
@@ -2458,6 +2471,78 @@ function renderTeamStats(roster, slotOf) {
 }
 window.setTeamView = function(m) { teamViewMode = m; renderActive(); };
 
+/* CONTRACTS view: per-player contract status + sign/edit term (locked at deadline). */
+function renderTeamContracts(teamId, isMine) {
+  const roster = teamRoster(teamId);
+  if (!roster.length) return '<div class="card"><p class="sub">No players on this roster yet.</p></div>';
+  const locked = rostersLocked() || !signingOpen();
+  const yr = currentSeasonYear();
+  const spent = teamSalaryTotal(teamId, yr);
+  const cap = leagueCap();
+
+  // sort: signed first, then unsigned-with-AAV, then arb
+  const ranked = [...roster].sort((a,b) => {
+    const rank = p => playerContract(p) ? 0 : (importedAAV(p)!=null ? 1 : 2);
+    return rank(a) - rank(b) || (playerCapHit(b)||0) - (playerCapHit(a)||0);
+  });
+
+  const rows = ranked.map(p => {
+    const c = playerContract(p);
+    const arb = isArbPlayer(p);
+    const hit = playerCapHit(p, yr);
+    let right;
+    if (c) {
+      const left = (c.signedYear + c.termYears - 1) - yr + 1;
+      right = `<div style="text-align:right">
+        <div class="amber" style="font-weight:700;font-size:.8rem">${fmtMoney(hit)}</div>
+        <div class="sub" style="font-size:.62rem">${c.termYears}yr · ${left>0?`${left} left`:'final yr'}</div>
+        ${isMine && !locked ? `<button class="btn btn-sm btn-ghost mt" style="font-size:.6rem" onclick="openSignModal('${p.espnId}')">Edit/Re-sign</button>` : ''}
+      </div>`;
+    } else if (arb) {
+      right = `<div style="text-align:right">
+        <div style="font-weight:700;font-size:.8rem">${fmtMoney(hit)}</div>
+        <div class="sub" style="font-size:.62rem">arb · no term</div>
+      </div>`;
+    } else {
+      // unsigned with AAV → can sign
+      right = `<div style="text-align:right">
+        <div style="font-weight:700;font-size:.8rem">${fmtMoney(hit)}</div>
+        <div class="sub" style="font-size:.62rem">unsigned</div>
+        ${isMine && !locked ? `<button class="btn btn-sm btn-amber mt" style="font-size:.6rem" onclick="openSignModal('${p.espnId}')">Sign</button>` : ''}
+      </div>`;
+    }
+    return `<div class="row-between" style="padding:.5rem 0;border-bottom:1px solid rgba(42,61,48,.4);align-items:flex-start">
+      <div style="flex:1">
+        <span class="plink" onclick="showPlayer('${p.espnId}')" style="font-size:.85rem">${esc(p.name)}</span>
+        ${c?'<span class="ps-tag" style="display:inline;background:var(--good)">signed</span>':arb?'<span class="ps-tag" style="display:inline">arb</span>':''}
+        <div class="sub" style="font-size:.62rem">${esc((p.eligible||[]).join('/'))}${p.injured?' · IL':''}</div>
+      </div>
+      ${right}
+    </div>`;
+  }).join('');
+
+  // dead cap currently on this team's books
+  const dead = (LG().deadCap||{})[teamId] || [];
+  const deadThisYr = dead.filter(d => d.year >= yr);
+  const deadHtml = deadThisYr.length ? `<div class="divlabel mt">Dead cap</div>
+    <div class="card card-tight">${deadThisYr.map(d => `<div class="row-between" style="font-size:.72rem"><span class="sub">${esc(d.name||'player')} (${d.year})</span><b class="cell-neg">${fmtMoney(d.amount)}</b></div>`).join('')}</div>` : '';
+
+  return `
+    <div class="card" style="border-color:${spent>cap?'var(--bad)':'var(--good)'}">
+      <div class="row-between">
+        <span class="sub">Cap ${yr}</span>
+        <span class="${spent>cap?'cell-neg':'amber'}" style="font-weight:700">${fmtMoney(spent)} / ${fmtMoney(cap)}</span>
+      </div>
+      ${locked ? `<p class="sub mt" style="font-size:.7rem;color:var(--bad)">🔒 Contracts are locked (past the trade deadline / playoffs). No signing or edits.</p>`
+               : isMine ? `<p class="sub mt" style="font-size:.7rem">Sign players to lock their salary. Year 1 gets the ${SALCFG().signingDiscount}× discount, then +${(SALCFG().escalatorGrowth*100)}%/yr. Locks at the trade deadline (week ${LSET().tradeDeadlineWeek||20}).</p>`
+               : `<p class="sub mt" style="font-size:.7rem">👁 Viewing ${esc(teamById(teamId).name)}'s contracts.</p>`}
+    </div>
+    <div class="divlabel">Roster contracts</div>
+    <div class="card card-tight">${rows}</div>
+    ${deadHtml}
+    ${isMine && !locked ? `<p class="sub mt" style="font-size:.66rem;text-align:center">Tap Sign/Edit to set or change a contract length. Dropping a signed player costs 2× their current salary in dead cap.</p>` : ''}`;
+}
+
 /* 10-year salary lookahead for a team: each future season's committed cap hit. */
 function renderSalaryLookahead(teamId) {
   const startYr = currentSeasonYear();
@@ -2480,7 +2565,7 @@ function renderSalaryLookahead(teamId) {
     ((LG().deadCap||{})[teamId]||[]).forEach(d => { if (d.year===yr) committed += d.amount; });
     (LG().moneyTrades||[]).forEach(mt => {
       const yrs=mt.years||1, start=mt.startYear||startYr;
-      if (yr>=start && yr<start+yrs){ const per=mt.perYear!=null?mt.perYear:Math.round(mt.amount/yrs);
+      if (yr>=start && yr<start+yrs){ const idx=yr-start; const per=mt.perYearList?(mt.perYearList[idx]||0):(mt.perYear!=null?mt.perYear:Math.round(mt.amount/yrs));
         if(String(mt.to)===String(teamId))committed-=per; if(String(mt.from)===String(teamId))committed+=per; }
     });
     const cap = Math.round(cap0 * Math.pow(1+growth, i));
@@ -3337,49 +3422,54 @@ window.openSignModal = function(espnId) {
   const p = LG().playerPool.find(x=>String(x.espnId)===String(espnId));
   if (!p) return;
   if (!signingOpen()) { toast('Signing is closed (past trade deadline)', 'err'); return; }
-  const aav = importedAAV(p);
+  const existing = playerContract(p);
+  // editing a signed player uses their FROZEN baseAAV; new signing uses the import AAV
+  const aav = existing ? existing.baseAAV : importedAAV(p);
   if (aav == null) { toast('No AAV on record — cannot sign (arb player)', 'err'); return; }
   const maxT = SALCFG().maxTerm;
-  window._signTerm = 1;
-  renderSignModal(p, aav, maxT);
+  window._signTerm = existing ? existing.termYears : 1;   // pre-fill current term when editing
+  renderSignModal(p, aav, maxT, !!existing);
 };
-function renderSignModal(p, aav, maxT) {
+function renderSignModal(p, aav, maxT, editing) {
   const term = window._signTerm;
   const yr = currentSeasonYear();
-  // preview the schedule
   const rows = [];
   for (let n=1; n<=term; n++) {
     const sal = n===1 ? Math.round(aav*SALCFG().signingDiscount) : Math.round(aav*Math.pow(1+SALCFG().escalatorGrowth,n-1));
     rows.push(`<div class="row-between" style="font-size:.72rem"><span class="sub">${yr+n-1} (yr ${n})</span><b>${fmtMoney(sal)}</b></div>`);
   }
-  openModal(`<div class="h2">Sign ${esc(p.name)}</div>
-    <p class="sub mb">Base AAV ${fmtMoney(aav)}. Year 1 gets the ${SALCFG().signingDiscount}× discount, then +${(SALCFG().escalatorGrowth*100)}%/yr. Once signed, they can't be dropped without a <b>2× dead-cap</b> hit.</p>
+  openModal(`<div class="h2">${editing?'Re-sign':'Sign'} ${esc(p.name)}</div>
+    <p class="sub mb">Base AAV ${fmtMoney(aav)}${editing?' (frozen at original signing)':''}. Year 1 gets the ${SALCFG().signingDiscount}× discount, then +${(SALCFG().escalatorGrowth*100)}%/yr. Once signed, they can't be dropped without a <b>2× dead-cap</b> hit.</p>
     <label class="sub">Term: <b class="amber">${term} year${term>1?'s':''}</b> (max ${maxT})</label>
     <input type="range" min="1" max="${maxT}" value="${term}" style="width:100%" oninput="setSignTerm('${p.espnId}',this.value)">
     <div class="card card-tight mt">${rows.join('')}</div>
-    <button class="btn btn-amber btn-block mt" onclick="confirmSign('${p.espnId}')">Sign for ${term} year${term>1?'s':''}</button>
+    <button class="btn btn-amber btn-block mt" onclick="confirmSign('${p.espnId}')">${editing?'Update to':'Sign for'} ${term} year${term>1?'s':''}</button>
     <button class="btn btn-ghost btn-block mt" onclick="showPlayer('${p.espnId}')">Cancel</button>`);
 }
 window.setSignTerm = function(espnId, val) {
   window._signTerm = parseInt(val)||1;
   const p = LG().playerPool.find(x=>String(x.espnId)===String(espnId));
-  renderSignModal(p, importedAAV(p), SALCFG().maxTerm);
+  const existing = playerContract(p);
+  const aav = existing ? existing.baseAAV : importedAAV(p);
+  renderSignModal(p, aav, SALCFG().maxTerm, !!existing);
 };
 window.confirmSign = function(espnId) {
   const p = LG().playerPool.find(x=>String(x.espnId)===String(espnId));
   if (!p || !signingOpen()) { toast('Signing closed', 'err'); return; }
-  const aav = importedAAV(p);
+  const existing = playerContract(p);
+  // editing keeps the FROZEN baseAAV and original signedYear; new signing uses import + now
+  const aav = existing ? existing.baseAAV : importedAAV(p);
   if (aav == null) { toast('No AAV — cannot sign', 'err'); return; }
   LG().contracts = LG().contracts || {};
   LG().contracts[String(espnId)] = {
-    baseAAV: aav,                       // FROZEN at signing — re-imports won't change it
-    signedYear: currentSeasonYear(),
+    baseAAV: aav,                                  // frozen
+    signedYear: existing ? existing.signedYear : currentSeasonYear(),
     termYears: window._signTerm || 1,
-    teamId: myTeamId(),
+    teamId: existing ? existing.teamId : myTeamId(),
   };
   save();
   syncExtraIfRostered(espnId);
-  toast(`Signed ${p.name} for ${window._signTerm} year(s)`, 'ok');
+  toast(`${existing?'Updated':'Signed'} ${p.name} · ${window._signTerm} year(s)`, 'ok');
   closeModal();
   renderActive();
 };
@@ -3941,6 +4031,11 @@ window.saveApproval = function() {
   LG().leagueName = STATE.approvals[id].leagueName;
   saveLocal();
   subscribeLeague('league_' + id);
+  // If the commissioner already set up teams/draft locally before creating the ID,
+  // push that data up NOW so members who join immediately see it.
+  if ((LG().teams && LG().teams.length) || (LG().draft?.picks?.length)) {
+    saveLeague({ silent:true });
+  }
   const shownName = leagueName || ('League ' + id);
   openModal(`<div class="h2">League created 🎉</div>
     <p class="sub mb">You're now in this league. Share the ID with your members so they can join.</p>
@@ -4142,7 +4237,15 @@ window.confirmBindLeague = function() {
 /* Force-push current local league data to Firebase (manual re-sync). */
 window.forcePushLeague = function() {
   if (!STATE.activeLeagueDoc) { toast('Not bound to a league yet', 'err'); return; }
-  saveLeague({}).then(() => { toast('Force-synced to Firebase', 'ok'); });
+  const p = leaguePayload();
+  const teamN = (p.teams||[]).length;
+  const pickN = (p.draft?.picks||[]).length;
+  if (teamN === 0 && pickN === 0) {
+    toast('Nothing to sync — no teams or draft on this device', 'err'); return;
+  }
+  saveLeague({ silent:true }).then(() => {
+    toast(`Synced ${teamN} teams, ${pickN} picks to Firebase`, 'ok');
+  });
 };
 
 /* ---- FAILED MAPPINGS — see & fix unmapped players ---- */
@@ -5420,6 +5523,7 @@ window.newTradeProposal = function() {
   const mine = myTeamId();
   const others = LG().teams.filter(t => String(t.id)!==String(mine));
   window._trade = { to: others[0]?.id, fromPlayers:[], toPlayers:[], fromPicks:[], toPicks:[], money:[] };
+  window._moneyDraft = { dir:'fromTo', years:1, split:[0] };
   renderTradeBuilder();
 };
 function renderTradeBuilder() {
@@ -5460,23 +5564,37 @@ function renderTradeBuilder() {
       ${tr.toPicks.length?`They send: ${tr.toPicks.map(p=>`${p.year} R${p.round}`).join(', ')}`:''}
     </div>` : '';
 
+  // money draft state for the custom split UI
+  const md = window._moneyDraft || (window._moneyDraft = { dir:'fromTo', years:1, split:[0] });
+  const splitInputs = md.years > 1 ? md.split.map((v,i) =>
+    `<div class="row-between" style="gap:.4rem;align-items:center;margin-top:.3rem">
+      <span class="sub" style="font-size:.7rem;min-width:70px">${currentSeasonYear()+i}</span>
+      <input class="input" type="number" step="0.1" value="${v||''}" placeholder="$M" style="flex:1;text-align:right" oninput="setMoneySplit(${i},this.value)">
+      <span class="sub">M</span>
+    </div>`).join('') : '';
+  const splitTotal = md.years > 1 ? md.split.reduce((s,v)=>s+(parseFloat(v)||0),0) : 0;
+
   const moneySection = LSET().useSalaryCap ? `
     <div class="divlabel mt">Cash considerations</div>
-    <div class="sub" style="font-size:.7rem;margin-bottom:.4rem">Trade money in any terms. Receiving cash lowers your cap hit; sending raises it.</div>
-    <div class="row" style="gap:.4rem;align-items:center;flex-wrap:wrap">
-      <select class="select" id="money-dir" style="flex:1">
-        <option value="fromTo">I send cash →</option>
-        <option value="toFrom">← I receive cash</option>
-      </select>
-    </div>
+    <div class="sub" style="font-size:.7rem;margin-bottom:.4rem">Amounts in millions. Receiving cash lowers your cap hit; sending raises it.</div>
+    <select class="select" id="money-dir" onchange="setMoneyDir(this.value)" style="width:100%">
+      <option value="fromTo" ${md.dir==='fromTo'?'selected':''}>I send cash →</option>
+      <option value="toFrom" ${md.dir==='toFrom'?'selected':''}>← I receive cash</option>
+    </select>
     <div class="row" style="gap:.4rem;align-items:center;margin-top:.4rem">
-      <input class="input" id="money-amt" type="number" placeholder="Total $" style="flex:1">
-      <span class="sub">over</span>
-      <input class="input" id="money-years" type="number" min="1" max="10" value="1" style="width:60px;text-align:center">
-      <span class="sub">yr(s)</span>
+      <span class="sub">Spread over</span>
+      <input class="input" type="number" min="1" max="10" value="${md.years}" style="width:60px;text-align:center" onchange="setMoneyYears(this.value)">
+      <span class="sub">year(s)</span>
     </div>
+    ${md.years === 1
+      ? `<div class="row" style="gap:.4rem;align-items:center;margin-top:.4rem">
+          <input class="input" type="number" step="0.1" value="${md.split[0]||''}" placeholder="Amount" style="flex:1;text-align:right" oninput="setMoneySplit(0,this.value)">
+          <span class="sub">M</span>
+        </div>`
+      : `<div class="sub mt" style="font-size:.66rem">Enter each year (can be uneven):</div>${splitInputs}
+         <div class="row-between mt" style="font-size:.72rem"><span class="sub">Total</span><b class="amber">$${splitTotal.toFixed(1)}M</b></div>`}
     <button class="btn btn-sm btn-ghost btn-block mt" onclick="addTradeMoney()">Add cash to deal</button>
-    ${(tr.money&&tr.money.length)?`<div class="sub mt" style="font-size:.72rem">${tr.money.map((m,i)=>`${m.dir==='fromTo'?'You send':'You receive'} ${fmtMoney(m.amount)} over ${m.years}yr <span class="plink" onclick="removeTradeMoney(${i})">✕</span>`).join('<br>')}</div>`:''}
+    ${(tr.money&&tr.money.length)?`<div class="sub mt" style="font-size:.72rem">${tr.money.map((m,i)=>`${m.dir==='fromTo'?'You send':'You receive'} ${fmtMoney(m.amount)}${m.years>1?` (${m.perYearList.map(v=>'$'+(v/1e6)+'M').join('/')})`:''} <span class="plink" onclick="removeTradeMoney(${i})">✕</span>`).join('<br>')}</div>`:''}
   ` : '';
 
   openModal(`
@@ -5497,13 +5615,32 @@ function renderTradeBuilder() {
     <button class="btn btn-ghost btn-block mt" onclick="openTradeCenter()">← Back</button>
   `);
 }
+window.setMoneyDir = function(v) { window._moneyDraft.dir = v; };
+window.setMoneyYears = function(val) {
+  const md = window._moneyDraft;
+  const y = Math.max(1, Math.min(10, parseInt(val)||1));
+  const oldTotal = md.split.reduce((s,v)=>s+(parseFloat(v)||0),0);
+  md.years = y;
+  // resize split array; default to an even split of the prior total (editable after)
+  const even = oldTotal>0 ? Math.round((oldTotal/y)*10)/10 : 0;
+  md.split = Array.from({length:y}, (_,i) => md.split[i]!=null && md.split.length===y ? md.split[i] : even);
+  renderTradeBuilder();
+};
+window.setMoneySplit = function(i, val) {
+  window._moneyDraft.split[i] = val;   // keep raw; parsed on add
+  // don't re-render on every keystroke (would lose focus); totals update on next render
+};
 window.addTradeMoney = function() {
-  const dir = $('money-dir')?.value || 'fromTo';
-  const amount = parseInt(($('money-amt')?.value||'').replace(/[^0-9]/g,'')) || 0;
-  const years = Math.max(1, Math.min(10, parseInt($('money-years')?.value)||1));
-  if (amount <= 0) { toast('Enter an amount', 'err'); return; }
+  const md = window._moneyDraft;
+  const perYearM = md.split.map(v => parseFloat(v)||0);
+  const totalM = perYearM.reduce((s,v)=>s+v, 0);
+  if (totalM <= 0) { toast('Enter an amount (in millions)', 'err'); return; }
+  // convert millions → dollars
+  const perYearList = perYearM.map(m => Math.round(m * 1000000));
+  const amount = perYearList.reduce((s,v)=>s+v, 0);
   window._trade.money = window._trade.money || [];
-  window._trade.money.push({ dir, amount, years });
+  window._trade.money.push({ dir: md.dir, amount, years: md.years, perYearList });
+  window._moneyDraft = { dir:'fromTo', years:1, split:[0] };   // reset for next
   renderTradeBuilder();
 };
 window.removeTradeMoney = function(i) {
@@ -5636,7 +5773,7 @@ function executeTrade(t) {
         LG().moneyTrades.push({
           from: sender, to: receiver,
           amount: m.amount, years: m.years || 1,
-          perYear: Math.round(m.amount / (m.years || 1)),
+          perYearList: m.perYearList || null,         // uneven split, dollars per year
           startYear: currentSeasonYear(),
         });
       });
