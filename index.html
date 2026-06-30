@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Best Game League v8.4</title>
+<title>Best Game League v8.5</title>
 <style>
 /* ============================================================
-   BGL v8.4 — Design System
+   BGL v8.5 — Design System
    Subject: competitive fantasy baseball; hook = best single game/week
    Palette: stadium-at-night
    ============================================================ */
@@ -342,7 +342,7 @@ body {
 <div class="topbar">
   <div class="brand" onclick="go('home')">
     <span>BGL<span class="mark">.</span></span>
-    <span class="ver">v8.4</span>
+    <span class="ver">v8.5</span>
   </div>
   <div class="topbar-right">
     <button class="league-chip" id="league-chip" onclick="openLeagueSwitcher()" title="Change league or sport"></button>
@@ -470,8 +470,8 @@ const SPORTS = {
     label: 'Basketball',
     icon: '🏀',
     espnGame: 'fba',
-    season: 2026,
-    statSeason: 2025,            // real-stat season (NBA)
+    season: 2025,               // ESPN's most recent NBA season with data (2024-25)
+    statSeason: 2025,           // real-stat season (NBA) — matches the pull season
     rosterSize: 13,
     statsApi: 'nba',
     posMap: {1:'PG',2:'SG',3:'SF',4:'PF',5:'C',6:'G',7:'F'},
@@ -1281,6 +1281,44 @@ function seasonPointsFromEspn(pl) {
   const any = stats.find(s => s.statSourceId === 0 && s.statSplitTypeId === 0 && s.appliedTotal != null)
            || stats.find(s => s.statSourceId === 0 && s.appliedTotal != null);
   return any ? Math.round((any.appliedTotal || 0) * 10) / 10 : 0;
+}
+
+/* ESPN fantasy NBA stat IDs → our scoring keys. ESPN packs raw stats into each
+   split's `stats` object keyed by these numeric IDs. */
+const ESPN_NBA_STATS = {
+  '0': 'PTS',   // points
+  '6': 'REB',   // total rebounds
+  '3': 'AST',   // assists
+  '2': 'STL',   // steals
+  '1': 'BLK',   // blocks
+  '11': 'TO',   // turnovers
+};
+/* Compute NBA fantasy points for a player from ESPN raw stat splits, using the
+   league's scoring values. Looks at PER-GAME averages so we can show a per-game
+   rate, and season totals for the season number. Returns {seasonPts, perGame, games}. */
+function nbaPointsFromEspn(pl) {
+  const vals = scoringValues();             // {PTS, REB, AST, STL, BLK, TO}
+  const stats = pl.stats || [];
+  // find the real (non-projected) split for the chosen season; prefer a TOTAL split
+  const seasonId = `00${SP().statSeason}`;
+  const split = stats.find(s => s.id === seasonId && s.stats)
+             || stats.find(s => s.statSourceId === 0 && s.statSplitTypeId === 0 && s.stats)
+             || stats.find(s => s.statSourceId === 0 && s.stats);
+  if (!split || !split.stats) return { seasonPts: 0, perGame: 0, games: 0 };
+  const raw = split.stats;
+  const games = raw['42'] || split.statSplitTypeId === 0 && raw['40'] || 0; // GP id varies
+  let total = 0;
+  for (const [id, key] of Object.entries(ESPN_NBA_STATS)) {
+    const v = raw[id];
+    if (v != null && vals[key] != null) total += v * vals[key];
+  }
+  const gp = games > 0 ? games : (raw['42'] || 0);
+  const perGame = gp > 0 ? total / gp : 0;
+  return {
+    seasonPts: Math.round(total * 10) / 10,
+    perGame: Math.round(perGame * 10) / 10,
+    games: gp,
+  };
 }
 
 /* ============================================================
@@ -3187,8 +3225,10 @@ function viewPlayersReal() {
   });
 
   // which points field is active based on the window toggle
-  const ptsField = { season:'ptsSeason', '7':'pts7', '14':'pts14', '30':'pts30', bestavg:'bestAvg' }[playerView.ptsWindow];
-  const ptsLabel = { season:'Season', '7':'7d', '14':'14d', '30':'30d', bestavg:'Best Avg' }[playerView.ptsWindow];
+  const isNBA = SP().statsApi === 'nba';
+  // NBA: show per-game fantasy points (more meaningful than season totals in hoops).
+  const ptsField = isNBA ? 'ptsPerGame' : { season:'ptsSeason', '7':'pts7', '14':'pts14', '30':'pts30', bestavg:'bestAvg' }[playerView.ptsWindow];
+  const ptsLabel = isNBA ? 'FP/G' : { season:'Season', '7':'7d', '14':'14d', '30':'30d', bestavg:'Best Avg' }[playerView.ptsWindow];
 
   const useSal = LSET().useSalaryCap;
   const s = playerView.sort, dir = playerView.dir;
@@ -3281,10 +3321,10 @@ function viewPlayersReal() {
       <button class="btn btn-sm ${playerView.salFilter==='arb'?'btn-amber':'btn-ghost'}" onclick="setSalFilter('arb')">A Arb</button>
       <button class="btn btn-sm ${playerView.salFilter==='expiring'?'btn-amber':'btn-ghost'}" onclick="setSalFilter('expiring')">⏳ Expiring</button>
     </div>`:''}
-    <div class="row" style="gap:.35rem;margin-top:.4rem;flex-wrap:wrap">
+    ${isNBA ? '' : `<div class="row" style="gap:.35rem;margin-top:.4rem;flex-wrap:wrap">
       <span class="sub" style="align-self:center;font-size:.68rem">Show stat:</span>
       ${winBtn('season','Season')} ${winBtn('bestavg','Best Avg')} ${winBtn('30','30d')} ${winBtn('14','14d')} ${winBtn('7','7d')}
-    </div>
+    </div>`}
     <div class="row" style="gap:.35rem;margin-top:.4rem">
       <span class="sub" style="align-self:center;font-size:.68rem">Show:</span>
       <button class="btn btn-sm ${playerView.avail==='all'?'btn-amber':'btn-ghost'}" onclick="setAvail('all')">All</button>
@@ -4714,6 +4754,17 @@ window.doPullPool = async function() {
         const own = pl.ownership?.percentOwned || 0;
         adp = own > 0 ? Math.max(1, Math.round(1000 - own * 9)) : 9999;
       }
+      // points: MLB uses ESPN's applied total (placeholder until game logs pull);
+      // NBA computes from raw ESPN stats using the league's scoring right here.
+      let seasonPts = 0, ptsPerGame = null, gamesPlayed = null;
+      if (SP().statsApi === 'nba') {
+        const np = nbaPointsFromEspn(pl);
+        seasonPts = np.seasonPts;
+        ptsPerGame = np.perGame;
+        gamesPlayed = np.games;
+      } else {
+        seasonPts = seasonPointsFromEspn(pl);
+      }
       return {
         espnId: pl.id,
         name: pl.fullName || `${pl.firstName||''} ${pl.lastName||''}`.trim(),
@@ -4723,7 +4774,9 @@ window.doPullPool = async function() {
         proTeam: proTeamAbbr(pl.proTeamId),
         eligSlots: pl.eligibleSlots || [],   // raw, for re-deriving eligibility later
         adp: Math.round(adp * 10) / 10,
-        seasonPts: seasonPointsFromEspn(pl),   // 0 until MLB stats are pulled
+        seasonPts,
+        ptsPerGame, gamesPlayed,             // NBA per-game rate (null for MLB)
+        ptsSeason: SP().statsApi === 'nba' ? seasonPts : null,  // mark NBA as "has points"
         owned: Math.round((pl.ownership?.percentOwned || 0) * 10) / 10,
         injured: !!pl.injured || (pl.injuryStatus && pl.injuryStatus !== 'ACTIVE' && pl.injuryStatus !== 'NORMAL' && pl.injuryStatus !== 'INJURY_STATUS_NORMAL'),
         injuryStatus: pl.injuryStatus || null,
