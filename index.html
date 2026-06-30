@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Best Game League v8.3</title>
+<title>Best Game League v8.4</title>
 <style>
 /* ============================================================
-   BGL v8.3 — Design System
+   BGL v8.4 — Design System
    Subject: competitive fantasy baseball; hook = best single game/week
    Palette: stadium-at-night
    ============================================================ */
@@ -342,7 +342,7 @@ body {
 <div class="topbar">
   <div class="brand" onclick="go('home')">
     <span>BGL<span class="mark">.</span></span>
-    <span class="ver">v8.3</span>
+    <span class="ver">v8.4</span>
   </div>
   <div class="topbar-right">
     <button class="league-chip" id="league-chip" onclick="openLeagueSwitcher()" title="Change league or sport"></button>
@@ -500,7 +500,30 @@ const FB_DOC_ID = 'bgl_multisport'; // single Firebase doc holds all sports
 const ADMIN_PIN = '2325';
 
 /* the active sport — persisted in STATE.sport */
-function SP() { return SPORTS[STATE.sport] || SPORTS.flb; }
+function SP() {
+  const base = SPORTS[STATE.sport] || SPORTS.flb;
+  // apply a per-sport season override if the user picked a different year to view
+  const ov = (STATE.seasonOverride || {})[STATE.sport];
+  if (ov && ov.season) {
+    return { ...base, season: ov.season, statSeason: ov.statSeason || ov.season };
+  }
+  return base;
+}
+/* recent seasons the user can pick for ADP/stats. ESPN uses the ending year as the
+   season id (e.g. the 2025-26 NBA season = 2026). Offer the current default ±2. */
+function seasonChoices() {
+  const base = (SPORTS[STATE.sport] || SPORTS.flb).season;
+  return [base+1, base, base-1, base-2];
+}
+/* pick a season to pull/view ADP & stats for the current sport */
+window.setPoolSeason = function(year) {
+  STATE.seasonOverride = STATE.seasonOverride || {};
+  // statSeason mirrors season for NBA; for MLB it equals the season too
+  STATE.seasonOverride[STATE.sport] = { season: year, statSeason: year };
+  saveLocal();
+  renderActive();
+  toast(`Season set to ${year} — pull the pool to load it`, 'ok');
+};
 
 /* ============================================================
    STATE  (now namespaced per-sport for league data)
@@ -532,6 +555,7 @@ const STATE = {
   activeLeagueDoc: null,        // which league doc this device synced to
   memberId: null,               // this device's locked identity (key into members)
   leaguesBySport: {},           // {sport: {activeLeagueDoc, memberId, leagueName}} per-sport leagues
+  seasonOverride: {},           // {sport: {season, statSeason}} year picked for ADP/points
   approvals: {},                // commissioner approval list (from master)
   _loaded: false,
 };
@@ -685,6 +709,7 @@ function saveLocal() {
     activeLeagueDoc: STATE.activeLeagueDoc || null,
     memberId: STATE.memberId || null,
     leaguesBySport: STATE.leaguesBySport,
+    seasonOverride: STATE.seasonOverride || {},
   };
   try {
     localStorage.setItem(LOCAL_LS_KEY, JSON.stringify(identity));
@@ -713,6 +738,7 @@ function loadLocal() {
   }
   if (!id) return;
   STATE.leaguesBySport = id.leaguesBySport || {};
+  STATE.seasonOverride = id.seasonOverride || {};
   if (id.sport) STATE.sport = id.sport;
   // prefer the per-sport entry for the active sport
   const entry = STATE.leaguesBySport[STATE.sport];
@@ -3223,12 +3249,15 @@ function viewPlayersReal() {
     `<button class="btn btn-sm ${playerView.ptsWindow===w?'btn-amber':'btn-ghost'}" onclick="setPtsWindow('${w}')">${label}</button>`;
 
   return `
-    <div class="eyebrow">${SP().label} pool · ${LG().playerPool.length} players · ${mappedCount} linked</div>
+    <div class="eyebrow">${SP().label} pool · ${LG().playerPool.length} players${statsLive?` · ${mappedCount} linked`:''} · ${SP().statSeason} season</div>
     <div class="h1">Players</div>
 
-    ${!havePoints ? `<div class="card card-tight mt">
+    ${statsLive && !havePoints ? `<div class="card card-tight mt">
       <p class="sub" style="font-size:.75rem;text-align:center"><span class="spinner-inline"></span>
         Loading player points…</p>
+    </div>` : ''}
+    ${!statsLive ? `<div class="card card-tight mt">
+      <p class="sub" style="font-size:.72rem;text-align:center">${SP().label} shows ADP & ownership from ESPN. Live per-game ${SP().statsApi.toUpperCase()} scoring isn't wired up yet, so points stay at 0.</p>
     </div>` : ''}
 
     <div class="field mt">
@@ -3908,9 +3937,12 @@ function viewSettings() {
     ${unlocked ? `
     <div class="card">
       <div class="h2">Player pool</div>
-      <p class="sub mb">Pull the ${SP().label} player pool from ESPN for season
-        <span class="num">${SP().season}</span>. No league ID needed — this is ESPN's global player list.</p>
-      <button class="btn" onclick="doPullPool()">Pull player pool</button>
+      <p class="sub mb">Pull the ${SP().label} player pool from ESPN. ADP, ownership${SP().statsApi==='mlb'?' & stats':''} reflect the season you pick below. No league ID needed.</p>
+      <label class="sub">Season for ADP${SP().statsApi==='mlb'?' & stats':''}</label>
+      <div class="row mt mb" style="gap:.35rem;flex-wrap:wrap">
+        ${seasonChoices().map(y => `<button class="btn btn-sm ${SP().season===y?'btn-amber':'btn-ghost'}" onclick="setPoolSeason(${y})">${y}</button>`).join('')}
+      </div>
+      <button class="btn btn-block" onclick="doPullPool()">Pull ${SP().season} player pool</button>
       <button class="btn btn-ghost btn-sm mt" onclick="inspectRaw()">🔬 Inspect raw player data</button>
     </div>
 
@@ -3968,11 +4000,9 @@ function viewSettings() {
     </div>
     ` : ''}
 
-    ${unlocked ? `
-
     <div class="card" style="border-color:var(--clay)">
       <div class="h2" style="margin:0">⚙ Commissioner settings</div>
-      <p class="sub mt" style="font-size:.72rem">Your league's management: rules, scoring, roster, teams, schedule. Specific to this league.</p>
+      <p class="sub mt" style="font-size:.72rem">Your league's management: rules, scoring, roster, teams, schedule. No PIN needed for now.</p>
     </div>
 
     ${LSET().useSalaryCap ? `<div class="card" style="border-color:var(--sage)">
@@ -4115,7 +4145,6 @@ function viewSettings() {
         ${RD().complete ? '<p class="sub mt" style="font-size:.7rem;color:var(--good)">✓ Rookie draft complete</p>' : ''}
       ` : ''}
     </div>` : ''}
-    ` : ''}
   `;
 }
 
