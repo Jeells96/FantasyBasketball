@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Best Game League v8.1</title>
+<title>Best Game League v8.2</title>
 <style>
 /* ============================================================
-   BGL v8.1 — Design System
+   BGL v8.2 — Design System
    Subject: competitive fantasy baseball; hook = best single game/week
    Palette: stadium-at-night
    ============================================================ */
@@ -342,7 +342,7 @@ body {
 <div class="topbar">
   <div class="brand" onclick="go('home')">
     <span>BGL<span class="mark">.</span></span>
-    <span class="ver">v8.1</span>
+    <span class="ver">v8.2</span>
   </div>
   <div class="topbar-right">
     <button class="league-chip" id="league-chip" onclick="openLeagueSwitcher()" title="Change league or sport"></button>
@@ -531,6 +531,7 @@ const STATE = {
   },
   activeLeagueDoc: null,        // which league doc this device synced to
   memberId: null,               // this device's locked identity (key into members)
+  leaguesBySport: {},           // {sport: {activeLeagueDoc, memberId, leagueName}} per-sport leagues
   approvals: {},                // commissioner approval list (from master)
   _loaded: false,
 };
@@ -666,18 +667,30 @@ function autoCorrectEligibility(sk) {
 /* Local storage now holds ONLY identity pointers — which league this device
    joined and which member it is. All actual league data lives in Firebase. */
 function saveLocal() {
+  // remember the active league + identity PER SPORT, so switching sports restores the
+  // right league. leaguesBySport[sport] = { activeLeagueDoc, memberId, leagueName }.
+  STATE.leaguesBySport = STATE.leaguesBySport || {};
+  if (STATE.activeLeagueDoc) {
+    STATE.leaguesBySport[STATE.sport] = {
+      activeLeagueDoc: STATE.activeLeagueDoc,
+      memberId: STATE.memberId || null,
+      leagueName: LG().leagueName || '',
+    };
+  } else {
+    // not in a league for this sport → clear its entry
+    delete STATE.leaguesBySport[STATE.sport];
+  }
   const identity = {
     sport: STATE.sport,
     activeLeagueDoc: STATE.activeLeagueDoc || null,
     memberId: STATE.memberId || null,
+    leaguesBySport: STATE.leaguesBySport,
   };
   try {
     localStorage.setItem(LOCAL_LS_KEY, JSON.stringify(identity));
-    // verify the write actually persisted (iOS private mode can silently fail)
     const check = localStorage.getItem(LOCAL_LS_KEY);
     if (!check) throw new Error('write did not persist');
   } catch(e) {
-    // fall back to an in-memory mirror + cookie so a refresh still remembers
     window.__bglIdentity = identity;
     try {
       document.cookie = `${LOCAL_LS_KEY}=${encodeURIComponent(JSON.stringify(identity))};path=/;max-age=31536000;SameSite=Lax`;
@@ -691,7 +704,6 @@ function loadLocal() {
     const raw = localStorage.getItem(LOCAL_LS_KEY);
     if (raw) id = JSON.parse(raw);
   } catch(e) {}
-  // fallbacks if localStorage was empty/blocked
   if (!id && window.__bglIdentity) id = window.__bglIdentity;
   if (!id) {
     try {
@@ -700,9 +712,17 @@ function loadLocal() {
     } catch(e) {}
   }
   if (!id) return;
+  STATE.leaguesBySport = id.leaguesBySport || {};
   if (id.sport) STATE.sport = id.sport;
-  if (id.activeLeagueDoc) STATE.activeLeagueDoc = id.activeLeagueDoc;
-  if (id.memberId) STATE.memberId = id.memberId;
+  // prefer the per-sport entry for the active sport
+  const entry = STATE.leaguesBySport[STATE.sport];
+  if (entry) {
+    STATE.activeLeagueDoc = entry.activeLeagueDoc;
+    STATE.memberId = entry.memberId;
+  } else {
+    if (id.activeLeagueDoc) STATE.activeLeagueDoc = id.activeLeagueDoc;
+    if (id.memberId) STATE.memberId = id.memberId;
+  }
 }
 
 function initFirebase() {
@@ -3894,15 +3914,18 @@ function viewSettings() {
       <button class="btn btn-ghost btn-sm mt" onclick="inspectRaw()">🔬 Inspect raw player data</button>
     </div>
 
-    <div class="card">
-      <div class="h2">${SP().statsApi.toUpperCase()} mapping</div>
-      <p class="sub mb">Match ESPN players to ${SP().statsApi.toUpperCase()} IDs for real stats.</p>
+    ${SP().statsApi === 'mlb' ? `<div class="card">
+      <div class="h2">MLB mapping</div>
+      <p class="sub mb">Match ESPN players to MLB IDs for real stats.</p>
       <button class="btn ${havePool?'':'btn-ghost'}" onclick="doMapIds()" ${havePool?'':'disabled'}>
-        Map players to ${SP().statsApi.toUpperCase()}</button>
+        Map players to MLB</button>
       <button class="btn btn-ghost btn-block mt" onclick="showFailedMappings()">
         View unmapped players (${LG().playerPool.filter(p=>!p.mlbId).length})</button>
       <button class="btn btn-amber btn-block mt" onclick="scoringDiag()">🧪 Test scoring on a real player</button>
-    </div>
+    </div>` : `<div class="card">
+      <div class="h2">${SP().label} stats</div>
+      <p class="sub">${SP().label} players are keyed by their ESPN ID (already pulled with the pool), so there's no MLB-style ID mapping to do. Live ${SP().statsApi.toUpperCase()} stat scoring isn't wired up yet — ADP, rosters, drafting, salaries, and contracts all work, but per-game stats don't populate yet.</p>
+    </div>`}
 
     <div class="card">
       <div class="h2">Commissioner approvals</div>
@@ -3911,19 +3934,52 @@ function viewSettings() {
       <button class="btn btn-block" onclick="openCommishLog()">Manage approvals (${Object.keys(STATE.approvals||{}).length})</button>
     </div>
 
-    ${LSET().useSalaryCap ? `<div class="card" style="border-color:var(--sage)">
-      <div class="h2">Default settings</div>
-      <p class="sub mb">League-wide salary defaults: cap, growth, escalators, penalties, arb rate. These apply to every league unless overridden.</p>
-      <button class="btn btn-ghost btn-block" onclick="openSalaryConfig()">⚙ Cap rules & penalties</button>
-    </div>` : ''}
+    <div class="card" style="border-color:var(--sage)">
+      <div class="h2">💰 Salaries & cap (default)</div>
+      <p class="sub mb">Turn salaries on and load the shared salary database (1 per sport).
+        ${Object.keys(salaryDB()).length ? `<b class="amber">${Object.keys(salaryDB()).length} ${SP().label} salaries loaded.</b>` : 'No salary data yet.'}</p>
+      <div class="row-between" style="padding:.4rem 0;border-top:1px solid rgba(42,61,48,.4)">
+        <span class="sub">Use salaries (this league)</span>
+        <button class="btn btn-sm ${LSET().useSalaryCap?'btn-amber':'btn-ghost'}" onclick="toggleSalaryCap()">${LSET().useSalaryCap?`ON (${fmtMoney(leagueCap())})`:'OFF'}</button>
+      </div>
+      ${LSET().useSalaryCap ? `
+      <button class="btn btn-block mt" onclick="openSalaryPaste()">📋 Paste ${SP().label} salary data</button>
+      <button class="btn btn-ghost btn-block mt" onclick="openSalaryConfig()">⚙ Default cap rules & penalties</button>
+      <button class="btn btn-ghost btn-block mt" onclick="showArbPlayers()">🚩 Players with no contract (arb)</button>
+      <button class="btn btn-block mt" style="background:var(--bad);color:#fff" onclick="openSeasonRollover()">⏭ End season & apply penalties</button>` : ''}
+    </div>
+
+    <div class="card">
+      <div class="h2">Player eligibility</div>
+      <p class="sub mb">Re-derive position eligibility from stored data (fixes inflated positions without an ESPN re-pull).</p>
+      <button class="btn btn-block" onclick="reDeriveEligibility()">Re-derive eligibility</button>
+      <button class="btn btn-ghost btn-block mt" onclick="diagEligibility()">🔎 Check a player's ESPN slots</button>
+    </div>
+
+    <div class="card" style="border-color:var(--clay)">
+      <div class="h2">⚡ Quick test</div>
+      <p class="sub mb">Spin up a full draft instantly to check functionality.</p>
+      <div class="row">
+        <button class="btn btn-amber btn-sm" onclick="autodraft()" ${havePool && LG().teams.length?'':'disabled'}>Autodraft</button>
+        <button class="btn btn-ghost btn-sm" onclick="wipeDraft()">Wipe draft</button>
+      </div>
+      <p class="sub mt" style="font-size:.7rem">
+        ${LG().draft.complete ? `✓ Draft done — ${LG().draft.picks.length} picks` : '○ No draft yet'}</p>
+    </div>
     ` : ''}
 
     ${unlocked ? `
 
     <div class="card" style="border-color:var(--clay)">
       <div class="h2" style="margin:0">⚙ Commissioner settings</div>
-      <p class="sub mt" style="font-size:.72rem">Your league's management: rules, scoring, roster, teams, schedule${LSET().useSalaryCap?', salaries & cap':''}. These are specific to this league.</p>
+      <p class="sub mt" style="font-size:.72rem">Your league's management: rules, scoring, roster, teams, schedule. Specific to this league.</p>
     </div>
+
+    ${LSET().useSalaryCap ? `<div class="card" style="border-color:var(--sage)">
+      <div class="h2">Cap rules override</div>
+      <p class="sub mb">Override the master default cap rules & penalties for THIS league only.</p>
+      <button class="btn btn-ghost btn-block" onclick="openSalaryConfig()">⚙ Cap rules & penalties</button>
+    </div>` : ''}
 
     <div class="card">
       <div class="h2">Scoring system</div>
@@ -3983,21 +4039,6 @@ function viewSettings() {
       <div class="h2">Week schedule</div>
       <p class="sub mb">Weeks default Mon–Sun. Adjust season start or any week's length.</p>
       <button class="btn btn-block" onclick="editSchedule()">Edit week schedule</button>
-    </div>
-
-    <div class="card" style="border-color:var(--sage)">
-      <div class="h2">💰 Salaries & cap</div>
-      <p class="sub mb">Allow real salaries and a cap for this league. Salary database is shared (1 per sport).
-        ${Object.keys(salaryDB()).length ? `<b class="amber">${Object.keys(salaryDB()).length} ${SP().label} salaries loaded.</b>` : 'No salary data yet.'}</p>
-      <div class="row-between" style="padding:.4rem 0;border-top:1px solid rgba(42,61,48,.4)">
-        <span class="sub">This league uses salaries</span>
-        <button class="btn btn-sm ${LSET().useSalaryCap?'btn-amber':'btn-ghost'}" onclick="toggleSalaryCap()">${LSET().useSalaryCap?`ON (${fmtMoney(leagueCap())})`:'OFF'}</button>
-      </div>
-      ${LSET().useSalaryCap ? `
-      <button class="btn btn-block mt" onclick="openSalaryPaste()">📋 Paste ${SP().label} salary data</button>
-      <button class="btn btn-ghost btn-block mt" onclick="openSalaryConfig()">⚙ Cap rules & penalties</button>
-      <button class="btn btn-ghost btn-block mt" onclick="showArbPlayers()">🚩 Players with no contract (arb)</button>
-      <button class="btn btn-block mt" style="background:var(--bad);color:#fff" onclick="openSeasonRollover()">⏭ End season & apply penalties</button>` : ''}
     </div>
 
     <div class="card">
@@ -4074,24 +4115,6 @@ function viewSettings() {
         ${RD().complete ? '<p class="sub mt" style="font-size:.7rem;color:var(--good)">✓ Rookie draft complete</p>' : ''}
       ` : ''}
     </div>` : ''}
-
-    <div class="card">
-      <div class="h2">Player eligibility</div>
-      <p class="sub mb">Re-derive position eligibility from stored data (fixes inflated positions without an ESPN re-pull).</p>
-      <button class="btn btn-block" onclick="reDeriveEligibility()">Re-derive eligibility</button>
-      <button class="btn btn-ghost btn-block mt" onclick="diagEligibility()">🔎 Check a player's ESPN slots</button>
-    </div>
-
-    <div class="card" style="border-color:var(--clay)">
-      <div class="h2">⚡ Quick test</div>
-      <p class="sub mb">Spin up a full draft instantly to check functionality.</p>
-      <div class="row">
-        <button class="btn btn-amber btn-sm" onclick="autodraft()" ${havePool && LG().teams.length?'':'disabled'}>Autodraft</button>
-        <button class="btn btn-ghost btn-sm" onclick="wipeDraft()">Wipe draft</button>
-      </div>
-      <p class="sub mt" style="font-size:.7rem">
-        ${LG().draft.complete ? `✓ Draft done — ${LG().draft.picks.length} picks` : '○ No draft yet'}</p>
-    </div>
     ` : ''}
   `;
 }
@@ -4240,6 +4263,7 @@ window.saveApproval = function() {
     approved: true,
     leagueId: id,
     leagueDocId: 'league_' + id,
+    sport: STATE.sport,                              // which sport this league belongs to
     created: Date.now(),
   };
   save({master:true});
@@ -4367,9 +4391,13 @@ window.gateJoinLeague = function() {
       <button class="btn btn-ghost btn-block" onclick="showGate('league')">← Back</button>`;
     return;
   }
-  // approved → bind device, sync, drop the gate
+  // approved → adopt the league's sport, bind device, sync, drop the gate
+  if (appr.sport && SPORTS[appr.sport] && appr.sport !== STATE.sport) {
+    STATE.sport = appr.sport;   // this league belongs to a specific sport
+  }
   LG().leagueName = appr.leagueName;
   STATE.activeLeagueDoc = appr.leagueDocId;
+  STATE.memberId = null;        // fresh identity for this league until they claim a team
   saveLocal();
   subscribeLeague(appr.leagueDocId);
   hideGate();
@@ -4382,31 +4410,49 @@ window.promptLeagueName = function() { showGate('sport'); };
 
 /* quick switcher from the topbar chip — change sport or league */
 window.openLeagueSwitcher = function() {
+  const bySport = STATE.leaguesBySport || {};
+  // build a list of leagues this device has joined, across sports
+  const joined = Object.entries(bySport).filter(([sp,e]) => e && e.activeLeagueDoc);
+  const joinedHtml = joined.length ? joined.map(([sp,e]) => {
+    const isCur = sp===STATE.sport && e.activeLeagueDoc===STATE.activeLeagueDoc;
+    return `<div class="row-between" style="padding:.4rem 0;border-bottom:1px solid rgba(42,61,48,.4)">
+      <div><b style="font-size:.82rem">${esc(e.leagueName||'League')}</b>
+        <span class="sub" style="font-size:.66rem">· ${SPORTS[sp]?.icon||''} ${SPORTS[sp]?.label||sp}</span></div>
+      ${isCur ? '<span class="ps-tag" style="display:inline;background:var(--amber)">current</span>'
+              : `<button class="btn btn-sm btn-ghost" onclick="gotoLeague('${sp}')">Switch</button>`}
+    </div>`;
+  }).join('') : '<p class="sub">No other leagues joined yet.</p>';
+
   openModal(`
-    <div class="h2">League & sport</div>
+    <div class="h2">My leagues</div>
     <p class="sub mb">You're in <b class="amber">${esc(LG().leagueName)}</b> · ${SP().icon} ${SP().label}</p>
-    <div class="divlabel">Switch sport</div>
+    <div class="divlabel">Joined leagues</div>
+    ${joinedHtml}
+    <div class="divlabel mt">Switch sport</div>
     <div class="row mt">
       ${Object.values(SPORTS).map(sp =>
         `<button class="btn btn-sm ${STATE.sport===sp.key?'btn-amber':'btn-ghost'}"
-          onclick="switchSportInLeague('${sp.key}')">${sp.icon} ${sp.label}</button>`).join('')}
+          onclick="gotoSport('${sp.key}')">${sp.icon} ${sp.label}</button>`).join('')}
     </div>
-    <p class="sub mt" style="font-size:.68rem">Switching sport keeps you in this league but shows that sport's teams & draft.</p>
-    <button class="btn btn-ghost btn-block mt" onclick="changeLeague()">⇄ Change league</button>
+    <p class="sub mt" style="font-size:.66rem">Each sport has its own leagues & IDs. Switching restores that sport's league.</p>
+    <button class="btn btn-ghost btn-block mt" onclick="changeLeague()">+ Join another league (this sport)</button>
+    <button class="btn btn-ghost btn-block mt" style="color:var(--bad)" onclick="leaveLeague()">Leave current league</button>
     <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Close</button>
   `);
 };
-window.switchSportInLeague = function(key) {
-  if (!SPORTS[key]) return;
-  STATE.sport = key;
-  saveLocal();
+/* switch to a specific sport's saved league */
+window.gotoLeague = function(sport) {
   closeModal();
-  toast(`Switched to ${SPORTS[key].label}`, 'ok');
-  renderActive();
+  switchSport(sport);   // restores that sport's league binding + resubscribes
+};
+/* switch sport from the switcher */
+window.gotoSport = function(key) {
+  closeModal();
+  switchSport(key);
 };
 window.changeLeague = function() {
   closeModal();
-  showGate('league');   // go straight to league-name entry (sport already chosen)
+  showGate('league');   // join another league for the current sport
 };
 window.leaveLeague = function() {
   openModal(`
@@ -4418,7 +4464,11 @@ window.leaveLeague = function() {
 };
 window.confirmLeaveLeague = function() {
   if (_leagueUnsub) { try { _leagueUnsub(); } catch(e){} _leagueUnsub = null; }
+  // clear this sport's stored league binding so it doesn't auto-rejoin
+  STATE.leaguesBySport = STATE.leaguesBySport || {};
+  delete STATE.leaguesBySport[STATE.sport];
   STATE.activeLeagueDoc = null;
+  STATE.memberId = null;
   saveLocal();
   closeModal();
   toast('Left league', 'ok');
@@ -4513,8 +4563,16 @@ window.showFailedMappings = function() {
 window.manualMap = async function(espnId) {
   const p = LG().playerPool.find(x => String(x.espnId)===String(espnId));
   if (!p) return;
+  // NBA (and any non-MLB sport) doesn't use the MLB people-search. For ESPN-based
+  // sports the ESPN ID is already the stats key, so there's nothing to hand-link here.
+  if (SP().statsApi !== 'mlb') {
+    openModal(`<div class="h2">${esc(p.name)}</div>
+      <p class="sub mb">Manual linking is only for MLB (whose stats use a different ID system). For ${SP().label}, players are keyed by their ESPN ID directly — there's no separate ID to map. ${SP().statsApi.toUpperCase()} live stats aren't wired up yet, so no mapping is needed or possible right now.</p>
+      <button class="btn btn-ghost btn-block" onclick="showFailedMappings()">← Back</button>`);
+    return;
+  }
   openModal(`<div class="h2">Find ${esc(p.name)}</div><div class="spinner"></div>
-    <p class="sub" style="text-align:center">Searching ${SP().statsApi.toUpperCase()}…</p>`);
+    <p class="sub" style="text-align:center">Searching MLB…</p>`);
   try {
     // search MLB by name, show candidates
     const res = await fetch(`${MLB}/people/search?names=${encodeURIComponent(p.name)}`);
@@ -4533,7 +4591,7 @@ window.manualMap = async function(espnId) {
       </button>`).join('') || '<p class="sub">No matches found. This player may be retired or not in MLB.</p>';
     openModal(`
       <div class="h2">Link ${esc(p.name)}</div>
-      <p class="sub mb">Pick the correct ${SP().statsApi.toUpperCase()} player:</p>
+      <p class="sub mb">Pick the correct MLB player:</p>
       ${opts}
       <button class="btn btn-ghost btn-block mt" onclick="showFailedMappings()">← Back</button>
     `);
@@ -6160,9 +6218,31 @@ window.wipeDraft = function() {
 /* ---- SPORT SWITCHER ---- */
 window.switchSport = function(key) {
   if (!SPORTS[key]) return;
+  // remember the league we're leaving for the CURRENT sport before switching
+  STATE.leaguesBySport = STATE.leaguesBySport || {};
+  if (STATE.activeLeagueDoc) {
+    STATE.leaguesBySport[STATE.sport] = {
+      activeLeagueDoc: STATE.activeLeagueDoc,
+      memberId: STATE.memberId || null,
+      leagueName: LG().leagueName || '',
+    };
+  }
   STATE.sport = key;
+  // restore the new sport's league binding (separate league/ID per sport)
+  const entry = STATE.leaguesBySport[key];
+  if (entry) {
+    STATE.activeLeagueDoc = entry.activeLeagueDoc;
+    STATE.memberId = entry.memberId;
+    if (fbReady) subscribeLeague(STATE.activeLeagueDoc);
+  } else {
+    STATE.activeLeagueDoc = null;
+    STATE.memberId = null;
+    if (_leagueUnsub) { try { _leagueUnsub(); } catch(e){} _leagueUnsub = null; }
+  }
   playerView.search = ''; playerView.posFilter = 'ALL'; playerView.sort = 'seasonPts'; playerView.dir = -1;
-  save(); toast(`Switched to ${SPORTS[key].label}`, 'ok'); go('home');
+  saveLocal();
+  toast(`Switched to ${SPORTS[key].label}`, 'ok');
+  go('home');
 };
 
 /* ============================================================
