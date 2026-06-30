@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Best Game League v8.2</title>
+<title>Best Game League v8.3</title>
 <style>
 /* ============================================================
-   BGL v8.2 — Design System
+   BGL v8.3 — Design System
    Subject: competitive fantasy baseball; hook = best single game/week
    Palette: stadium-at-night
    ============================================================ */
@@ -342,7 +342,7 @@ body {
 <div class="topbar">
   <div class="brand" onclick="go('home')">
     <span>BGL<span class="mark">.</span></span>
-    <span class="ver">v8.2</span>
+    <span class="ver">v8.3</span>
   </div>
   <div class="topbar-right">
     <button class="league-chip" id="league-chip" onclick="openLeagueSwitcher()" title="Change league or sport"></button>
@@ -3191,7 +3191,10 @@ function viewPlayersReal() {
     });
   }
 
-  const havePoints = LG().playerPool.some(p => p.ptsSeason != null);
+  // NBA stats aren't wired yet, so points never compute for it — don't show a
+  // perpetual "loading points" spinner for sports whose stats provider isn't live.
+  const statsLive = SP().statsApi === 'mlb';
+  const havePoints = !statsLive || LG().playerPool.some(p => p.ptsSeason != null);
   const shown = list.slice(0, 150);
   const rows = shown.map(p => {
     const drafted = draftedIds.has(String(p.espnId));
@@ -3891,21 +3894,18 @@ function viewSettings() {
       <div class="row-between">
         <div class="h2" style="margin:0">${unlocked?'🔓':'🔒'} Master settings</div>
         ${unlocked
-          ? `<div class="row" style="gap:.3rem">
-              <button class="btn btn-sm btn-ghost" onclick="toggleCommish()">${window._commishExpanded?'▲ Collapse':'▼ Expand'}</button>
-              <button class="btn btn-sm btn-ghost" onclick="lockMaster()">Lock</button>
-            </div>`
+          ? `<button class="btn btn-sm btn-ghost" onclick="lockMaster()">Lock</button>`
           : `<button class="btn btn-sm" onclick="unlockMaster()">Unlock</button>`}
       </div>
       <p class="sub mt" style="font-size:.72rem">
-        Admin layer: the player pool, ${SP().statsApi.toUpperCase()} mapping, commissioner approvals, and league-wide defaults${LSET().useSalaryCap?' (incl. salary defaults)':''}. ${unlocked?(window._commishExpanded?'':'Tap Expand to edit.'):'PIN required.'}</p>
+        Admin layer: player pool, ${SP().statsApi === 'mlb' ? 'MLB mapping, ' : ''}commissioner approvals, salary defaults, eligibility, and quick test. ${unlocked?'':'PIN required.'}</p>
       <p class="sub" style="font-size:.68rem">
         Pool: ${havePool?`✓ ${LG().playerPool.length}`:'○ none'} ·
-        Mapped: ${LG().playerPool.filter(p=>p.mlbId).length} ·
+        ${SP().statsApi==='mlb'?`Mapped: ${LG().playerPool.filter(p=>p.mlbId).length} · `:''}
         Firebase: ${fbReady?'<span class="amber">live</span>':esc(fbErr||'offline')}</p>
     </div>
 
-    ${unlocked && window._commishExpanded ? `
+    ${unlocked ? `
     <div class="card">
       <div class="h2">Player pool</div>
       <p class="sub mb">Pull the ${SP().label} player pool from ESPN for season
@@ -4175,11 +4175,13 @@ window.openCommishLog = function() {
   const approvals = STATE.approvals || {};
   const rows = Object.entries(approvals).map(([key, a]) => {
     const isNumeric = /^\d{5}$/.test(key);
+    const sp = SPORTS[a.sport];
     return `
     <div class="card" style="padding:.6rem;margin-bottom:.5rem;border-color:${a.approved?'var(--good)':'var(--bad)'}">
       <div class="row-between">
         <div>
-          <b>${esc(a.leagueName)}</b><br>
+          <b>${esc(a.leagueName)}</b>
+          <span class="ps-tag" style="display:inline">${sp?`${sp.icon} ${sp.label}`:'?'}</span><br>
           <span class="sub" style="font-size:.7rem">${esc(a.commish||'—')}</span><br>
           <span class="sub" style="font-size:.62rem;letter-spacing:1px">${isNumeric?'ID':'OLD KEY (no 5-digit ID)'}</span>
           <span class="display ${isNumeric?'amber':'cell-neg'}" style="font-size:1.1rem;letter-spacing:${isNumeric?'3px':'0'}">${esc(key)}</span>
@@ -4188,6 +4190,10 @@ window.openCommishLog = function() {
           <button class="btn btn-sm ${a.approved?'btn-amber':'btn-ghost'}" onclick="toggleApproval('${key}')">
             ${a.approved?'✓ Approved':'○ Off'}</button>
         </div>
+      </div>
+      <div class="row-between mt" style="padding:.3rem 0;border-top:1px solid rgba(42,61,48,.4)">
+        <span class="sub" style="font-size:.7rem">Salary cap allowed</span>
+        <button class="btn btn-sm ${a.salaryAllowed?'btn-amber':'btn-ghost'}" onclick="toggleApprovalSalary('${key}')">${a.salaryAllowed?'✓ Yes':'○ No'}</button>
       </div>
       ${!isNumeric ? `<div class="card card-tight mt" style="border-color:var(--amber)">
         <p class="sub" style="font-size:.68rem">⚠ This league has no 5-digit ID, so members can't join it. Generate one — it keeps all existing data.</p>
@@ -4206,16 +4212,46 @@ window.openCommishLog = function() {
   `);
 };
 window.addApprovalPrompt = function() {
+  window._newLeagueSport = STATE.sport;
+  window._newLeagueSalary = false;
+  renderApprovalForm();
+};
+function renderApprovalForm() {
+  const sportBtns = Object.values(SPORTS).map(sp =>
+    `<button class="btn btn-sm ${window._newLeagueSport===sp.key?'btn-amber':'btn-ghost'}" onclick="setNewLeagueSport('${sp.key}')">${sp.icon} ${sp.label}</button>`).join('');
   openModal(`
     <div class="h2">Create a league</div>
     <div class="field mt"><label>Commissioner name</label>
-      <input class="input" id="ap-commish" placeholder="e.g. Dustin"></div>
+      <input class="input" id="ap-commish" placeholder="e.g. Dustin" value="${esc(window._apCommish||'')}"></div>
     <div class="field"><label>League name (optional)</label>
-      <input class="input" id="ap-league" placeholder="e.g. Dustin's Dynasty"></div>
-    <p class="sub mt">A unique 5-digit League ID will be generated. Members join with that ID. A name is optional — leave it blank and we'll use the ID.</p>
+      <input class="input" id="ap-league" placeholder="e.g. Dustin's Dynasty" value="${esc(window._apLeague||'')}"></div>
+    <label class="sub">Sport</label>
+    <div class="row mt mb">${sportBtns}</div>
+    <div class="row-between" style="padding:.4rem 0;border-top:1px solid rgba(42,61,48,.4)">
+      <span class="sub">Allow salary cap & contracts</span>
+      <button class="btn btn-sm ${window._newLeagueSalary?'btn-amber':'btn-ghost'}" onclick="toggleNewLeagueSalary()">${window._newLeagueSalary?'✓ Yes':'○ No'}</button>
+    </div>
+    <p class="sub mt">A unique 5-digit League ID will be generated. Members join with that ID.</p>
     <button class="btn btn-block mt" onclick="saveApproval()">Create & generate ID</button>
     <button class="btn btn-ghost btn-block mt" onclick="openCommishLog()">Cancel</button>
   `);
+}
+window.setNewLeagueSport = function(key) {
+  window._apCommish = $('ap-commish')?.value || '';
+  window._apLeague = $('ap-league')?.value || '';
+  window._newLeagueSport = key; renderApprovalForm();
+};
+window.toggleNewLeagueSalary = function() {
+  window._apCommish = $('ap-commish')?.value || '';
+  window._apLeague = $('ap-league')?.value || '';
+  window._newLeagueSalary = !window._newLeagueSalary; renderApprovalForm();
+};
+window.toggleApprovalSalary = function(key) {
+  const a = STATE.approvals?.[key];
+  if (!a) return;
+  a.salaryAllowed = !a.salaryAllowed;
+  save({master:true});
+  openCommishLog();
 };
 /* generate a 5-digit league id not already in use */
 function genLeagueId() {
@@ -4256,6 +4292,8 @@ window.saveApproval = function() {
   const commish = $('ap-commish')?.value.trim() || '';
   const leagueName = $('ap-league')?.value.trim() || '';   // optional
   const id = genLeagueId();                          // 5-digit key (the required identifier)
+  const sport = window._newLeagueSport || STATE.sport;
+  const salaryAllowed = !!window._newLeagueSalary;
   STATE.approvals = STATE.approvals || {};
   STATE.approvals[id] = {
     commish,
@@ -4263,9 +4301,12 @@ window.saveApproval = function() {
     approved: true,
     leagueId: id,
     leagueDocId: 'league_' + id,
-    sport: STATE.sport,                              // which sport this league belongs to
+    sport,                                            // which sport this league belongs to
+    salaryAllowed,                                    // did commissioner approve salary cap?
     created: Date.now(),
   };
+  // switch to the chosen sport so the league is created under it
+  STATE.sport = sport;
   save({master:true});
   // CRITICAL: the commissioner must JOIN the league they just created, so that all
   // their setup (teams, draft, settings) syncs to the league doc in Firebase. Without
@@ -4273,6 +4314,8 @@ window.saveApproval = function() {
   // would join and see nothing.
   STATE.activeLeagueDoc = 'league_' + id;
   LG().leagueName = STATE.approvals[id].leagueName;
+  // apply the approved salary setting to this league
+  if (salaryAllowed) { ensureSettings(); LG().settings.useSalaryCap = true; }
   saveLocal();
   subscribeLeague('league_' + id);
   // If the commissioner already set up teams/draft locally before creating the ID,
@@ -4628,8 +4671,20 @@ window.doPullPool = async function() {
       const pl = pp.player || pp;
       const eligible = deriveEligibility(pl.eligibleSlots, pl.defaultPositionId);
       const defPos = posName(pl.defaultPositionId);
-      const adpRaw = pl.ownership?.averageDraftPosition || 0;
-      const adp = (adpRaw > 0) ? adpRaw : 9999;
+      // ADP: prefer ESPN's averageDraftPosition; when that's empty (e.g. offseason or
+      // a sport with no live drafts) fall back to the player's draft rank, then to the
+      // ownership %. This keeps stars at the top instead of dumping everyone to 9999.
+      let adp = pl.ownership?.averageDraftPosition || 0;
+      if (!(adp > 0)) {
+        const ranks = pl.draftRanksByRankType || {};
+        const r = ranks.STANDARD || ranks.PPR || ranks.STANDARDDRAFT || Object.values(ranks)[0];
+        if (r && r.rank > 0) adp = r.rank;
+      }
+      if (!(adp > 0)) {
+        // last resort: order by ownership % (more-owned = earlier). Map 100%→1, 0%→9999.
+        const own = pl.ownership?.percentOwned || 0;
+        adp = own > 0 ? Math.max(1, Math.round(1000 - own * 9)) : 9999;
+      }
       return {
         espnId: pl.id,
         name: pl.fullName || `${pl.firstName||''} ${pl.lastName||''}`.trim(),
