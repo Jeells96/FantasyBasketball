@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Best Game League v8.0</title>
+<title>Best Game League v8.1</title>
 <style>
 /* ============================================================
-   BGL v8.0 — Design System
+   BGL v8.1 — Design System
    Subject: competitive fantasy baseball; hook = best single game/week
    Palette: stadium-at-night
    ============================================================ */
@@ -342,7 +342,7 @@ body {
 <div class="topbar">
   <div class="brand" onclick="go('home')">
     <span>BGL<span class="mark">.</span></span>
-    <span class="ver">v8.0</span>
+    <span class="ver">v8.1</span>
   </div>
   <div class="topbar-right">
     <button class="league-chip" id="league-chip" onclick="openLeagueSwitcher()" title="Change league or sport"></button>
@@ -3869,7 +3869,7 @@ function viewSettings() {
 
     <div class="card" style="border-color:${unlocked?'var(--amber)':'var(--line)'}">
       <div class="row-between">
-        <div class="h2" style="margin:0">${unlocked?'🔓':'🔒'} Commissioner settings</div>
+        <div class="h2" style="margin:0">${unlocked?'🔓':'🔒'} Master settings</div>
         ${unlocked
           ? `<div class="row" style="gap:.3rem">
               <button class="btn btn-sm btn-ghost" onclick="toggleCommish()">${window._commishExpanded?'▲ Collapse':'▼ Expand'}</button>
@@ -3878,8 +3878,7 @@ function viewSettings() {
           : `<button class="btn btn-sm" onclick="unlockMaster()">Unlock</button>`}
       </div>
       <p class="sub mt" style="font-size:.72rem">
-        League-wide settings shared with everyone: player pool, ${SP().statsApi.toUpperCase()} mapping,
-        scoring, schedule${LSET().useSalaryCap?', salaries':''}. ${unlocked?(window._commishExpanded?'':'Tap Expand to edit.'):'PIN required to edit.'}</p>
+        Admin layer: the player pool, ${SP().statsApi.toUpperCase()} mapping, commissioner approvals, and league-wide defaults${LSET().useSalaryCap?' (incl. salary defaults)':''}. ${unlocked?(window._commishExpanded?'':'Tap Expand to edit.'):'PIN required.'}</p>
       <p class="sub" style="font-size:.68rem">
         Pool: ${havePool?`✓ ${LG().playerPool.length}`:'○ none'} ·
         Mapped: ${LG().playerPool.filter(p=>p.mlbId).length} ·
@@ -3906,53 +3905,24 @@ function viewSettings() {
     </div>
 
     <div class="card">
-      <div class="h2">Commissioner log</div>
+      <div class="h2">Commissioner approvals</div>
       <p class="sub mb">Approve leagues and manage their access. Each league shares this Firebase —
         toggle access off for non-payment.</p>
       <button class="btn btn-block" onclick="openCommishLog()">Manage approvals (${Object.keys(STATE.approvals||{}).length})</button>
     </div>
 
-    <div class="card">
-      <div class="h2">Week schedule</div>
-      <p class="sub mb">Weeks default Mon–Sun. Adjust season start or any week's length.</p>
-      <button class="btn btn-block" onclick="editSchedule()">Edit week schedule</button>
-    </div>
-
-    <div class="card" style="border-color:var(--sage)">
-      <div class="h2">💰 Salaries & cap</div>
-      <p class="sub mb">Per-league: allow real salaries and a cap. Database is shared (1 per sport).
-        ${Object.keys(salaryDB()).length ? `<b class="amber">${Object.keys(salaryDB()).length} ${SP().label} salaries loaded.</b>` : 'No salary data yet.'}</p>
-      <div class="row-between" style="padding:.4rem 0;border-top:1px solid rgba(42,61,48,.4)">
-        <span class="sub">This league uses salaries</span>
-        <button class="btn btn-sm ${LSET().useSalaryCap?'btn-amber':'btn-ghost'}" onclick="toggleSalaryCap()">${LSET().useSalaryCap?'ON':'OFF'}</button>
-      </div>
-      <button class="btn btn-block mt" onclick="openSalaryPaste()">📋 Paste ${SP().label} salary data</button>
-      <button class="btn btn-ghost btn-block mt" onclick="openSalaryConfig()">⚙ Cap rules & penalties</button>
-      <button class="btn btn-ghost btn-block mt" onclick="showArbPlayers()">🚩 Players with no contract (arb)</button>
-      <button class="btn btn-block mt" style="background:var(--bad);color:#fff" onclick="openSeasonRollover()">⏭ End season & apply penalties</button>
-    </div>
-
-    <div class="card">
-      <div class="h2">Activity</div>
-      <div class="log" id="settings-log"><span class="sage">Ready.</span></div>
-    </div>
-
-    <div class="card">
-      <div class="h2">Data</div>
-      <div class="row">
-        <button class="btn btn-ghost btn-sm" onclick="dumpState()">Export JSON</button>
-      </div>
-      <p class="sub mt" style="font-size:.72rem">
-        Firebase: ${fbReady ? `<span class="amber">${FB_CONFIG.projectId}</span>` : esc(fbErr||'offline')}</p>
-    </div>
+    ${LSET().useSalaryCap ? `<div class="card" style="border-color:var(--sage)">
+      <div class="h2">Default settings</div>
+      <p class="sub mb">League-wide salary defaults: cap, growth, escalators, penalties, arb rate. These apply to every league unless overridden.</p>
+      <button class="btn btn-ghost btn-block" onclick="openSalaryConfig()">⚙ Cap rules & penalties</button>
+    </div>` : ''}
     ` : ''}
 
+    ${unlocked ? `
+
     <div class="card" style="border-color:var(--clay)">
-      <div class="row-between">
-        <div class="h2" style="margin:0">⚙ Commissioner settings</div>
-      </div>
-      <p class="sub mt" style="font-size:.72rem">League management: scoring, roster structure, teams, and setup.
-        Some of these override master defaults for your league.</p>
+      <div class="h2" style="margin:0">⚙ Commissioner settings</div>
+      <p class="sub mt" style="font-size:.72rem">Your league's management: rules, scoring, roster, teams, schedule${LSET().useSalaryCap?', salaries & cap':''}. These are specific to this league.</p>
     </div>
 
     <div class="card">
@@ -4007,6 +3977,35 @@ function viewSettings() {
         <input class="input" type="number" min="1" max="26" value="${LSET().playoffStartWeek||23}" style="width:80px;text-align:right" onchange="setLeagueSetting('playoffStartWeek',this.value)">
       </div>` : ''}
       ${isDynasty() ? `<p class="sub mt" style="font-size:.68rem;color:var(--amber)">Dynasty: draft-pick trading up to 3 years out is enabled. Rookie draft available below.</p>` : ''}
+    </div>
+
+    <div class="card">
+      <div class="h2">Week schedule</div>
+      <p class="sub mb">Weeks default Mon–Sun. Adjust season start or any week's length.</p>
+      <button class="btn btn-block" onclick="editSchedule()">Edit week schedule</button>
+    </div>
+
+    <div class="card" style="border-color:var(--sage)">
+      <div class="h2">💰 Salaries & cap</div>
+      <p class="sub mb">Allow real salaries and a cap for this league. Salary database is shared (1 per sport).
+        ${Object.keys(salaryDB()).length ? `<b class="amber">${Object.keys(salaryDB()).length} ${SP().label} salaries loaded.</b>` : 'No salary data yet.'}</p>
+      <div class="row-between" style="padding:.4rem 0;border-top:1px solid rgba(42,61,48,.4)">
+        <span class="sub">This league uses salaries</span>
+        <button class="btn btn-sm ${LSET().useSalaryCap?'btn-amber':'btn-ghost'}" onclick="toggleSalaryCap()">${LSET().useSalaryCap?`ON (${fmtMoney(leagueCap())})`:'OFF'}</button>
+      </div>
+      ${LSET().useSalaryCap ? `
+      <button class="btn btn-block mt" onclick="openSalaryPaste()">📋 Paste ${SP().label} salary data</button>
+      <button class="btn btn-ghost btn-block mt" onclick="openSalaryConfig()">⚙ Cap rules & penalties</button>
+      <button class="btn btn-ghost btn-block mt" onclick="showArbPlayers()">🚩 Players with no contract (arb)</button>
+      <button class="btn btn-block mt" style="background:var(--bad);color:#fff" onclick="openSeasonRollover()">⏭ End season & apply penalties</button>` : ''}
+    </div>
+
+    <div class="card">
+      <div class="h2">Activity & data</div>
+      <div class="log" id="settings-log"><span class="sage">Ready.</span></div>
+      <button class="btn btn-ghost btn-sm mt" onclick="dumpState()">Export JSON</button>
+      <p class="sub mt" style="font-size:.72rem">
+        Firebase: ${fbReady ? `<span class="amber">${FB_CONFIG.projectId}</span>` : esc(fbErr||'offline')}</p>
     </div>
 
     <div class="card">
@@ -4093,6 +4092,7 @@ function viewSettings() {
       <p class="sub mt" style="font-size:.7rem">
         ${LG().draft.complete ? `✓ Draft done — ${LG().draft.picks.length} picks` : '○ No draft yet'}</p>
     </div>
+    ` : ''}
   `;
 }
 
@@ -4125,7 +4125,7 @@ window.tryMaster = function() {
   if (pin === ADMIN_PIN) {
     window._masterUnlocked = true;
     window._commishExpanded = true;   // expand on unlock so settings are visible
-    closeModal(); toast('Commissioner settings unlocked', 'ok'); renderActive();
+    closeModal(); toast('Master settings unlocked', 'ok'); renderActive();
   } else { toast('Wrong PIN', 'err'); }
 };
 window.toggleCommish = function() {
@@ -4134,7 +4134,7 @@ window.toggleCommish = function() {
 window.lockMaster = function() {
   window._masterUnlocked = false;
   window._commishExpanded = false;
-  toast('Commissioner settings locked', 'ok'); renderActive();
+  toast('Master settings locked', 'ok'); renderActive();
 };
 
 /* ============================================================
@@ -4715,19 +4715,14 @@ window.openSalaryConfig = function() {
     </div>`).join('');
   openModal(`<div class="h2">Cap rules & penalties</div>
     <div class="row-between mt" style="padding:.3rem 0">
-      <span class="sub">Default cap ($)</span>
-      <input class="input" type="number" step="1000000" value="${c.defaultCap}" style="width:150px;text-align:right"
-        onchange="setSalCfg('defaultCap', this.value)">
+      <span class="sub">Default cap ($M)</span>
+      <input class="input" type="number" step="1" value="${Math.round(c.defaultCap/1000000)}" style="width:110px;text-align:right"
+        onchange="setSalCfgM('defaultCap', this.value)">
     </div>
     <div class="row-between" style="padding:.3rem 0">
       <span class="sub">Cap growth %/yr</span>
       <input class="input" type="number" step="0.5" value="${c.capGrowthPct}" style="width:90px;text-align:right"
         onchange="setSalCfg('capGrowthPct', this.value)">
-    </div>
-    <div class="row-between" style="padding:.3rem 0">
-      <span class="sub">Salary escalator %</span>
-      <input class="input" type="number" step="0.5" value="${c.escalatorPct}" style="width:90px;text-align:right"
-        onchange="setSalCfg('escalatorPct', this.value)">
     </div>
     <div class="row-between" style="padding:.3rem 0">
       <span class="sub">Signing discount (yr 1)</span>
@@ -4745,9 +4740,9 @@ window.openSalaryConfig = function() {
         onchange="setSalCfg('maxTerm', this.value)">
     </div>
     <div class="row-between" style="padding:.3rem 0">
-      <span class="sub">Arb default salary ($)</span>
-      <input class="input" type="number" step="500000" value="${c.arbSalary}" style="width:150px;text-align:right"
-        onchange="setSalCfg('arbSalary', this.value)">
+      <span class="sub">Arb default salary ($M)</span>
+      <input class="input" type="number" step="0.5" value="${(c.arbSalary/1000000).toFixed(1).replace(/\.0$/,'')}" style="width:110px;text-align:right"
+        onchange="setSalCfgM('arbSalary', this.value)">
     </div>
     <div class="divlabel mt">Over-cap penalties (draft picks lost)</div>
     <p class="sub" style="font-size:.66rem">Default: 1–10% over = 1 pick, 11–20% = 2 picks, 21%+ = 3 picks.</p>
@@ -4757,6 +4752,12 @@ window.openSalaryConfig = function() {
 window.setSalCfg = function(key, val) {
   STATE.salaryConfig = SALCFG();
   STATE.salaryConfig[key] = parseFloat(val) || 0;
+  save({master:true});
+};
+/* set a salary-config value that's entered in MILLIONS (stored as dollars) */
+window.setSalCfgM = function(key, val) {
+  STATE.salaryConfig = SALCFG();
+  STATE.salaryConfig[key] = Math.round((parseFloat(val) || 0) * 1000000);
   save({master:true});
 };
 window.setPenaltyPicks = function(idx, val) {
@@ -4785,8 +4786,8 @@ window.openContractInfo = function(espnId) {
       <div class="field" style="flex:1"><label>Start year</label><input class="input" id="ci-start" type="number" value="${r.start||''}" placeholder="2025"></div>
       <div class="field" style="flex:1"><label>End year</label><input class="input" id="ci-end" type="number" value="${r.end||''}" placeholder="2030"></div>
     </div>
-    <div class="field"><label>Total contract ($)</label><input class="input" id="ci-total" type="number" value="${r.total||''}" placeholder="e.g. 200000000"></div>
-    <div class="field"><label>AAV — base salary ($)</label><input class="input" id="ci-aav" type="number" value="${r.aav||''}" placeholder="e.g. 25000000"></div>
+    <div class="field"><label>Total contract ($M)</label><input class="input" id="ci-total" type="number" step="0.1" value="${r.total?(r.total/1000000):''}" placeholder="e.g. 200"></div>
+    <div class="field"><label>AAV — base salary ($M)</label><input class="input" id="ci-aav" type="number" step="0.1" value="${r.aav?(r.aav/1000000):''}" placeholder="e.g. 25"></div>
     <button class="btn btn-amber btn-block mt" onclick="saveContractInfo('${espnId}')">Save contract info</button>
     ${r.aav?`<button class="btn btn-ghost btn-block mt" style="font-size:.7rem;color:var(--bad)" onclick="clearContractInfo('${espnId}')">Remove (make arb)</button>`:''}
     <button class="btn btn-ghost btn-block mt" onclick="showPlayer('${espnId}')">Cancel</button>`);
@@ -4797,8 +4798,8 @@ window.saveContractInfo = function(espnId) {
   const age = parseInt($('ci-age')?.value)||null;
   const start = parseInt($('ci-start')?.value)||null;
   const end = parseInt($('ci-end')?.value)||null;
-  const total = parseInt(($('ci-total')?.value||'').replace(/[^0-9]/g,''))||null;
-  const aav = parseInt(($('ci-aav')?.value||'').replace(/[^0-9]/g,''))||null;
+  const total = $('ci-total')?.value ? Math.round(parseFloat($('ci-total').value)*1000000) : null;
+  const aav = $('ci-aav')?.value ? Math.round(parseFloat($('ci-aav').value)*1000000) : null;
   const years = (start&&end) ? (end-start+1) : null;
   STATE.salaryDB = STATE.salaryDB || {};
   STATE.salaryDB[STATE.sport] = STATE.salaryDB[STATE.sport] || {};
