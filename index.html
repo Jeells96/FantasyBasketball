@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Best Game League v8.5</title>
+<title>Best Game League v8.6</title>
 <style>
 /* ============================================================
-   BGL v8.5 — Design System
+   BGL v8.6 — Design System
    Subject: competitive fantasy baseball; hook = best single game/week
    Palette: stadium-at-night
    ============================================================ */
@@ -342,7 +342,7 @@ body {
 <div class="topbar">
   <div class="brand" onclick="go('home')">
     <span>BGL<span class="mark">.</span></span>
-    <span class="ver">v8.5</span>
+    <span class="ver">v8.6</span>
   </div>
   <div class="topbar-right">
     <button class="league-chip" id="league-chip" onclick="openLeagueSwitcher()" title="Change league or sport"></button>
@@ -3570,9 +3570,15 @@ function renderPlayerModal(p, loading) {
   const pk = LG().draft.picks.find(x => String(x.playerId) === String(p.espnId));
   const onMyTeam = pk && String(pk.teamId) === String(myTeamId());
   const isFreeAgent = !pk;
+  const isNBA = SP().statsApi === 'nba';
+  const statsLive = SP().statsApi === 'mlb';
   const havePts = p.ptsSeason != null;
   const cap = rosterCap(), count = myTeamId() ? rosterActiveCount(myTeamId()) : 0;
   const full = count >= cap;
+  // what to show in the "points" stat box
+  const ptsBox = isNBA
+    ? `<div class="stat"><div class="lbl">FP/G</div><div class="val">${p.ptsPerGame!=null?p.ptsPerGame.toFixed(1):'—'}</div></div>`
+    : `<div class="stat"><div class="lbl">Season</div><div class="val">${loading?'<span class="sub">…</span>':(havePts?p.ptsSeason.toFixed(0):'—')}</div></div>`;
 
   openModal(`
     <div class="h2">${esc(p.name)}</div>
@@ -3580,11 +3586,12 @@ function renderPlayerModal(p, loading) {
       ${p.injured?'· <span class="cell-neg">IL</span>':''}</div>
     <div class="statrow mt mb">
       <div class="stat"><div class="lbl">ADP</div><div class="val amber">${p.adp<9999?p.adp.toFixed(0):'—'}</div></div>
-      <div class="stat"><div class="lbl">Season</div><div class="val">${loading?'<span class="sub">…</span>':(havePts?p.ptsSeason.toFixed(0):'—')}</div></div>
+      ${ptsBox}
       ${LSET().useSalaryCap
         ? `<div class="stat"><div class="lbl">Base AAV</div><div class="val" style="font-size:1rem">${fmtMoney(importedAAV(p))}</div></div>`
         : `<div class="stat"><div class="lbl">Status</div><div class="val" style="font-size:1rem">${pk?(onMyTeam?'Yours':'Rostered'):'Free'}</div></div>`}
     </div>
+    ${isNBA && p.gamesPlayed ? `<p class="sub mb" style="font-size:.68rem">${SP().statSeason} season · ${p.seasonPts?.toFixed(0)||0} total fantasy pts over ${p.gamesPlayed} games</p>` : ''}
     ${LSET().useSalaryCap ? (()=>{ const r=salaryDB()[normName(p.name)]; const c=playerContract(p);
       let html = '<div class="card card-tight mb" style="font-size:.72rem">';
       // age + real MLB contract
@@ -3626,7 +3633,7 @@ function renderPlayerModal(p, loading) {
       <button class="btn btn-block mt" style="background:var(--bad);color:#fff" onclick="dropFromCard('${p.espnId}')">Drop ${esc(p.name)}${LSET().useSalaryCap&&playerContract(p)?` (dead cap ${fmtMoney(dropDeadCap(p))})`:''}</button>
     ` : ''}
 
-    ${!havePts ? `<p class="sub mt" style="font-size:.72rem">Points are loading… tap to view once ready.</p>` : ''}
+    ${statsLive && !havePts ? `<p class="sub mt" style="font-size:.72rem">Points are loading… tap to view once ready.</p>` : ''}
     <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Close</button>
   `);
 };
@@ -5279,13 +5286,30 @@ window.inspectRaw = async function() {
       ? stats.map((s,i) => `[${i}] id=${s.id} split=${s.statSplitTypeId} src=${s.statSourceId} szn=${s.seasonId} applied=${s.appliedTotal}`).join('\n')
       : '(this player has NO stats array)';
 
+    // For NBA: show the RAW stat values (numeric IDs → values) from the real season
+    // split, so we can confirm the stat-ID mapping used to compute fantasy points.
+    let nbaBlock = '';
+    if (SP().statsApi === 'nba') {
+      const seasonId = `00${SP().statSeason}`;
+      const split = stats.find(s => s.id === seasonId && s.stats)
+                 || stats.find(s => s.statSourceId === 0 && s.statSplitTypeId === 0 && s.stats)
+                 || stats.find(s => s.statSourceId === 0 && s.stats);
+      const np = nbaPointsFromEspn(pl);
+      const rawStats = split?.stats ? JSON.stringify(split.stats, null, 1) : '(no stats object found in any split)';
+      nbaBlock = `
+        <div class="field mt"><label>NBA raw stat values (id → value) from the season split</label></div>
+        <div class="log" style="max-height:200px">${esc(rawStats)}</div>
+        <p class="sub" style="font-size:.7rem">We map: 0=PTS 6=REB 3=AST 2=STL 1=BLK 11=TO → computed <b class="amber">${np.seasonPts} pts</b> (${np.perGame}/g over ${np.games} games). If that's wrong, the stat IDs above tell us the correct mapping.</p>`;
+    }
+
     openModal(`
       <div class="h2">${esc(pl.fullName||'?')}</div>
-      <div class="sub mb">Pool: ${raw.length} players · ${withStats} have stats · we compute: <b class="amber">${computed} pts</b></div>
+      <div class="sub mb">Pool: ${raw.length} players · ${withStats} have stats${SP().statsApi==='mlb'?` · we compute: <b class="amber">${computed} pts</b>`:''}</div>
       <div class="field"><label>Stat splits (looking for id 00${SP().statSeason} or 00${SP().season})</label></div>
-      <div class="log" style="max-height:200px">${esc(statLines)}</div>
+      <div class="log" style="max-height:160px">${esc(statLines)}</div>
+      ${nbaBlock}
       <div class="field mt"><label>Full raw player JSON</label></div>
-      <div class="log" style="max-height:240px">${esc(fullJson)}</div>
+      <div class="log" style="max-height:200px">${esc(fullJson)}</div>
       <button class="btn btn-block mt" onclick="copyText(window._inspectText)">📋 Copy full JSON — paste to me</button>
       <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Close</button>
     `);
