@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Best Game League v8.6</title>
+<title>Best Game League v8.7</title>
 <style>
 /* ============================================================
-   BGL v8.6 — Design System
+   BGL v8.7 — Design System
    Subject: competitive fantasy baseball; hook = best single game/week
    Palette: stadium-at-night
    ============================================================ */
@@ -342,7 +342,7 @@ body {
 <div class="topbar">
   <div class="brand" onclick="go('home')">
     <span>BGL<span class="mark">.</span></span>
-    <span class="ver">v8.6</span>
+    <span class="ver">v8.7</span>
   </div>
   <div class="topbar-right">
     <button class="league-chip" id="league-chip" onclick="openLeagueSwitcher()" title="Change league or sport"></button>
@@ -658,6 +658,19 @@ function applyMaster(master) {
   if (master.approvals) STATE.approvals = master.approvals;
   if (master.salaryDB) STATE.salaryDB = master.salaryDB;
   if (master.salaryConfig) STATE.salaryConfig = { ...STATE.salaryConfig, ...master.salaryConfig };
+  // SELF-HEAL sport: now that approvals are loaded, make sure the active sport matches
+  // the active league's approval (fixes a cross-wired sport from earlier).
+  if (STATE.activeLeagueDoc && STATE.approvals) {
+    const ap = Object.entries(STATE.approvals).find(([k,a]) => (a.leagueDocId||('league_'+k))===STATE.activeLeagueDoc);
+    if (ap) {
+      // approvals created before sport-tagging have no sport → they're MLB (flb).
+      const apSport = ap[1].sport || 'flb';
+      if (SPORTS[apSport] && STATE.sport !== apSport) {
+        STATE.sport = apSport;
+        saveLocal();
+      }
+    }
+  }
   for (const sk of Object.keys(master)) {
     if (sk === 'idOverrides') { STATE.idOverrides = master.idOverrides || {}; continue; }
     if (sk === 'approvals') continue;
@@ -749,6 +762,13 @@ function loadLocal() {
     if (id.activeLeagueDoc) STATE.activeLeagueDoc = id.activeLeagueDoc;
     if (id.memberId) STATE.memberId = id.memberId;
   }
+  // SELF-HEAL: if the active league has an approval whose sport disagrees with the
+  // restored sport, trust the approval (fixes a doc/state that got cross-wired).
+  if (STATE.activeLeagueDoc) {
+    const ap = Object.entries(STATE.approvals||{}).find(([k,a]) => (a.leagueDocId||('league_'+k))===STATE.activeLeagueDoc);
+    const apSport = ap?.[1]?.sport;
+    if (apSport && SPORTS[apSport] && STATE.sport !== apSport) STATE.sport = apSport;
+  }
 }
 
 function initFirebase() {
@@ -782,10 +802,13 @@ function subscribeLeague(docId) {
   _leagueUnsub = onSnapshot(doc(db, 'leagues', docId), (snap) => {
     if (snap.exists() && snap.data().league) {
       const incoming = snap.data().league;
-      // adopt the league's sport so the joiner sees the data even if they picked a
-      // different sport at the gate (the league doc isn't sport-namespaced).
-      if (incoming.sport && STATE.leagues[incoming.sport] && STATE.sport !== incoming.sport) {
-        STATE.sport = incoming.sport;
+      // The league's TRUE sport comes from its approval (set at creation, authoritative),
+      // NOT the league payload (which can carry a stale/wrong sport if it was ever saved
+      // while the wrong sport was active). Only fall back to payload sport if no approval.
+      const apprEntry = Object.entries(STATE.approvals||{}).find(([k,a]) => (a.leagueDocId||('league_'+k))===docId);
+      const trueSport = apprEntry?.[1]?.sport;
+      if (trueSport && SPORTS[trueSport] && STATE.sport !== trueSport) {
+        STATE.sport = trueSport;
       }
       applyLeague(incoming);
       saveLocal();
@@ -820,8 +843,12 @@ async function save(opts = {}) {
    a locked identity (name) to a team. gameLogs/schedule cached here too. */
 function leaguePayload() {
   const lg = LG();
+  // sport stored on the doc = the approval's sport (authoritative), so the doc can
+  // self-heal if it was ever saved with a wrong sport. Fall back to active sport.
+  const apprEntry = Object.entries(STATE.approvals||{}).find(([k,a]) => (a.leagueDocId||('league_'+k))===STATE.activeLeagueDoc);
+  const docSport = apprEntry?.[1]?.sport || STATE.sport || 'flb';
   return {
-    sport: STATE.sport || 'flb',
+    sport: docSport,
     leagueName: lg.leagueName || 'League',
     currentWeek: lg.currentWeek ?? 1,
     teams: lg.teams || [],
@@ -903,7 +930,10 @@ async function saveLeague(opts = {}) {
    all members' lineups (you view all, edit only your own). */
 function applyLeague(league) {
   if (!league) return;
-  const sk = league.sport || STATE.sport;
+  // Use the CURRENT active sport (set authoritatively from the approval before this
+  // runs), not league.sport — a stale payload sport would write data into the wrong
+  // sport's slot and break things. Only use payload sport if STATE.sport is somehow unset.
+  const sk = STATE.sport || league.sport || 'flb';
   if (!STATE.leagues[sk]) return;
   const lg = STATE.leagues[sk];
   if (league.leagueName) lg.leagueName = league.leagueName;
