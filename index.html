@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Best Game League v8.7</title>
+<title>Best Game League v9.1</title>
 <style>
 /* ============================================================
-   BGL v8.7 — Design System
+   BGL v9.1 — Design System
    Subject: competitive fantasy baseball; hook = best single game/week
    Palette: stadium-at-night
    ============================================================ */
@@ -342,7 +342,7 @@ body {
 <div class="topbar">
   <div class="brand" onclick="go('home')">
     <span>BGL<span class="mark">.</span></span>
-    <span class="ver">v8.7</span>
+    <span class="ver">v9.1</span>
   </div>
   <div class="topbar-right">
     <button class="league-chip" id="league-chip" onclick="openLeagueSwitcher()" title="Change league or sport"></button>
@@ -464,6 +464,18 @@ const SPORTS = {
     ],
     benchCount: 5,
     irCount: 5,
+    // FEATURE FLAGS — what this sport's experience includes. Drives the UI so each
+    // sport only ever shows its own concepts (no cross-contamination).
+    features: {
+      arb: true,              // arbitration / no-contract placeholder salaries
+      pitchers: true,         // SP/RP split, pitcher-specific logic
+      probableStarters: true, // probable starting pitchers
+      statWindows: true,      // 7d/14d/30d/season/best-avg stat windows
+      ir: true,               // injured reserve slots
+      gameLogs: true,         // per-game logs (best-game weekly scoring)
+      perGameScoring: false,  // NBA shows per-game FP; MLB shows season totals
+      mapping: true,          // needs ESPN→MLB ID mapping for stats
+    },
   },
   fba: {
     key: 'fba',
@@ -493,6 +505,17 @@ const SPORTS = {
     ],
     benchCount: 10,
     irCount: 0,
+    // NBA has none of MLB's pitcher/arb/probable-starter concepts.
+    features: {
+      arb: false,
+      pitchers: false,
+      probableStarters: false,
+      statWindows: false,     // NBA shows per-game fantasy points instead
+      ir: false,
+      gameLogs: false,        // not wired yet (would need ESPN box scores)
+      perGameScoring: true,   // show FP/G
+      mapping: false,         // ESPN ID is the stats key; no separate mapping
+    },
   },
 };
 
@@ -514,6 +537,12 @@ function SP() {
 function seasonChoices() {
   const base = (SPORTS[STATE.sport] || SPORTS.flb).season;
   return [base+1, base, base-1, base-2];
+}
+/* Current sport's feature flags — drives which concepts the UI shows. Defaults to
+   the MLB feature set if somehow unset, so nothing crashes. */
+function FEAT() {
+  const f = (SPORTS[STATE.sport] || SPORTS.flb).features;
+  return f || { arb:true, pitchers:true, probableStarters:true, statWindows:true, ir:true, gameLogs:true, perGameScoring:false, mapping:true };
 }
 /* pick a season to pull/view ADP & stats for the current sport */
 window.setPoolSeason = function(year) {
@@ -693,11 +722,17 @@ function applyMaster(master) {
 /* recompute eligibility for a sport's pool from stored raw slots if it drifted
    from what the current rules produce. Silent; no save (master is read-only here). */
 function autoCorrectEligibility(sk) {
+  const sp = SPORTS[sk];
   const pool = STATE.leagues[sk]?.playerPool || [];
   pool.forEach(p => {
     if (!p.eligSlots) return;                 // no raw slots → can't re-derive
-    const fresh = deriveEligibility(p.eligSlots, p.defPosId);
+    const fresh = deriveEligibility(p.eligSlots, p.defPosId, sk);   // explicit sport
     if ((p.eligible||[]).join('/') !== fresh.join('/')) p.eligible = fresh;
+    // also fix the primary position if it was stored using the wrong sport's posMap
+    if (sp && p.defPosId != null) {
+      const correctPos = (sp.posMap||{})[p.defPosId];
+      if (correctPos && p.pos !== correctPos) p.pos = correctPos;
+    }
   });
 }
 
@@ -783,6 +818,8 @@ function initFirebase() {
       if (snap.exists() && snap.data().master) {
         applyMaster(snap.data().master);
         STATE._loaded = true;
+        // a shared league link may be waiting on approvals to load — try it now
+        if (window._pendingDeepLink && typeof tryDeepLinkJoin === 'function') tryDeepLinkJoin();
         renderActive();
         // pool likely just arrived from master — compute points if needed
         if (typeof ensurePoolPoints === 'function') ensurePoolPoints();
@@ -1126,6 +1163,7 @@ function importedAAV(p) {
 }
 /* is this player an arb player? (in the pool, but no contract info imported) */
 function isArbPlayer(p) {
+  if (!FEAT().arb) return false;   // sports without arbitration never have arb players
   // arb = no imported contract data at all (no AAV in the salary DB)
   return importedAAV(p) == null && !playerContract(p);
 }
@@ -1482,6 +1520,7 @@ async function fetchSchedule(startYmd, endYmd) {
 
 /* cache schedule for a fantasy week in LG().scheduleCache[weekKey] */
 async function getWeekSchedule(week) {
+  if (!FEAT().probableStarters) return {};   // only MLB uses the probable-pitcher schedule
   const days = weekDays(week);
   const startYmd = ymd(days[0]), endYmd = ymd(days[days.length-1]);
   const key = `${SP().season}_${startYmd}_${endYmd}`;
@@ -3255,7 +3294,7 @@ function viewPlayersReal() {
   });
 
   // which points field is active based on the window toggle
-  const isNBA = SP().statsApi === 'nba';
+  const isNBA = FEAT().perGameScoring;   // per-game fantasy points (basketball-style)
   // NBA: show per-game fantasy points (more meaningful than season totals in hoops).
   const ptsField = isNBA ? 'ptsPerGame' : { season:'ptsSeason', '7':'pts7', '14':'pts14', '30':'pts30', bestavg:'bestAvg' }[playerView.ptsWindow];
   const ptsLabel = isNBA ? 'FP/G' : { season:'Season', '7':'7d', '14':'14d', '30':'30d', bestavg:'Best Avg' }[playerView.ptsWindow];
@@ -3351,7 +3390,7 @@ function viewPlayersReal() {
       <button class="btn btn-sm ${playerView.salFilter==='arb'?'btn-amber':'btn-ghost'}" onclick="setSalFilter('arb')">A Arb</button>
       <button class="btn btn-sm ${playerView.salFilter==='expiring'?'btn-amber':'btn-ghost'}" onclick="setSalFilter('expiring')">⏳ Expiring</button>
     </div>`:''}
-    ${isNBA ? '' : `<div class="row" style="gap:.35rem;margin-top:.4rem;flex-wrap:wrap">
+    ${!FEAT().statWindows ? '' : `<div class="row" style="gap:.35rem;margin-top:.4rem;flex-wrap:wrap">
       <span class="sub" style="align-self:center;font-size:.68rem">Show stat:</span>
       ${winBtn('season','Season')} ${winBtn('bestavg','Best Avg')} ${winBtn('30','30d')} ${winBtn('14','14d')} ${winBtn('7','7d')}
     </div>`}
@@ -4054,7 +4093,7 @@ function viewSettings() {
       ${LSET().useSalaryCap ? `
       <button class="btn btn-block mt" onclick="openSalaryPaste()">📋 Paste ${SP().label} salary data</button>
       <button class="btn btn-ghost btn-block mt" onclick="openSalaryConfig()">⚙ Default cap rules & penalties</button>
-      <button class="btn btn-ghost btn-block mt" onclick="showArbPlayers()">🚩 Players with no contract (arb)</button>
+      ${FEAT().arb ? `<button class="btn btn-ghost btn-block mt" onclick="showArbPlayers()">🚩 Players with no contract (arb)</button>` : ''}
       <button class="btn btn-block mt" style="background:var(--bad);color:#fff" onclick="openSeasonRollover()">⏭ End season & apply penalties</button>` : ''}
     </div>
 
@@ -4078,10 +4117,16 @@ function viewSettings() {
     ` : ''}
 
     <div class="card" style="border-color:var(--clay)">
-      <div class="h2" style="margin:0">⚙ Commissioner settings</div>
-      <p class="sub mt" style="font-size:.72rem">Your league's management: rules, scoring, roster, teams, schedule. No PIN needed for now.</p>
+      <div class="row-between">
+        <div class="h2" style="margin:0">${commishUnlocked()?'🔓':'🔒'} Commissioner settings</div>
+        ${commishUnlocked()
+          ? `<button class="btn btn-sm btn-ghost" onclick="lockCommish()">Lock</button>`
+          : `<button class="btn btn-sm" onclick="openCommishUnlock()">Unlock</button>`}
+      </div>
+      <p class="sub mt" style="font-size:.72rem">Rules, scoring, roster, teams, schedule for <b>${esc(LG().leagueName||'this league')}</b>. ${commishUnlocked()?'':'Enter this league\\u2019s PIN to edit. Members can view the league without it.'}</p>
     </div>
 
+    ${commishUnlocked() ? `
     ${LSET().useSalaryCap ? `<div class="card" style="border-color:var(--sage)">
       <div class="h2">Cap rules override</div>
       <p class="sub mb">Override the master default cap rules & penalties for THIS league only.</p>
@@ -4222,6 +4267,7 @@ function viewSettings() {
         ${RD().complete ? '<p class="sub mt" style="font-size:.7rem;color:var(--good)">✓ Rookie draft complete</p>' : ''}
       ` : ''}
     </div>` : ''}
+    ` : ''}
   `;
 }
 
@@ -4266,6 +4312,42 @@ window.lockMaster = function() {
   toast('Master settings locked', 'ok'); renderActive();
 };
 
+/* ---- PER-LEAGUE commissioner PIN ----
+   Each league has its own PIN (set in master at creation, editable later). It
+   gates that league's commissioner settings so members can view but not edit. */
+function currentLeaguePin() {
+  const docId = STATE.activeLeagueDoc;
+  if (!docId) return null;
+  const ap = Object.entries(STATE.approvals||{}).find(([k,a]) => (a.leagueDocId||('league_'+k))===docId);
+  return ap ? (ap[1].pin || '0000') : null;
+}
+window.openCommishUnlock = function() {
+  openModal(`
+    <div class="h2">Commissioner PIN</div>
+    <p class="sub mb">Enter this league's PIN to edit its settings (scoring, teams, draft, schedule).</p>
+    <div class="field"><input class="input" id="commish-pin" inputmode="numeric" placeholder="League PIN" onkeydown="if(event.key==='Enter')tryCommish()"></div>
+    <button class="btn btn-block mt" onclick="tryCommish()">Unlock</button>
+    <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Cancel</button>`);
+  setTimeout(()=>$('commish-pin')?.focus(), 100);
+};
+window.tryCommish = function() {
+  const pin = $('commish-pin')?.value;
+  const real = currentLeaguePin();
+  // master PIN also opens any league's commissioner settings (admin override)
+  if (pin === real || pin === ADMIN_PIN) {
+    window._commishUnlocked = STATE.activeLeagueDoc;   // unlock is per-league-doc
+    closeModal(); toast('Commissioner settings unlocked', 'ok'); renderActive();
+  } else { toast('Wrong PIN', 'err'); }
+};
+window.lockCommish = function() {
+  window._commishUnlocked = null;
+  toast('Commissioner settings locked', 'ok'); renderActive();
+};
+/* is the commissioner section unlocked for the CURRENTLY active league? */
+function commishUnlocked() {
+  return window._commishUnlocked && window._commishUnlocked === STATE.activeLeagueDoc;
+}
+
 /* ============================================================
    COMMISSIONER LOG (master settings)
    You approve leagues here. Each entry: commissioner name, league
@@ -4301,10 +4383,14 @@ window.openCommishLog = function() {
         <span class="sub" style="font-size:.7rem">Salary cap allowed</span>
         <button class="btn btn-sm ${a.salaryAllowed?'btn-amber':'btn-ghost'}" onclick="toggleApprovalSalary('${key}')">${a.salaryAllowed?'✓ Yes':'○ No'}</button>
       </div>
+      <div class="row-between" style="padding:.3rem 0">
+        <span class="sub" style="font-size:.7rem">League PIN: <b class="amber">${esc(a.pin||'0000')}</b></span>
+        <button class="btn btn-sm btn-ghost" onclick="editApprovalPin('${key}')">Change PIN</button>
+      </div>
       ${!isNumeric ? `<div class="card card-tight mt" style="border-color:var(--amber)">
         <p class="sub" style="font-size:.68rem">⚠ This league has no 5-digit ID, so members can't join it. Generate one — it keeps all existing data.</p>
         <button class="btn btn-sm btn-amber btn-block mt" onclick="migrateLeagueId('${key}')">Generate 5-digit ID</button>
-      </div>` : ''}
+      </div>` : `<button class="btn btn-ghost btn-sm btn-block mt" style="font-size:.7rem" onclick="copyShareLink('${key}')">🔗 Copy invite link</button>`}
       <button class="btn btn-ghost btn-sm mt" style="font-size:.65rem" onclick="removeApproval('${key}')">Remove</button>
     </div>`;
   }).join('') || '<p class="sub">No leagues yet.</p>';
@@ -4331,13 +4417,16 @@ function renderApprovalForm() {
       <input class="input" id="ap-commish" placeholder="e.g. Dustin" value="${esc(window._apCommish||'')}"></div>
     <div class="field"><label>League name (optional)</label>
       <input class="input" id="ap-league" placeholder="e.g. Dustin's Dynasty" value="${esc(window._apLeague||'')}"></div>
+    <div class="field"><label>League PIN (commissioner controls)</label>
+      <input class="input" id="ap-pin" inputmode="numeric" placeholder="e.g. 1234" value="${esc(window._apPin||'')}">
+      <span class="sub" style="font-size:.66rem">Members use the link to view this league; this PIN unlocks its commissioner settings. Editable later.</span></div>
     <label class="sub">Sport</label>
     <div class="row mt mb">${sportBtns}</div>
     <div class="row-between" style="padding:.4rem 0;border-top:1px solid rgba(42,61,48,.4)">
       <span class="sub">Allow salary cap & contracts</span>
       <button class="btn btn-sm ${window._newLeagueSalary?'btn-amber':'btn-ghost'}" onclick="toggleNewLeagueSalary()">${window._newLeagueSalary?'✓ Yes':'○ No'}</button>
     </div>
-    <p class="sub mt">A unique 5-digit League ID will be generated. Members join with that ID.</p>
+    <p class="sub mt">A unique 5-digit League ID will be generated. Members join with the invite link.</p>
     <button class="btn btn-block mt" onclick="saveApproval()">Create & generate ID</button>
     <button class="btn btn-ghost btn-block mt" onclick="openCommishLog()">Cancel</button>
   `);
@@ -4345,11 +4434,13 @@ function renderApprovalForm() {
 window.setNewLeagueSport = function(key) {
   window._apCommish = $('ap-commish')?.value || '';
   window._apLeague = $('ap-league')?.value || '';
+  window._apPin = $('ap-pin')?.value || '';
   window._newLeagueSport = key; renderApprovalForm();
 };
 window.toggleNewLeagueSalary = function() {
   window._apCommish = $('ap-commish')?.value || '';
   window._apLeague = $('ap-league')?.value || '';
+  window._apPin = $('ap-pin')?.value || '';
   window._newLeagueSalary = !window._newLeagueSalary; renderApprovalForm();
 };
 window.toggleApprovalSalary = function(key) {
@@ -4357,6 +4448,27 @@ window.toggleApprovalSalary = function(key) {
   if (!a) return;
   a.salaryAllowed = !a.salaryAllowed;
   save({master:true});
+  openCommishLog();
+};
+window.editApprovalPin = function(key) {
+  const a = STATE.approvals?.[key];
+  if (!a) return;
+  openModal(`
+    <div class="h2">Change league PIN</div>
+    <p class="sub mb">PIN for <b>${esc(a.leagueName)}</b>'s commissioner settings.</p>
+    <div class="field"><input class="input" id="edit-pin" inputmode="numeric" value="${esc(a.pin||'0000')}" placeholder="e.g. 1234"></div>
+    <button class="btn btn-block mt" onclick="saveApprovalPin('${key}')">Save PIN</button>
+    <button class="btn btn-ghost btn-block mt" onclick="openCommishLog()">Cancel</button>`);
+  setTimeout(()=>$('edit-pin')?.focus(), 100);
+};
+window.saveApprovalPin = function(key) {
+  const a = STATE.approvals?.[key];
+  if (!a) return;
+  const pin = ($('edit-pin')?.value || '').trim();
+  if (!pin) { toast('PIN can\\u2019t be blank', 'err'); return; }
+  a.pin = pin;
+  save({master:true});
+  toast('League PIN updated', 'ok');
   openCommishLog();
 };
 /* generate a 5-digit league id not already in use */
@@ -4397,6 +4509,7 @@ window.migrateLeagueId = function(oldKey) {
 window.saveApproval = function() {
   const commish = $('ap-commish')?.value.trim() || '';
   const leagueName = $('ap-league')?.value.trim() || '';   // optional
+  const pin = ($('ap-pin')?.value || '').trim();
   const id = genLeagueId();                          // 5-digit key (the required identifier)
   const sport = window._newLeagueSport || STATE.sport;
   const salaryAllowed = !!window._newLeagueSalary;
@@ -4409,8 +4522,11 @@ window.saveApproval = function() {
     leagueDocId: 'league_' + id,
     sport,                                            // which sport this league belongs to
     salaryAllowed,                                    // did commissioner approve salary cap?
+    pin: pin || '0000',                              // per-league commissioner PIN (editable later)
     created: Date.now(),
   };
+  // clear the form's stashed PIN so it doesn't leak to the next create
+  window._apPin = '';
   // switch to the chosen sport so the league is created under it
   STATE.sport = sport;
   save({master:true});
@@ -4431,14 +4547,32 @@ window.saveApproval = function() {
   }
   const shownName = leagueName || ('League ' + id);
   openModal(`<div class="h2">League created 🎉</div>
-    <p class="sub mb">You're now in this league. Share the ID with your members so they can join.</p>
+    <p class="sub mb">You're now in this league. Share the link or the ID so members can join.</p>
     <div style="text-align:center;padding:1rem;background:var(--field-2);border-radius:8px;margin-bottom:1rem">
       <div class="sub" style="font-size:.65rem;letter-spacing:2px">LEAGUE ID</div>
       <div class="display amber" style="font-size:2.5rem;letter-spacing:6px">${id}</div>
       <div class="sub" style="font-size:.7rem">${esc(shownName)}</div>
     </div>
-    <button class="btn btn-block" onclick="closeModal();renderActive()">Done</button>
+    <button class="btn btn-block" onclick="copyShareLink('${id}')">🔗 Copy invite link</button>
+    <button class="btn btn-ghost btn-block mt" onclick="closeModal();renderActive()">Done</button>
     <button class="btn btn-ghost btn-block mt" onclick="openCommishLog()">Back to commissioner log</button>`);
+};
+/* Build the shareable deep-link URL for a league ID (current page + #league=ID). */
+function shareLinkFor(id) {
+  const base = location.origin + location.pathname;
+  return `${base}#league=${id}`;
+}
+window.copyShareLink = function(id) {
+  const url = shareLinkFor(id);
+  navigator.clipboard?.writeText(url)
+    .then(() => toast('Invite link copied!', 'ok'))
+    .catch(() => {
+      // clipboard blocked — show it so they can copy manually
+      openModal(`<div class="h2">Invite link</div>
+        <p class="sub mb">Copy this link and send it to your members:</p>
+        <div class="field"><input class="input" value="${esc(url)}" onclick="this.select()" readonly></div>
+        <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Close</button>`);
+    });
 };
 window.toggleApproval = function(key) {
   if (!STATE.approvals?.[key]) return;
@@ -4472,24 +4606,52 @@ function gateNeeded() {
 function showGate(step) {
   const gate = $('gate');
   gate.style.display = 'flex';
-  if (step === 'sport') renderGateSport();
+  if (step === 'landing') renderGateLanding();
+  else if (step === 'sport') renderGateSport();
   else renderGateLeague();
 }
 function hideGate() {
   $('gate').style.display = 'none';
 }
+/* LANDING — the main entry. Two paths: open Master settings (admin, PIN), or
+   join/open a specific league by ID. Members normally arrive via an invite link
+   and skip this entirely. */
+function renderGateLanding() {
+  $('gate-inner').innerHTML = `
+    <div class="brand-big">BGL<span class="mark">.</span></div>
+    <div class="tagline">Best Game League</div>
+    <p class="sub" style="text-align:center;margin:1rem 0">Open the master hub to create & manage leagues, or jump into a league with its ID.</p>
+    <button class="btn btn-amber btn-block" onclick="gateOpenMaster()">⚙ Master settings</button>
+    <div style="text-align:center;margin:1.2rem 0 .6rem;padding-top:1rem;border-top:1px solid var(--line)">
+      <span class="sub" style="font-size:.7rem">Have a League ID?</span>
+    </div>
+    <input class="input" id="gate-ln" placeholder="5-digit ID" inputmode="numeric" maxlength="5"
+      style="text-align:center;font-size:1.6rem;letter-spacing:6px" onkeydown="if(event.key==='Enter')gateJoinLeague()">
+    <button class="btn btn-block mt" onclick="gateJoinLeague()">Open league</button>`;
+}
+/* PIN-gate master settings from the landing. */
+window.gateOpenMaster = function() {
+  const pin = prompt('Master PIN:');
+  if (pin == null) return;
+  if (pin !== ADMIN_PIN) { toast('Wrong PIN', 'err'); return; }
+  window._masterUnlocked = true;
+  hideGate();
+  go('settings');
+  toast('Master settings unlocked', 'ok');
+};
 function renderGateSport() {
   $('gate-inner').innerHTML = `
     <div class="brand-big">BGL<span class="mark">.</span></div>
     <div class="tagline">Best Game League</div>
-    <div class="step-label">Step 1 of 2 · Choose your sport</div>
+    <div class="step-label">Choose your sport</div>
     <div class="sport-pick">
       ${Object.values(SPORTS).map(sp => `
         <div class="sport-card" onclick="gatePickSport('${sp.key}')">
           <span class="ic">${sp.icon}</span>
           <span class="nm">${sp.label}</span>
         </div>`).join('')}
-    </div>`;
+    </div>
+    <button class="btn btn-ghost btn-block mt" onclick="showGate('landing')">← Back</button>`;
 }
 window.gatePickSport = function(key) {
   STATE.sport = key;
@@ -4529,8 +4691,18 @@ window.gateCommishSetup = function() {
 window.gateJoinLeague = function() {
   const id = ($('gate-ln')?.value || '').trim();
   if (!/^\d{5}$/.test(id)) { toast('Enter the 5-digit League ID', 'err'); return; }
+  joinLeagueById(id, { fromGate: true });
+};
+
+/* Core join logic, shared by the manual gate, the URL deep-link, and the switcher.
+   Returns true if joined, false if not (with a toast/UI explaining why). */
+function joinLeagueById(id, opts = {}) {
+  if (!/^\d{5}$/.test(String(id))) { if (!opts.silent) toast('Invalid League ID', 'err'); return false; }
   const appr = STATE.approvals?.[id];
-  if (!appr) { toast('League ID not found. Double-check it with your commissioner.', 'err'); return; }
+  if (!appr) {
+    if (!opts.silent) toast('League ID not found. Double-check it with your commissioner.', 'err');
+    return false;
+  }
   if (!appr.approved) {
     $('gate-inner').innerHTML = `
       <div class="brand-big">BGL<span class="mark">.</span></div>
@@ -4538,7 +4710,8 @@ window.gateJoinLeague = function() {
       <p class="sub" style="text-align:center;margin-bottom:1rem">
         This league's access is currently turned off. Please contact your commissioner.</p>
       <button class="btn btn-ghost btn-block" onclick="showGate('league')">← Back</button>`;
-    return;
+    showGate('league');
+    return false;
   }
   // approved → adopt the league's sport, bind device, sync, drop the gate
   if (appr.sport && SPORTS[appr.sport] && appr.sport !== STATE.sport) {
@@ -4550,9 +4723,10 @@ window.gateJoinLeague = function() {
   saveLocal();
   subscribeLeague(appr.leagueDocId);
   hideGate();
-  toast(`Joined ${appr.leagueName}`, 'ok');
+  if (!opts.silent) toast(`Joined ${appr.leagueName}`, 'ok');
   go('home');
-};
+  return true;
+}
 
 /* legacy entry points kept for the Settings "join / leave" buttons */
 window.promptLeagueName = function() { showGate('sport'); };
@@ -4621,7 +4795,7 @@ window.confirmLeaveLeague = function() {
   saveLocal();
   closeModal();
   toast('Left league', 'ok');
-  showGate('sport');   // back to the blocking gate
+  showGate('landing');   // back to the entry hub
 };
 
 /* Bind this device's LOCAL league data to a League ID and push it to Firebase.
@@ -4836,14 +5010,20 @@ window.doPullPool = async function() {
 
 /* compute atomic eligibility from raw ESPN slots + default position id.
    Shared by the pool pull and the re-derive button so they never diverge. */
-function deriveEligibility(eligSlots, defaultPositionId) {
-  const order = ['C','1B','2B','3B','SS','OF','DH','SP','RP'];
-  const eligMap = SP().eligMap || {};
+function deriveEligibility(eligSlots, defaultPositionId, sportKey) {
+  const sp = SPORTS[sportKey] || SP();   // use the EXPLICIT sport when given
+  const isMLB = sp.key === 'flb';
+  // position sort order differs by sport
+  const order = isMLB
+    ? ['C','1B','2B','3B','SS','OF','DH','SP','RP']
+    : ['PG','SG','SF','PF','C','G','F'];   // NBA
+  const eligMap = sp.eligMap || {};
   const atomic = new Set();
   (eligSlots||[]).forEach(slotId => (eligMap[slotId]||[]).forEach(pos => atomic.add(pos)));
-  const defPos = posName(defaultPositionId);
+  const defPos = (sp.posMap||{})[defaultPositionId] || posName(defaultPositionId);
   if (defPos && defPos !== '?') atomic.add(defPos);
-  if (SP().key === 'flb') {
+  if (isMLB) {
+    // pitcher/hitter separation is baseball-specific
     const isPitcher = defaultPositionId === 1 || defaultPositionId === 11;
     if (isPitcher) {
       ['C','1B','2B','3B','SS','OF','DH'].forEach(h => atomic.delete(h));
@@ -6453,19 +6633,53 @@ function proTeamAbbr(id) {
 /* ============================================================
    BOOT
    ============================================================ */
+/* Read a shared league link like  ...#league=68261  so opening the link
+   auto-joins that league. Approvals load from Firebase a moment after boot,
+   so we stash the requested ID and the master-load handler completes the join. */
+function readDeepLink() {
+  try {
+    const h = (location.hash || '').replace(/^#/, '');
+    const params = new URLSearchParams(h);
+    const id = params.get('league');
+    if (id && /^\d{5}$/.test(id)) {
+      window._pendingDeepLink = id;
+    }
+  } catch(e) {}
+}
+/* Try to complete a pending deep-link join (called after approvals arrive). */
+function tryDeepLinkJoin() {
+  const id = window._pendingDeepLink;
+  if (!id) return;
+  if (!STATE.approvals || !STATE.approvals[id]) return;   // approvals not loaded yet
+  window._pendingDeepLink = null;
+  // already in this exact league? just clear the gate.
+  const appr = STATE.approvals[id];
+  if (STATE.activeLeagueDoc === appr.leagueDocId) { hideGate(); return; }
+  joinLeagueById(id, { silent: false });
+}
+readDeepLink();
 initFirebase();
 go('home');
 if (!fbReady) setTimeout(() => { if (!STATE._loaded) renderActive(); }, 300);
 
 /* Blocking gate: if this device hasn't joined a league, show the gate
    (sport → league name) immediately. Nothing else is usable until passed.
-   We show it right away so there's no flash of the app behind it. */
-if (gateNeeded()) showGate('sport');
+   We show it right away so there's no flash of the app behind it.
+   EXCEPTION: if there's a pending deep-link, wait for approvals to load and
+   auto-join instead of showing the gate. */
+if (gateNeeded() && !window._pendingDeepLink) showGate('landing');
+else if (window._pendingDeepLink) {
+  // show a brief gate while approvals load, then auto-join the invite link
+  showGate('landing');
+  setTimeout(tryDeepLinkJoin, 600);
+  setTimeout(tryDeepLinkJoin, 1500);
+  setTimeout(tryDeepLinkJoin, 3000);
+}
 
 /* Re-check after master loads — in case approvals arrive late, the gate is
    already up; this just ensures it's shown if boot raced ahead. Skip if the
    commissioner used the setup escape (master unlocked). */
-setTimeout(() => { if (gateNeeded() && !window._masterUnlocked) showGate('sport'); }, 400);
+setTimeout(() => { if (gateNeeded() && !window._masterUnlocked) showGate('landing'); }, 400);
 
 /* Auto-pull MLB stats on load (once per ~6h) and when a team is chosen.
    Runs silently in the background; refreshes the view when done. */
