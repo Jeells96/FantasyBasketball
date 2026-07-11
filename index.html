@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Best Game League v9.4</title>
+<title>Best Game League v10.1</title>
 <style>
 /* ============================================================
-   BGL v9.4 — Design System
+   BGL v10.1 — Design System
    Subject: competitive fantasy baseball; hook = best single game/week
    Palette: stadium-at-night
    ============================================================ */
@@ -334,6 +334,56 @@ body {
 .row-between { display: flex; justify-content: space-between; align-items: center; gap: .5rem; }
 .mt { margin-top: 1rem; } .mb { margin-bottom: 1rem; }
 .amber { color: var(--amber); } .clay { color: var(--clay); } .sage { color: var(--sage); }
+/* ============================================================
+   USABILITY LAYER (v10.1) — bigger text, bigger touch targets,
+   stronger contrast. Pure CSS: zero functionality changed.
+   Appended last so it wins the cascade (and beats inline sizes
+   via !important where tiny text was hard-coded).
+   ============================================================ */
+:root {
+  --sage:     #a3b3a3;   /* secondary text — lightened for contrast */
+  --sage-dim: #82927f;   /* tertiary — was too dim to read */
+}
+body { font-size: 17px; line-height: 1.5; }
+/* minimum readable size for all secondary text (overrides inline .6-.72rem) */
+.sub { font-size: .82rem !important; line-height: 1.45; }
+.eyebrow { font-size: .8rem; }
+.h1 { line-height: 1.15; }
+.h2 { font-size: 1.15rem; }
+/* touch targets: Apple HIG minimum 44pt, we go a bit past */
+.btn { min-height: 48px; font-size: 1rem; padding: .65rem 1.2rem; }
+.btn-sm { min-height: 40px; font-size: .88rem !important; padding: .45rem .8rem; }
+.btn-block { margin-top: .55rem; }
+/* 16px inputs stop iOS Safari's zoom-jump on focus — big elderly win */
+input.input, select, textarea {
+  font-size: 16px !important; min-height: 48px; padding: .6rem .7rem;
+}
+/* tables: roomier rows, readable numbers */
+.tbl td, .tbl th { font-size: .84rem !important; padding: .55rem .45rem; }
+/* bottom nav: bigger labels + icons, taller bar */
+.botnav button { font-size: .8rem; min-width: 62px; padding: .3rem .2rem; }
+.botnav button .ic { font-size: 1.65rem; }
+.botnav { padding: .65rem .25rem calc(.65rem + env(safe-area-inset-bottom)); }
+/* settings toggle rows: comfortable height, never cramped */
+.row-between { min-height: 44px; align-items: center; gap: .6rem; }
+/* cards breathe a little more */
+.card { padding: 1rem .95rem; }
+/* home-page task tiles: the big obvious buttons */
+.tilegrid { display: grid; grid-template-columns: 1fr 1fr; gap: .7rem; margin-top: .8rem; }
+.tile {
+  background: var(--field-3); border: 1px solid var(--line); border-radius: var(--r);
+  padding: 1.1rem .6rem; text-align: center; cursor: pointer;
+  display: flex; flex-direction: column; align-items: center; gap: .45rem;
+  min-height: 96px; justify-content: center;
+  transition: filter .15s, transform .05s;
+}
+.tile:active { transform: scale(.98); filter: brightness(1.15); }
+.tile .tic { font-size: 2rem; line-height: 1; }
+.tile .tlb { font-weight: 700; font-size: 1rem; color: var(--chalk); }
+.tile .tsb { font-size: .72rem; color: var(--sage); }
+.tile.amber { border-color: var(--amber); background: var(--amber-bg); }
+/* keyboard/switch-control users get a clear focus ring */
+:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
 </style>
 </head>
 <body>
@@ -342,7 +392,7 @@ body {
 <div class="topbar">
   <div class="brand" onclick="go('home')">
     <span>BGL<span class="mark">.</span></span>
-    <span class="ver">v9.4</span>
+    <span class="ver">v10.1</span>
   </div>
   <div class="topbar-right">
     <button class="league-chip" id="league-chip" onclick="openLeagueSwitcher()" title="Change league or sport"></button>
@@ -679,6 +729,8 @@ function masterPayload() {
   out.approvals = STATE.approvals || {};   // commissioner approval list
   out.salaryDB = STATE.salaryDB || {};     // salary database, 1 per sport
   out.salaryConfig = STATE.salaryConfig || {};  // master salary rules
+  out.attention = STATE.attention || {};        // game issues awaiting master resolution
+  out.scoreOverrides = STATE.scoreOverrides || {};  // manual per-player-week points
   return out;
 }
 
@@ -687,6 +739,8 @@ function applyMaster(master) {
   if (master.approvals) STATE.approvals = master.approvals;
   if (master.salaryDB) STATE.salaryDB = master.salaryDB;
   if (master.salaryConfig) STATE.salaryConfig = { ...STATE.salaryConfig, ...master.salaryConfig };
+  if (master.attention) STATE.attention = master.attention;
+  if (master.scoreOverrides) STATE.scoreOverrides = master.scoreOverrides;
   // SELF-HEAL sport: now that approvals are loaded, make sure the active sport matches
   // the active league's approval (fixes a cross-wired sport from earlier).
   if (STATE.activeLeagueDoc && STATE.approvals) {
@@ -738,7 +792,7 @@ function enforceLeagueApproval() {
       <p class="sub" style="text-align:center;margin-bottom:1rem">
         <b>${esc(a.leagueName||'This league')}</b> is currently paused by the site admin.<br>
         You'll get back in automatically when it's re-approved.</p>
-      <button class="btn btn-ghost btn-block" onclick="window._pausedFor=null;showGate('landing')">← Back to hub</button>`;
+      <button class="btn btn-ghost btn-block" onclick="goToHub()">← Back to hub</button>`;
     $('gate').style.display = 'flex';
   } else if (a && a.approved !== false && window._pausedFor === STATE.activeLeagueDoc) {
     window._pausedFor = null;
@@ -943,6 +997,11 @@ function leaguePayload() {
     lineups: lg.lineups || {},
     members: lg.members || {},
     irStash: lg.irStash || {},
+    transactions: lg.transactions || [],
+    waivers: lg.waivers || {},
+    waiverPriority: lg.waiverPriority || [],
+    faabSpent: lg.faabSpent || {},
+    keeperCosts: lg.keeperCosts || {},
     // NOTE: gameLogs and scheduleCache are intentionally NOT synced. They're large,
     // derived caches that every device fetches itself from the MLB API (free + fast).
     // Syncing them blew past Firestore's 1 MB per-document limit. They live locally only.
@@ -1032,6 +1091,11 @@ function applyLeague(league) {
   if (league.gameLogs) lg.gameLogs = league.gameLogs;
   if (league.scheduleCache) lg.scheduleCache = league.scheduleCache;
   if (league.irStash) lg.irStash = league.irStash;
+  if (league.transactions) lg.transactions = league.transactions;
+  if (league.waivers) lg.waivers = league.waivers;
+  if (league.waiverPriority) lg.waiverPriority = league.waiverPriority;
+  if (league.faabSpent) lg.faabSpent = league.faabSpent;
+  if (league.keeperCosts) lg.keeperCosts = league.keeperCosts;
   // MIGRATION: contracts signed while the year bug returned 2027 have signedYear in the
   // future. Pull any contract whose signedYear is later than the current season back so
   // year 1 of the deal lands on the current season (where it belongs).
@@ -1557,6 +1621,8 @@ async function fetchSchedule(startYmd, endYmd) {
       homeId: g.teams?.home?.team?.id, awayId: g.teams?.away?.team?.id,
       homeAbbr: g.teams?.home?.team?.abbreviation, awayAbbr: g.teams?.away?.team?.abbreviation,
       homeProb: g.teams?.home?.probablePitcher?.id, awayProb: g.teams?.away?.probablePitcher?.id,
+      time: g.gameDate || null,                       // ISO start time → individual locks
+      status: g.status?.detailedState || null,        // Postponed/Cancelled → attention queue
     }));
     byDate[d.date] = games;
   });
@@ -1734,6 +1800,386 @@ function playerBestGame(mlbId, week) {
 }
 
 /* ============================================================
+   LEAGUE FORMAT ENGINE — scoring modes, individual locks, waivers,
+   transactions, playoffs, attention queue, keepers. (v10)
+   ============================================================ */
+function teamName(id) {
+  const t = LG().teams.find(x => String(x.id)===String(id));
+  return t ? t.name : 'Team';
+}
+/* transaction log: newest first, capped */
+function logTxn(type, text) {
+  LG().transactions = LG().transactions || [];
+  LG().transactions.unshift({ ts: Date.now(), type, text });
+  if (LG().transactions.length > 200) LG().transactions.length = 200;
+}
+/* is this player a pitcher (for best-game scope)? */
+function isPitcherP(p) { return /SP|RP/.test((p.eligible||[]).join(',')); }
+/* which scoring mode applies to THIS player in THIS league?
+   'best' = single best game of the week; 'sum' = all games accumulate. */
+function playerScoreMode(p) {
+  const ls = LSET();
+  if (ls.scoringFormat !== 'bestGame') return 'sum';
+  const sc = ls.bestGameScope || 'all';
+  if (sc === 'all') return 'best';
+  const pit = isPitcherP(p);
+  if (sc === 'pitchersOnly') return pit ? 'best' : 'sum';
+  if (sc === 'hittersOnly')  return pit ? 'sum' : 'best';
+  return 'best';
+}
+/* master-entered manual points for a canceled/makeup situation */
+function scoreOverrideFor(week, mlbId) {
+  if (!mlbId) return null;
+  const key = `${STATE.activeLeagueDoc}|${week}|${mlbId}`;
+  const v = (STATE.scoreOverrides || {})[key];
+  return (v === undefined || v === null) ? null : Number(v);
+}
+/* a player's weekly score under the league's format (override-aware) */
+function playerWeekScore(p, week) {
+  const games = p.mlbId ? playerWeekGames(p.mlbId, week) : [];
+  const pts = games.map(g => g.pts);
+  const ov = scoreOverrideFor(week, p.mlbId);
+  if (ov != null) pts.push(ov);          // resolved makeup counts as a game
+  if (!pts.length) return 0;
+  return playerScoreMode(p) === 'best'
+    ? Math.max(...pts)
+    : Math.round(pts.reduce((a,b)=>a+b,0)*10)/10;
+}
+
+/* ---- INDIVIDUAL LINEUP LOCKS (best-game leagues) ----
+   A player locks the moment their first scheduled game of the week starts,
+   and stays locked for the rest of the week. PPD games still lock at the
+   original scheduled time (lock is purely time-based). Same-timezone rule:
+   whoever loads the app computes locks against the schedule clock. */
+function schedForWeekSync(week) {
+  const days = weekDays(week);
+  const key = `${SP().season}_${ymd(days[0])}_${ymd(days[days.length-1])}`;
+  const c = LG().scheduleCache?.[key];
+  if (!c && !window._schedFetching) {
+    window._schedFetching = true;
+    getWeekSchedule(week).then(()=>{ window._schedFetching=false; renderActive(); }).catch(()=>{ window._schedFetching=false; });
+  }
+  return c || null;
+}
+function playerLockedForWeek(p, week) {
+  if (LSET().scoringFormat !== 'bestGame') return false;   // locks are a best-game rule
+  if (SP().statsApi !== 'mlb') return false;               // needs a live schedule
+  const teamId = p.mlbTeamId;
+  if (!teamId) return false;                               // unresolved team → don't lock
+  const sched = schedForWeekSync(week);
+  if (!sched) return false;                                // schedule unavailable → don't lock
+  const now = Date.now();
+  for (const d of Object.keys(sched)) {
+    for (const g of (sched[d]||[])) {
+      if ((g.homeId===teamId || g.awayId===teamId) && g.time
+          && new Date(g.time).getTime() <= now) return true;
+    }
+  }
+  return false;
+}
+
+/* ---- WAIVERS ----
+   Dropped players sit on waivers for waiverDays. Claims are placed instead of
+   instant adds; when the window expires, the winner is decided by the league's
+   mode: 'priority' (rolling, worst record first) or 'faab' (highest blind bid,
+   season budget). Processing runs on whichever device loads next (idempotent). */
+function standingsOrderIds() {
+  const rec = computeRecords();
+  return LG().teams.map(t=>t.id).sort((a,b) => {
+    const ra=rec[a]||{w:0,pf:0}, rb=rec[b]||{w:0,pf:0};
+    return (ra.w - rb.w) || (ra.pf - rb.pf);   // worst first
+  });
+}
+function ensureWaiverPriority() {
+  let wp = LG().waiverPriority || [];
+  const ids = LG().teams.map(t=>String(t.id));
+  wp = wp.filter(id => ids.includes(String(id)));
+  ids.forEach(id => { if (!wp.some(x=>String(x)===String(id))) wp.push(id); });
+  if (!LG().waiverPriority || !LG().waiverPriority.length) wp = standingsOrderIds();
+  LG().waiverPriority = wp;
+  return wp;
+}
+function faabLeft(tid) {
+  return (LSET().faabBudget||100) - ((LG().faabSpent||{})[tid] || 0);
+}
+window.openClaimModal = function(espnId) {
+  const p = LG().playerPool.find(x=>String(x.espnId)===String(espnId));
+  const wv = (LG().waivers||{})[espnId];
+  if (!p || !wv) return;
+  const faab = LSET().waiverMode === 'faab';
+  const mine = (wv.claims||[]).find(c => String(c.teamId)===String(myTeamId()));
+  const clearAt = new Date(wv.until).toLocaleString([], {weekday:'short', hour:'numeric', minute:'2-digit'});
+  openModal(`
+    <div class="h2">Waiver claim · ${esc(p.name)}</div>
+    <p class="sub mb">On waivers until <b>${clearAt}</b> · ${(wv.claims||[]).length} claim(s) in.
+      ${faab ? `Your FAAB left: <b class="amber">$${faabLeft(myTeamId())}</b>` : 'Priority order decides ties.'}</p>
+    ${faab ? `<div class="field"><label>Your blind bid ($)</label>
+      <input class="input" id="claim-bid" type="number" min="0" value="${mine?.bid ?? 1}"></div>` : ''}
+    <button class="btn btn-amber btn-block" onclick="submitClaim('${espnId}')">${mine?'Update claim':'Place claim'}</button>
+    ${mine ? `<button class="btn btn-ghost btn-block mt" onclick="cancelClaim('${espnId}')">Cancel my claim</button>` : ''}
+    <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Close</button>`);
+};
+window.submitClaim = function(espnId) {
+  const wv = (LG().waivers||{})[espnId]; if (!wv) return;
+  const tid = myTeamId(); if (!tid) { toast('Claim your team first', 'err'); return; }
+  let bid = 0;
+  if (LSET().waiverMode === 'faab') {
+    bid = Math.max(0, Math.floor(Number($('claim-bid')?.value || 0)));
+    if (bid > faabLeft(tid)) { toast(`Only $${faabLeft(tid)} FAAB left`, 'err'); return; }
+  }
+  wv.claims = (wv.claims||[]).filter(c => String(c.teamId)!==String(tid));
+  wv.claims.push({ teamId: tid, bid, ts: Date.now() });
+  save(); closeModal(); toast('Claim placed', 'ok'); renderActive();
+};
+window.cancelClaim = function(espnId) {
+  const wv = (LG().waivers||{})[espnId]; if (!wv) return;
+  wv.claims = (wv.claims||[]).filter(c => String(c.teamId)!==String(myTeamId()));
+  save(); closeModal(); toast('Claim cancelled', 'ok'); renderActive();
+};
+function processWaivers() {
+  const wvs = LG().waivers || {};
+  const now = Date.now();
+  let changed = false;
+  for (const espnId of Object.keys(wvs)) {
+    const wv = wvs[espnId];
+    if (wv.until > now) continue;                    // window still open
+    const p = LG().playerPool.find(x=>String(x.espnId)===String(espnId));
+    const claims = (wv.claims||[]).slice();
+    if (claims.length) {
+      const wp = ensureWaiverPriority();
+      const prio = id => wp.findIndex(x=>String(x)===String(id));
+      claims.sort((a,b) => LSET().waiverMode==='faab'
+        ? (b.bid - a.bid) || (prio(a.teamId) - prio(b.teamId))
+        : (prio(a.teamId) - prio(b.teamId)));
+      let winner = null;
+      for (const c of claims) {
+        const room = rosterActiveCount(c.teamId) < rosterCap();
+        const funds = LSET().waiverMode!=='faab' || c.bid <= faabLeft(c.teamId);
+        if (room && funds) { winner = c; break; }
+      }
+      if (winner) {
+        const maxPick = LG().draft.picks.reduce((m,pk)=>Math.max(m,pk.pick||0), 0);
+        LG().draft.picks.push({ teamId: winner.teamId, playerId: espnId, pick: maxPick+1, addedFA: true });
+        if (LSET().waiverMode==='faab' && winner.bid>0) {
+          LG().faabSpent = LG().faabSpent || {};
+          LG().faabSpent[winner.teamId] = (LG().faabSpent[winner.teamId]||0) + winner.bid;
+        }
+        // rolling priority: winner drops to the back
+        LG().waiverPriority = ensureWaiverPriority().filter(x=>String(x)!==String(winner.teamId));
+        LG().waiverPriority.push(winner.teamId);
+        logTxn('waiver', `${teamName(winner.teamId)} claimed ${p?.name||'a player'}${LSET().waiverMode==='faab'?` ($${winner.bid})`:''}`);
+      }
+    }
+    delete wvs[espnId];                               // cleared (claimed or now a free agent)
+    changed = true;
+  }
+  if (changed) { save({silent:true}); renderActive(); }
+}
+
+/* ---- GAME-ISSUE ATTENTION QUEUE (master resolves) ----
+   Postponed/Cancelled/Suspended games for rostered starters get flagged into
+   the MASTER doc. Master settings shows the queue; resolving writes a manual
+   points override that scoring then counts. */
+function auditGameIssues() {
+  if (SP().statsApi !== 'mlb' || !STATE.activeLeagueDoc) return;
+  if (LSET().scoringFormat !== 'bestGame' && LSET().scoringFormat !== 'regular') return;
+  const week = currentWeekNow();
+  const sched = schedForWeekSync(week); if (!sched) return;
+  const bad = ['Postponed','Cancelled','Suspended'];
+  STATE.attention = STATE.attention || {};
+  let dirty = false;
+  for (const t of LG().teams) {
+    for (const pid of getStarters(t.id, week)) {
+      const p = LG().playerPool.find(x=>String(x.espnId)===String(pid));
+      if (!p?.mlbId || !p.mlbTeamId) continue;
+      for (const d of Object.keys(sched)) {
+        for (const g of (sched[d]||[])) {
+          if ((g.homeId===p.mlbTeamId || g.awayId===p.mlbTeamId) && bad.includes(g.status)) {
+            const key = `${STATE.activeLeagueDoc}|${week}|${p.mlbId}|${d}`;
+            const okey = `${STATE.activeLeagueDoc}|${week}|${p.mlbId}`;
+            if (!STATE.attention[key] && (STATE.scoreOverrides||{})[okey] === undefined) {
+              STATE.attention[key] = { leagueName: LG().leagueName, player: p.name, mlbId: p.mlbId,
+                week, date: d, status: g.status, ts: Date.now() };
+              dirty = true;
+            }
+          }
+        }
+      }
+    }
+  }
+  if (dirty) save({ master:true, silent:true });
+}
+window.resolveIssue = function(key) {
+  const item = (STATE.attention||{})[key]; if (!item) return;
+  const v = prompt(`Points for ${item.player} (week ${item.week}, ${item.status} ${item.date})?\nEnter the makeup-game points, or 0 if none:`);
+  if (v === null) return;
+  const pts = Number(v);
+  if (isNaN(pts)) { toast('Enter a number', 'err'); return; }
+  STATE.scoreOverrides = STATE.scoreOverrides || {};
+  const parts = key.split('|');
+  STATE.scoreOverrides[`${parts[0]}|${parts[1]}|${parts[2]}`] = pts;
+  delete STATE.attention[key];
+  save({ master:true });
+  toast(`Resolved: ${item.player} → ${pts} pts`, 'ok');
+  renderActive();
+};
+window.dismissIssue = function(key) {
+  if (!STATE.attention?.[key]) return;
+  delete STATE.attention[key];
+  save({ master:true }); renderActive();
+};
+
+/* ---- PLAYOFFS ----
+   Seeds from H2H standings at the start week; single-week rounds. 2 or 4 teams. */
+function standingsBestFirst() {
+  const rec = computeRecords();
+  return LG().teams.map(t=>t.id).sort((a,b) => {
+    const ra=rec[a]||{w:0,pf:0}, rb=rec[b]||{w:0,pf:0};
+    return (rb.w - ra.w) || (rb.pf - ra.pf);
+  });
+}
+function playoffBracket() {
+  const start = Number(LSET().playoffStartWeek) || 0;
+  if (!start) return null;
+  const n = Number(LSET().playoffTeams) || 4;
+  const seeds = standingsBestFirst().slice(0, n);
+  if (seeds.length < 2) return null;
+  const cur = currentWeekNow();
+  const scoreOf = (tid, wk) => cur >= wk ? teamWeekTotal(tid, wk) : null;
+  const winner = (a, b, wk) => {
+    if (a==null) return b; if (b==null) return a;
+    const sa = scoreOf(a, wk), sb = scoreOf(b, wk);
+    if (cur <= wk || sa===null || sb===null) return null;   // round not decided yet
+    return sa >= sb ? a : b;                                // tie → higher seed (a)
+  };
+  if (n <= 2) {
+    const champ = winner(seeds[0], seeds[1], start);
+    return { rounds: [{ week: start, label:'Championship', pairs:[[seeds[0],seeds[1]]] }], champ };
+  }
+  const semiWk = start, finalWk = start + 1;
+  const w1 = winner(seeds[0], seeds[3] ?? null, semiWk);
+  const w2 = winner(seeds[1], seeds[2] ?? null, semiWk);
+  const champ = (w1 && w2) ? winner(w1, w2, finalWk) : null;
+  return { rounds: [
+    { week: semiWk, label:'Semifinals', pairs: [[seeds[0], seeds[3] ?? null],[seeds[1], seeds[2] ?? null]] },
+    { week: finalWk, label:'Championship', pairs: [[w1, w2]] },
+  ], champ };
+}
+
+/* ---- KEEPERS (traditional) ----
+   Keeper leagues: at season end the commissioner runs "new season", picking each
+   team's keepers. Keeping a player costs next draft's pick in the round he was
+   drafted (FA adds cost the last round). When the new live draft reaches that
+   round for that team, the keeper IS the pick — recorded automatically. */
+window.openKeeperFlow = function() {
+  if (!(window._masterUnlocked || commishUnlocked())) { toast('Commissioner PIN required', 'err'); return; }
+  if (LSET().leagueType !== 'keeper') { toast('This is not a keeper league', 'err'); return; }
+  window._keep = { ti: 0, sel: {} };
+  renderKeeperModal();
+};
+function keeperCostRound(pk) {
+  if (!pk) return 99;
+  if (pk.round) return pk.round;
+  const rounds = LG().draft.picks.reduce((m,p)=>Math.max(m, p.round||0), 0);
+  return rounds || Math.ceil(rosterCap());
+}
+function renderKeeperModal() {
+  const k = window._keep;
+  const team = LG().teams[k.ti];
+  if (!team) { finishKeeperFlow(); return; }
+  const roster = teamRoster(team.id);
+  const sel = k.sel[team.id] || [];
+  const max = LSET().keeperCount || 3;
+  const rows = roster.map(p => {
+    const pk = LG().draft.picks.find(x => String(x.playerId)===String(p.espnId) && String(x.teamId)===String(team.id));
+    const cost = keeperCostRound(pk);
+    const on = sel.includes(String(p.espnId));
+    return `<div class="row-between" style="padding:.35rem 0;border-bottom:1px solid rgba(42,61,48,.35)">
+      <span style="font-size:.8rem">${esc(p.name)} <span class="sub" style="font-size:.62rem">costs Rd ${cost}${pk?.addedFA?' (FA)':''}</span></span>
+      <button class="btn btn-sm ${on?'btn-amber':'btn-ghost'}" onclick="toggleKeeperSel('${team.id}','${p.espnId}')">${on?'✓ Keep':'Keep'}</button>
+    </div>`;
+  }).join('') || '<p class="sub">No rostered players.</p>';
+  openModal(`
+    <div class="h2">Keepers · ${esc(team.name)}</div>
+    <p class="sub mb">Team ${k.ti+1} of ${LG().teams.length} · pick up to <b>${max}</b>. Each keeper costs that round's pick in the new draft.</p>
+    <div style="max-height:45vh;overflow:auto">${rows}</div>
+    <button class="btn btn-amber btn-block mt" onclick="keeperNextTeam()">${k.ti+1 < LG().teams.length ? 'Next team →' : '✓ Finish & start new season'}</button>
+    <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Cancel (nothing saved)</button>`);
+}
+window.toggleKeeperSel = function(teamId, espnId) {
+  const k = window._keep; k.sel[teamId] = k.sel[teamId] || [];
+  const i = k.sel[teamId].indexOf(String(espnId));
+  if (i >= 0) k.sel[teamId].splice(i, 1);
+  else {
+    if (k.sel[teamId].length >= (LSET().keeperCount||3)) { toast(`Max ${LSET().keeperCount||3} keepers`, 'err'); return; }
+    k.sel[teamId].push(String(espnId));
+  }
+  renderKeeperModal();
+};
+window.keeperNextTeam = function() {
+  const k = window._keep;
+  if (k.ti + 1 < LG().teams.length) { k.ti++; renderKeeperModal(); }
+  else finishKeeperFlow();
+};
+function finishKeeperFlow() {
+  const k = window._keep; if (!k) return;
+  const keepers = {}, costs = {};
+  for (const team of LG().teams) {
+    const list = (k.sel[team.id] || []).map(eid => {
+      const p = LG().playerPool.find(x=>String(x.espnId)===String(eid));
+      const pk = LG().draft.picks.find(x => String(x.playerId)===String(eid) && String(x.teamId)===String(team.id));
+      let round = keeperCostRound(pk);
+      // two keepers can't cost the same round — bump to the next open later round
+      const used = new Set((keepers[team.id]||[]).map(x=>x.costRound));
+      while (used.has(round)) round++;
+      return { espnId: eid, name: p?.name||'Player', costRound: round };
+    });
+    if (list.length) {
+      keepers[team.id] = list;
+      costs[team.id] = {};
+      list.forEach(x => { costs[team.id][x.costRound] = x.name; logTxn('keeper', `${team.name} keeps ${x.name} (Rd ${x.costRound})`); });
+    }
+  }
+  LG().keepers = keepers;
+  LG().keeperCosts = costs;
+  // reset the season: fresh draft, week 1, clean lineups/waivers
+  LG().draft = { started:false, complete:false, live:false, order: LG().draft.order||[], picks:[], currentPick:0,
+                 draftDate:null, secPerPick: LSET().secPerPick||90, snake:true, pickStartedAt:null, paused:false };
+  LG().lineups = {}; LG().waivers = {}; LG().faabSpent = {}; LG().currentWeek = 1;
+  window._keep = null;
+  save(); closeModal();
+  toast('New season started — keepers will auto-slot in their cost rounds during the draft', 'ok');
+  renderActive();
+}
+/* during the live draft: when the on-clock team owes a round to a keeper,
+   the keeper IS that pick — record it and keep the draft moving. */
+function checkKeeperSkips() {
+  const d = LG().draft;
+  if (!d.live || d.paused) return;
+  let guard = 0;
+  while (guard++ < 60) {
+    const team = currentPickTeam(); if (!team) return;
+    const { round } = pickRoundAndSlot(currentPickIndex());
+    const ks = (LG().keepers||{})[team];
+    const hit = ks?.find(x => x.costRound === round &&
+      !d.picks.some(p => String(p.playerId)===String(x.espnId)));
+    if (!hit) return;
+    commitPick(hit.espnId, team);   // the keeper is the pick for this slot
+  }
+}
+
+/* ---- format setters (locked once the draft starts) ---- */
+function fmtLocked() { return LG().draft.started || LG().draft.live || LG().draft.complete; }
+function fmtGuard() { if (fmtLocked()) { toast('League format is locked once the draft starts', 'err'); return true; } return false; }
+window.setScoringFormat = function(v) { if (fmtGuard()) return; ensureSettings(); LG().settings.scoringFormat = v; save(); renderActive(); };
+window.setBGScope = function(v) { if (fmtGuard()) return; ensureSettings(); LG().settings.bestGameScope = v; save(); renderActive(); };
+window.setKeeperCount = function(v) { if (fmtGuard()) return; ensureSettings(); LG().settings.keeperCount = Math.max(1, Math.min(15, Number(v)||3)); save(); renderActive(); };
+window.setWaiverMode = function(v) { ensureSettings(); LG().settings.waiverMode = v; save(); renderActive(); };
+window.setFaabBudget = function(v) { ensureSettings(); LG().settings.faabBudget = Math.max(1, Number(v)||100); save(); renderActive(); };
+window.setPlayoffTeams = function(v) { ensureSettings(); LG().settings.playoffTeams = Number(v)||4; save(); renderActive(); };
+window.setPlayoffStartWeek = function(v) { ensureSettings(); LG().settings.playoffStartWeek = Math.max(0, Number(v)||0); save(); renderActive(); };
+
+/* ============================================================
    PLAYER POOL POINTS — fetch game logs for the top 200 by ADP and
    roll them into season + last-7/14/30-day totals using league scoring.
    Stored on each player: ptsSeason, pts7, pts14, pts30.
@@ -1879,6 +2325,7 @@ function manageDraftTimer(page) {
     if (!_draftTimer) {
       _draftTimer = setInterval(() => {
         if (!LG().draft?.live || LG().draft?.paused) { clearInterval(_draftTimer); _draftTimer=null; return; }
+        checkKeeperSkips();   // keeper leagues: keepers auto-slot as their round's pick
         const left = draftSecondsLeft();
         const t = document.querySelector('.draft-timer');
         if (t) { t.textContent = fmtClock(left); t.classList.toggle('urgent', left<=10); }
@@ -1931,16 +2378,27 @@ function viewHome() {
 
   return `
     <div class="eyebrow">${SP().icon} ${esc(LG().leagueName)}</div>
-    <div class="h1">Best game<br>of the week.</div>
-    <p class="sub mt">Each week, only your starters count — and only their single
-      best game. Highest weekly total wins.</p>
+    ${LSET().scoringFormat === 'regular'
+      ? `<div class="h1">Every game<br>counts.</div>
+         <p class="sub mt">All of your starters' games add up each week. Highest weekly total wins.</p>`
+      : `<div class="h1">Best game<br>of the week.</div>
+         <p class="sub mt">Each week, only your starters count — and only their single
+           best game${LSET().bestGameScope==='pitchersOnly'?' (pitchers only — hitters add all games)':LSET().bestGameScope==='hittersOnly'?' (hitters only — pitchers add all games)':''}. Highest weekly total wins.</p>`}
 
-    <div class="card mt">
+    ${haveDraft ? `
+      <div class="tilegrid">
+        <div class="tile amber" onclick="go('matchups')"><span class="tic">⚔</span><span class="tlb">Set My Lineup</span><span class="tsb">this week's matchup</span></div>
+        <div class="tile" onclick="go('standings')"><span class="tic">▦</span><span class="tlb">Standings</span><span class="tsb">records &amp; playoffs</span></div>
+        <div class="tile" onclick="go('players')"><span class="tic">◎</span><span class="tlb">Players</span><span class="tsb">add, drop &amp; claim</span></div>
+        <div class="tile" onclick="go('teams')"><span class="tic">★</span><span class="tlb">My Team</span><span class="tsb">roster &amp; trades</span></div>
+      </div>` : ''}
+
+    ${!haveDraft ? `<div class="card mt">
       <div class="h2">Setup checklist</div>
       ${checkRow('League connected', havePool, 'Pull player pool & rules in Settings')}
       ${checkRow('Teams created', haveTeams, 'Add teams in Settings')}
       ${checkRow('Draft complete', haveDraft, haveTeams ? 'Run the draft' : 'Create teams first')}
-    </div>
+    </div>` : ''}
 
     ${!havePool ? `
       <div class="card">
@@ -1955,12 +2413,6 @@ function viewHome() {
         <div class="h2">Ready to draft</div>
         <p class="sub mb">${LG().playerPool.length} players available.</p>
         <button class="btn btn-amber btn-block" onclick="go('draft')">Go to Draft →</button>
-      </div>` : ''}
-
-    ${haveDraft ? `
-      <div class="row">
-        <button class="btn btn-amber" onclick="go('standings')">Standings</button>
-        <button class="btn btn-ghost" onclick="go('matchups')">This week</button>
       </div>` : ''}
   `;
 }
@@ -2186,7 +2638,7 @@ function teamWeekTotal(teamId, week) {
   let total = 0;
   starters.forEach(pid => {
     const p = roster.find(r => String(r.espnId)===String(pid));
-    if (p?.mlbId) { const bg = playerBestGame(p.mlbId, week); if (bg) total += bg.pts; }
+    if (p) total += playerWeekScore(p, week);   // format-aware: best game / sum / scoped
   });
   return Math.round(total*10)/10;
 }
@@ -2306,13 +2758,48 @@ function viewStandings() {
     <div class="eyebrow">${esc(LG().leagueName)} · through week ${cur}</div>
     <div class="h1">Standings</div>
     <p class="sub mb" style="font-size:.72rem">Head-to-head record by weekly matchup.${LSET().bonusWin?' <b class="amber">Bonus win ON</b> — top-half scorers earn an extra W each week.':''}</p>
+    ${(() => {
+      const wk = currentWeekNow();
+      const sched = matchupSchedule(); const rounds = Object.keys(sched).length;
+      if (!rounds) return '';
+      const pairs = sched[((wk-1)%rounds)+1] || [];
+      const rows = pairs.filter(([a,b])=>a!=='__BYE__'&&b!=='__BYE__').map(([a,b]) =>
+        `<div class="row-between" style="padding:.35rem 0;border-bottom:1px solid rgba(42,61,48,.35);font-size:.78rem">
+          <span>${esc(teamName(a))} <b class="amber">${teamWeekTotal(a,wk)}</b></span>
+          <span class="sub" style="font-size:.62rem">vs</span>
+          <span><b class="amber">${teamWeekTotal(b,wk)}</b> ${esc(teamName(b))}</span>
+        </div>`).join('');
+      return rows ? `<div class="card"><div class="h2">Week ${wk} matchups</div>${rows}</div>` : '';
+    })()}
+    ${(() => {
+      const br = playoffBracket(); if (!br) return '';
+      const rr = br.rounds.map(r => {
+        const ps = r.pairs.map(([a,b]) =>
+          `<div class="row-between" style="padding:.3rem 0;font-size:.76rem">
+            <span>${a?esc(teamName(a)):'TBD'}</span><span class="sub" style="font-size:.6rem">wk ${r.week}</span><span>${b?esc(teamName(b)):'TBD'}</span>
+          </div>`).join('');
+        return `<p class="sub" style="font-size:.64rem;letter-spacing:1px;margin-top:.4rem">${r.label.toUpperCase()}</p>${ps}`;
+      }).join('');
+      return `<div class="card" style="border-color:var(--amber)"><div class="h2">🏆 Playoffs</div>${rr}
+        ${br.champ ? `<p class="mt" style="text-align:center;font-weight:700;color:var(--amber)">🏆 Champion: ${esc(teamName(br.champ))}</p>` : ''}</div>`;
+    })()}
     <div class="card card-tight">
       <table class="tbl">
         <thead><tr><th class="r">#</th><th>Team</th><th class="r">Record</th><th class="r">PF</th><th class="r">PA</th></tr></thead>
         <tbody>${body}</tbody>
       </table>
     </div>
-    <p class="sub mt" style="font-size:.66rem;text-align:center">PF = points for, PA = points against. Tap a team to view their roster.</p>`;
+    <p class="sub mt" style="font-size:.66rem;text-align:center">PF = points for, PA = points against. Tap a team to view their roster.</p>
+    ${(() => {
+      const tx = (LG().transactions||[]).slice(0,12);
+      if (!tx.length) return '';
+      const icon = t => ({add:'➕',drop:'➖',trade:'⇄',waiver:'📥',keeper:'📌'})[t]||'•';
+      const rows = tx.map(t =>
+        `<div style="padding:.3rem 0;border-bottom:1px solid rgba(42,61,48,.3);font-size:.72rem">
+          ${icon(t.type)} ${esc(t.text)} <span class="sub" style="font-size:.6rem">· ${new Date(t.ts).toLocaleDateString([], {month:'short', day:'numeric'})}</span>
+        </div>`).join('');
+      return `<div class="card mt"><div class="h2">Recent activity</div>${rows}</div>`;
+    })()}`;
 }
 function viewMatchups() {
   if (!LG().teams.length || !LG().draft.complete) {
@@ -2969,6 +3456,10 @@ window.dropPlayer = function(espnId) {
 };
 window.confirmDrop = function(espnId) {
   const tid = myTeamId();
+  const lp = LG().playerPool.find(x=>String(x.espnId)===String(espnId));
+  if (lp && playerLockedForWeek(lp, activeWeek())) {
+    toast(`🔒 ${lp.name} is locked — their game already started this week`, 'err'); return;
+  }
   // remove from draft picks
   LG().draft.picks = LG().draft.picks.filter(pk =>
     !(String(pk.teamId)===String(tid) && String(pk.playerId)===String(espnId)));
@@ -2980,8 +3471,13 @@ window.confirmDrop = function(espnId) {
       if (String(lu.assignments[k])===String(espnId)) delete lu.assignments[k];
     }
   }
+  // dropped players sit on waivers before becoming instant-add free agents
+  const wp = LG().playerPool.find(x=>String(x.espnId)===String(espnId));
+  LG().waivers = LG().waivers || {};
+  LG().waivers[espnId] = { until: Date.now() + (LSET().waiverDays||1)*86400000, claims: [] };
+  logTxn('drop', `${teamName(tid)} dropped ${wp?.name||'a player'}`);
   save();
-  toast('Player dropped', 'ok');
+  toast('Player dropped — on waivers', 'ok');
   openAddDrop();
 };
 
@@ -3190,7 +3686,11 @@ function renderLineupEditor(week, locked) {
       return fits && (!usedIds.has(String(r.espnId)) || String(r.espnId)===String(pid));
     });
     const optHtml = ['<option value="">— empty —</option>']
-      .concat(opts.map(r => `<option value="${r.espnId}" ${String(r.espnId)===String(pid)?'selected':''}>${esc(r.name)} (${esc((r.eligible||[]).join('/'))})</option>`))
+      .concat(opts.map(r => {
+        const lk = playerLockedForWeek(r, week);
+        const isHere = String(r.espnId)===String(pid);
+        return `<option value="${r.espnId}" ${isHere?'selected':''} ${lk&&!isHere?'disabled':''}>${lk?'🔒 ':''}${esc(r.name)} (${esc((r.eligible||[]).join('/'))})</option>`;
+      }))
       .join('');
     return `<div class="row-between" style="padding:.35rem 0;border-bottom:1px solid rgba(42,61,48,.4);gap:.5rem">
       <span class="starter-badge s" style="min-width:42px;text-align:center">${esc(s.slot)}</span>
@@ -3239,9 +3739,23 @@ window.saveLineup = function() {
   const week = activeWeek();
   if (isWeekLocked(week)) { toast('Week is locked', 'err'); return; }
   const tid = myTeamId();
+  // INDIVIDUAL LOCKS (best-game): once a player's first game of the week has
+  // started, they can't be moved in, out, or between slots — reject the save.
+  const saved = (LG().lineups?.[tid]?.[week]?.assignments) || {};
+  const next = {...(window._lineupWork||{})};
+  for (const p of teamRoster(tid)) {
+    if (!playerLockedForWeek(p, week)) continue;
+    const pid = String(p.espnId);
+    const savedSlot = Object.keys(saved).find(k => String(saved[k])===pid) ?? null;
+    const nextSlot  = Object.keys(next).find(k => String(next[k])===pid) ?? null;
+    if (savedSlot !== nextSlot) {
+      toast(`🔒 ${p.name} is locked — their game already started`, 'err');
+      return;
+    }
+  }
   LG().lineups = LG().lineups || {};
   LG().lineups[tid] = LG().lineups[tid] || {};
-  LG().lineups[tid][week] = { assignments: {...(window._lineupWork||{})} };
+  LG().lineups[tid][week] = { assignments: next };
   save(); closeModal(); toast('Lineup saved', 'ok'); renderActive();
 };
 
@@ -4015,11 +4529,16 @@ window.addPlayerFromPool = function(espnId) {
   if (LSET().useSalaryCap && rostersLocked()) { toast('Rosters are locked (playoffs) — no adds', 'err'); return; }
   if (!myTeamId()) { toast('Claim your team first', 'err'); return; }
   if (rosterActiveCount(myTeamId()) >= rosterCap()) { toast('Roster full — drop someone first', 'err'); return; }
+  // if the player is on waivers, this becomes a CLAIM, not an instant add
+  const wv = (LG().waivers||{})[espnId];
+  if (wv && wv.until > Date.now()) { openClaimModal(espnId); return; }
+  if (wv) { delete LG().waivers[espnId]; }   // expired, unclaimed → clean up
   const maxPick = LG().draft.picks.reduce((m,pk)=>Math.max(m,pk.pick||0), 0);
   LG().draft.picks.push({ teamId: myTeamId(), playerId: espnId, pick: maxPick+1, addedFA: true });
+  const p = LG().playerPool.find(x=>String(x.espnId)===String(espnId));
+  logTxn('add', `${teamName(myTeamId())} added ${p?.name||'a player'}`);
   save();
   syncExtraIfRostered(espnId);   // if this is a local-only extra, push it to master so all see it
-  const p = LG().playerPool.find(x=>String(x.espnId)===String(espnId));
   toast(`Added ${p?.name||'player'} to your team`, 'ok');
   closeModal();
   renderActive();
@@ -4125,6 +4644,24 @@ function viewSettings() {
       <button class="btn btn-block" onclick="openCommishLog()">Manage approvals (${Object.keys(STATE.approvals||{}).length})</button>
     </div>
 
+    ${(() => {
+      const items = Object.entries(STATE.attention||{});
+      if (!items.length) return '';
+      const rows = items.map(([key, it]) =>
+        `<div class="card card-tight mt" style="border-color:var(--bad)">
+          <p class="sub" style="font-size:.72rem"><b>${esc(it.player)}</b> · ${esc(it.leagueName||'')} · wk ${it.week}<br>
+            ${esc(it.status)} game on ${esc(it.date)} — score pending until resolved.</p>
+          <div class="row mt" style="gap:.4rem">
+            <button class="btn btn-sm btn-amber" onclick="resolveIssue('${key}')">Enter points</button>
+            <button class="btn btn-sm btn-ghost" onclick="dismissIssue('${key}')">Dismiss</button>
+          </div>
+        </div>`).join('');
+      return `<div class="card" style="border-color:var(--bad)">
+        <div class="h2">⚠ Game issues (${items.length})</div>
+        <p class="sub mb">Postponed/canceled games for rostered starters. Enter the makeup-game points (or 0) to resolve — scoring updates everywhere.</p>
+        ${rows}</div>`;
+    })()}
+
     <div class="card" style="border-color:var(--sage)">
       <div class="h2">💰 Salaries & cap (default)</div>
       <p class="sub mb">Turn salaries on and load the shared salary database (1 per sport).
@@ -4198,14 +4735,63 @@ function viewSettings() {
 
     <div class="card">
       <div class="h2">League rules</div>
-      <p class="sub mb">League type, draft format, and salary cap. Editable until the draft starts.</p>
+      <p class="sub mb">League type, format, and rules. Format locks once the draft starts.</p>
+      ${fmtLocked() ? `<p class="sub mb" style="color:var(--amber);font-size:.68rem">🔒 Format is locked — the draft has started. Waivers &amp; playoffs stay editable.</p>` : ''}
       <div class="row-between" style="padding:.4rem 0">
         <span class="sub">League type</span>
         <div class="row" style="gap:.3rem">
           <button class="btn btn-sm ${LSET().leagueType==='redraft'?'btn-amber':'btn-ghost'}" onclick="setLeagueType('redraft')">Redraft</button>
+          <button class="btn btn-sm ${LSET().leagueType==='keeper'?'btn-amber':'btn-ghost'}" onclick="setLeagueType('keeper')">Keeper</button>
           <button class="btn btn-sm ${LSET().leagueType==='dynasty'?'btn-amber':'btn-ghost'}" onclick="setLeagueType('dynasty')">Dynasty</button>
         </div>
       </div>
+      ${LSET().leagueType==='keeper' ? `
+      <div class="row-between" style="padding:.4rem 0;border-top:1px solid rgba(42,61,48,.4)">
+        <span class="sub">Keepers per team<br><span style="font-size:.62rem;color:var(--sage-dim)">keeping a Rd-N player costs next draft's Rd-N pick</span></span>
+        <input class="input" type="number" min="1" max="15" value="${LSET().keeperCount||3}" style="width:70px;text-align:right" onchange="setKeeperCount(this.value)">
+      </div>` : ''}
+      <div class="row-between" style="padding:.4rem 0;border-top:1px solid rgba(42,61,48,.4)">
+        <span class="sub">Scoring format</span>
+        <div class="row" style="gap:.3rem">
+          <button class="btn btn-sm ${LSET().scoringFormat==='bestGame'?'btn-amber':'btn-ghost'}" onclick="setScoringFormat('bestGame')">Best Game</button>
+          <button class="btn btn-sm ${LSET().scoringFormat==='regular'?'btn-amber':'btn-ghost'}" onclick="setScoringFormat('regular')">Regular</button>
+        </div>
+      </div>
+      ${LSET().scoringFormat==='bestGame' && SP().statsApi==='mlb' ? `
+      <div class="row-between" style="padding:.4rem 0;border-top:1px solid rgba(42,61,48,.4)">
+        <span class="sub">Best-game applies to<br><span style="font-size:.62rem;color:var(--sage-dim)">others accumulate all games</span></span>
+        <div class="row" style="gap:.25rem">
+          <button class="btn btn-sm ${(LSET().bestGameScope||'all')==='all'?'btn-amber':'btn-ghost'}" onclick="setBGScope('all')">All</button>
+          <button class="btn btn-sm ${LSET().bestGameScope==='pitchersOnly'?'btn-amber':'btn-ghost'}" onclick="setBGScope('pitchersOnly')">Pitchers</button>
+          <button class="btn btn-sm ${LSET().bestGameScope==='hittersOnly'?'btn-amber':'btn-ghost'}" onclick="setBGScope('hittersOnly')">Hitters</button>
+        </div>
+      </div>` : ''}
+      <div class="row-between" style="padding:.4rem 0;border-top:1px solid rgba(42,61,48,.4)">
+        <span class="sub">Waivers<br><span style="font-size:.62rem;color:var(--sage-dim)">dropped players clear after ${LSET().waiverDays||1} day(s)</span></span>
+        <div class="row" style="gap:.3rem">
+          <button class="btn btn-sm ${LSET().waiverMode!=='faab'?'btn-amber':'btn-ghost'}" onclick="setWaiverMode('priority')">Priority</button>
+          <button class="btn btn-sm ${LSET().waiverMode==='faab'?'btn-amber':'btn-ghost'}" onclick="setWaiverMode('faab')">FAAB</button>
+        </div>
+      </div>
+      ${LSET().waiverMode==='faab' ? `
+      <div class="row-between" style="padding:.4rem 0;border-top:1px solid rgba(42,61,48,.4)">
+        <span class="sub">FAAB budget ($/season)</span>
+        <input class="input" type="number" min="1" value="${LSET().faabBudget||100}" style="width:80px;text-align:right" onchange="setFaabBudget(this.value)">
+      </div>` : ''}
+      <div class="row-between" style="padding:.4rem 0;border-top:1px solid rgba(42,61,48,.4)">
+        <span class="sub">Playoff teams</span>
+        <div class="row" style="gap:.3rem">
+          <button class="btn btn-sm ${Number(LSET().playoffTeams)===2?'btn-amber':'btn-ghost'}" onclick="setPlayoffTeams(2)">2</button>
+          <button class="btn btn-sm ${Number(LSET().playoffTeams||4)===4?'btn-amber':'btn-ghost'}" onclick="setPlayoffTeams(4)">4</button>
+        </div>
+      </div>
+      ${!LSET().useSalaryCap ? `
+      <div class="row-between" style="padding:.4rem 0;border-top:1px solid rgba(42,61,48,.4)">
+        <span class="sub">Playoffs start (week)<br><span style="font-size:.62rem;color:var(--sage-dim)">0 = no playoffs</span></span>
+        <input class="input" type="number" min="0" max="26" value="${LSET().playoffStartWeek||0}" style="width:80px;text-align:right" onchange="setPlayoffStartWeek(this.value)">
+      </div>` : ''}
+      ${LSET().leagueType==='keeper' && LG().draft.complete ? `
+      <button class="btn btn-block mt" style="background:var(--clay);color:#fff" onclick="openKeeperFlow()">⏭ New season — select keepers</button>` : ''}
       <div class="row-between" style="padding:.4rem 0;border-top:1px solid rgba(42,61,48,.4)">
         <span class="sub">Snake draft</span>
         <button class="btn btn-sm ${LSET().snake?'btn-amber':'btn-ghost'}" onclick="toggleSnake()">${LSET().snake?'ON (snake)':'OFF (linear)'}</button>
@@ -4730,13 +5316,43 @@ function joinLeagueById(id, opts = {}) {
 }
 /* Write / clear the URL hash so each league is its own address. Guarded so it
    doesn't retrigger the hashchange auto-join loop. */
+/* Go to the hub: clear the URL to bare AND show the landing, so URL and view stay
+   in sync. Use this everywhere a "back to hub" action happens in-app. */
+function goToHub() {
+  setLeagueHash(null);   // bare URL (pushes a hub history entry if the URL changes)
+  window._pausedFor = null;
+  showGate('landing');
+}
+/* Write the URL so each league is its own address AND a real browser-history entry,
+   so Safari's back button steps league → hub naturally.
+   - setLeagueHash(id): PUSH a new entry '#league=<id>' (so back returns to whatever
+     was showing before — normally the hub).
+   - setLeagueHash(null): return to the bare hub URL as its own entry. */
 function setLeagueHash(id) {
   window._suppressHash = true;
   try {
-    if (id) location.hash = 'league=' + id;
-    else if (location.hash) history.replaceState(null, '', location.pathname + location.search);
-  } catch(e) {}
+    const target = id ? (location.pathname + location.search + '#league=' + id)
+                      : (location.pathname + location.search);
+    const current = location.pathname + location.search + location.hash;
+    // only push a new history entry if the URL is actually changing — prevents
+    // double entries when the boot deep-link already put us at this league URL.
+    if (target !== current) history.pushState({ league: id || null }, '', target);
+  } catch(e) {
+    try { if (id) location.hash = 'league=' + id; else location.hash = ''; } catch(e2) {}
+  }
   setTimeout(() => { window._suppressHash = false; }, 50);
+}
+/* Seed a hub entry UNDER the current one at boot, so that when someone opens a
+   league link directly (no prior hub view), pressing back still lands on the hub
+   instead of leaving the site. Called once during boot when we start in a league. */
+function seedHubHistory() {
+  try {
+    const here = location.pathname + location.search + location.hash;
+    // replace current with a clean hub entry, then push the league back on top
+    const leagueHash = location.hash;
+    history.replaceState({ hub: true }, '', location.pathname + location.search);
+    if (leagueHash) history.pushState({ league: true }, '', here);
+  } catch(e) {}
 }
 
 /* legacy entry points kept for the Settings "join / leave" buttons */
@@ -4812,8 +5428,7 @@ window.confirmLeaveLeague = function() {
   saveLocal();
   closeModal();
   toast('Left league', 'ok');
-  setLeagueHash(null);   // clear the URL back to the bare master-hub address
-  showGate('landing');   // back to the entry hub
+  goToHub();             // clear URL to bare + show the hub (one back-nav step)
 };
 
 /* Bind this device's LOCAL league data to a League ID and push it to Firebase.
@@ -5688,7 +6303,13 @@ function activeLineupSlots() {
 }
 function LSET() {
   // league settings with defaults (older leagues may lack the object)
-  const d = { leagueType:'redraft', snake:true, secPerPick:90, draftDate:null, useSalaryCap:false, salaryCap:260, bonusWin:false };
+  const d = { leagueType:'redraft', snake:true, secPerPick:90, draftDate:null, useSalaryCap:false, salaryCap:260, bonusWin:false,
+    scoringFormat:'bestGame',     // 'bestGame' | 'regular' (sum of all games)
+    bestGameScope:'all',          // 'all' | 'pitchersOnly' | 'hittersOnly' (MLB)
+    keeperCount:3,                // keeper leagues: how many players carry over
+    waiverMode:'priority',        // 'priority' (rolling) | 'faab' (blind bids)
+    faabBudget:100, waiverDays:1,
+    playoffTeams:4, playoffStartWeek:0 };
   return { ...d, ...(LG().settings || {}) };
 }
 function isDynasty() { return LSET().leagueType === 'dynasty'; }
@@ -5823,7 +6444,8 @@ window.doGenerateTeams = function() {
    ============================================================ */
 function ensureSettings() { if (!LG().settings) LG().settings = {}; }
 window.setLeagueType = function(t) {
-  if (LG().draft.live || LG().draft.complete) { toast('Cannot change after draft starts', 'err'); return; }
+  if (LG().draft.started || LG().draft.live || LG().draft.complete) { toast('League format is locked once the draft starts', 'err'); return; }
+  if (t !== 'dynasty' && LSET().useSalaryCap) { toast('Turn salaries off first — salaries require Dynasty', 'err'); return; }
   ensureSettings(); LG().settings.leagueType = t; save(); renderActive();
 };
 window.toggleSnake = function() {
@@ -5831,6 +6453,8 @@ window.toggleSnake = function() {
   ensureSettings(); LG().settings.snake = !LSET().snake; save(); renderActive();
 };
 window.toggleSalaryCap = function() {
+  if (LG().draft.started || LG().draft.live || LG().draft.complete) { toast('League format is locked once the draft starts', 'err'); return; }
+  if (!LSET().useSalaryCap && LSET().leagueType !== 'dynasty') { toast('Salaries require a Dynasty league (set league type first)', 'err'); return; }
   ensureSettings(); LG().settings.useSalaryCap = !LSET().useSalaryCap; save(); renderActive();
 };
 window.toggleBonusWin = function() {
@@ -6168,6 +6792,18 @@ function slotEligible(slotName, player) {
 }
 
 function finishDraft() {
+  // KEEPER SAFETY SWEEP: if a keeper's cost round never came up (short draft),
+  // they still belong to their team — add them now so no keeper is ever lost.
+  const ks = LG().keepers || {};
+  for (const tid of Object.keys(ks)) {
+    for (const k of ks[tid]) {
+      if (!LG().draft.picks.some(p => String(p.playerId)===String(k.espnId))) {
+        const maxPick = LG().draft.picks.reduce((m,pk)=>Math.max(m,pk.pick||0), 0);
+        LG().draft.picks.push({ teamId: tid, playerId: k.espnId, pick: maxPick+1, keeper: true, addedFA: true });
+        logTxn('keeper', `${teamName(tid)} keeper slotted post-draft: ${k.name}`);
+      }
+    }
+  }
   LG().draft.live = false;
   LG().draft.complete = true;
   LG().draft.currentPick = LG().draft.picks.length;
@@ -6498,6 +7134,7 @@ window.acceptTrade = function(id) {
   const ok = executeTrade(t);
   if (!ok) { toast('Trade could not be applied — nothing changed', 'err'); return; }
   t.status = 'accepted'; t.resolved = Date.now();
+  logTxn('trade', `Trade: ${teamName(t.from)} ⇄ ${teamName(t.to)}`);
   save();
   toast('Trade accepted!', 'ok');
   openTradeCenter();
@@ -6690,14 +7327,28 @@ initFirebase();
 go('home');
 if (!fbReady) setTimeout(() => { if (!STATE._loaded) renderActive(); }, 300);
 
+/* background league ops: waiver processing + game-issue audit (throttled).
+   Runs on whichever device is open — idempotent, safe to run everywhere. */
+setInterval(() => {
+  if (!STATE.activeLeagueDoc) return;
+  try { processWaivers(); } catch(e) {}
+  const _n = Date.now();
+  if (!window._lastAudit || _n - window._lastAudit > 5*60*1000) {
+    window._lastAudit = _n;
+    try { auditGameIssues(); } catch(e) {}
+  }
+}, 60*1000);
+setTimeout(() => { if (STATE.activeLeagueDoc) { try { processWaivers(); auditGameIssues(); } catch(e) {} } }, 4000);
+
 /* URL IS THE SOURCE OF TRUTH.
    - #league=<id>  → open that league (auto-join, hash persists on refresh)
    - bare URL      → the master hub / landing (create & manage leagues)
    A previously-joined league in localStorage does NOT override the URL: if the
    URL is bare, we show the hub even if this device joined a league before. */
 if (window._pendingDeepLink) {
-  // A league URL — if this device isn't already in that league, join it once
-  // approvals load. Show a brief gate meanwhile.
+  // A league URL — seed a hub entry underneath so the back button returns to the
+  // hub even when someone opens the league link cold (no prior hub view).
+  seedHubHistory();
   const wantDoc = 'league_' + window._pendingDeepLink;
   if (STATE.activeLeagueDoc !== wantDoc) {
     // not already in it — clear any other league binding and join fresh
@@ -6713,6 +7364,8 @@ if (window._pendingDeepLink) {
   }
 } else {
   // BARE URL → master hub. Do not auto-open a previously joined league.
+  // Mark this history entry as the hub so back/forward routing is unambiguous.
+  try { history.replaceState({ hub: true }, '', location.pathname + location.search); } catch(e) {}
   showGate('landing');
 }
 
@@ -6727,18 +7380,33 @@ setTimeout(() => {
 
 /* Keep the URL in sync when the user navigates between leagues via the app
    (switcher, leave, join). Writing the hash makes each league bookmarkable. */
-window.addEventListener('hashchange', () => {
-  if (window._suppressHash) return;   // we set the hash ourselves; ignore
-  readDeepLink();
-  if (window._pendingDeepLink) {
-    const wantDoc = 'league_' + window._pendingDeepLink;
-    if (STATE.activeLeagueDoc !== wantDoc) tryDeepLinkJoin();
-    else window._pendingDeepLink = null;
-  } else if (gateNeeded()) {
-    // hash was cleared → back to hub
+/* Central URL→view router. Reads the current hash and shows the right thing:
+   a league (if #league=<id>) or the hub (bare URL). Used by both the back/forward
+   buttons (popstate) and manual hash edits (hashchange). */
+function routeFromUrl() {
+  if (window._suppressHash) return;   // we changed the URL ourselves; ignore the echo
+  const h = (location.hash || '').replace(/^#/, '');
+  const params = new URLSearchParams(h);
+  const id = params.get('league');
+  if (id && /^\d{5}$/.test(id)) {
+    // going to a league URL
+    const wantDoc = 'league_' + id;
+    if (STATE.activeLeagueDoc === wantDoc) {
+      hideGate();                    // already in it (e.g. forward button) → just show it
+    } else {
+      window._pendingDeepLink = id;
+      tryDeepLinkJoin();             // switch/join into that league
+    }
+  } else {
+    // bare URL → the hub. This is the BACK-from-a-league case. Always show the
+    // landing hub, even if this device is bound to a league.
+    window._pendingDeepLink = null;
+    window._pausedFor = null;
     showGate('landing');
   }
-});
+}
+window.addEventListener('popstate', routeFromUrl);   // Safari/Chrome back & forward buttons
+window.addEventListener('hashchange', routeFromUrl); // manual URL edits
 
 /* Auto-pull MLB stats on load (once per ~6h) and when a team is chosen.
    Runs silently in the background; refreshes the view when done. */
