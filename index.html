@@ -1380,40 +1380,26 @@ function nextAvailableOwnPick(teamId, round, startYear) {
    pick had been TRADED to someone else, the obligation follows to the next pick the
    team owns (the receiving team still gets a pick — the team's NEXT available one). */
 function removeOnePick(teamId, round, startYear, log) {
-  // 1) find the nearest future slot on this team's own line (traded or not)
+  // A penalty can NEVER touch a pick the team already traded away — the receiver
+  // acquired it in good faith and keeps it exactly as-is. The forfeit falls on the
+  // team's nearest future pick of that round that they still own, cascading past
+  // traded and already-removed years.
   for (let y = startYear; y < startYear + 15; y++) {
     if (pickRemoved(y, round, teamId)) continue;          // already gone
     const owner = pickOwner(y, round, teamId);
+    if (String(owner) !== String(teamId)) {
+      // traded away — receiver keeps it; keep searching later years
+      log && log(`${teamById(teamId).name}: ${y} R${round} was traded to ${teamById(owner).name} — receiver keeps it; penalty rolls forward`);
+      continue;
+    }
     LG().removedPicks = LG().removedPicks || {};
     LG().removedPicks[y] = LG().removedPicks[y] || {};
     LG().removedPicks[y][round] = LG().removedPicks[y][round] || {};
-    if (String(owner) === String(teamId)) {
-      // team still holds this pick → remove it directly
-      LG().removedPicks[y][round][teamId] = true;
-      log && log(`${teamById(teamId).name}: lost their ${y} R${round} pick (penalty)`);
-      return true;
-    } else {
-      // this pick was TRADED away. The penalty can't take a pick the team no longer
-      // controls — instead it removes the team's NEXT AVAILABLE own pick, and the
-      // trade obligation rolls forward to that next pick so the receiver still gets one.
-      const nxt = nextAvailableOwnPick(teamId, round, y + 1);
-      if (!nxt) { log && log(`${teamById(teamId).name}: no available R${round} pick to forfeit`); return false; }
-      // mark the next own pick as removed (the team's penalty), and reassign the trade
-      // obligation: the receiver (owner) now gets the team's pick at nxt.year instead.
-      const dp = LG().draftPicks;
-      dp[nxt.year] = dp[nxt.year] || {};
-      if (typeof dp[nxt.year][round] !== 'object' || dp[nxt.year][round] == null) dp[nxt.year][round] = {};
-      dp[nxt.year][round][String(teamId)] = owner;         // obligation follows forward
-      if (typeof dp[y][round] === 'object' && dp[y][round]) delete dp[y][round][String(teamId)];
-      else delete dp[y][round];                            // legacy single-owner record
-      LG().removedPicks[nxt.year] = LG().removedPicks[nxt.year] || {};
-      LG().removedPicks[nxt.year][round] = LG().removedPicks[nxt.year][round] || {};
-      // NOTE: the pick still exists for the receiver; what's removed is the team's USE
-      // of their next pick. We record the penalty against the team's own line at nxt.
-      log && log(`${teamById(teamId).name}: their ${y} R${round} was traded to ${teamById(owner).name}; penalty + obligation roll to ${nxt.year} R${round}`);
-      return true;
-    }
+    LG().removedPicks[y][round][teamId] = true;
+    log && log(`${teamById(teamId).name}: lost their ${y} R${round} pick (penalty)`);
+    return true;
   }
+  log && log(`${teamById(teamId).name}: no owned R${round} pick within 15 years to forfeit`);
   return false;
 }
 function fmtMoney(n) {
