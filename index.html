@@ -1335,8 +1335,15 @@ function dropDeadCap(p) {
    removedPicks[year][round] = true marks a pick wiped by a penalty (no longer exists). */
 function pickOwner(year, round, originalTeamId) {
   // who owns originalTeamId's pick at (year, round)?
-  const moved = (LG().draftPicks||{})[year]?.[round];
-  return moved != null ? moved : originalTeamId;   // if not traded, the original team owns it
+  // Stored per ORIGINAL team: draftPicks[year][round][origTeamId] = newOwner —
+  // two teams trading away the same year/round must not clobber each other.
+  const slot = (LG().draftPicks||{})[year]?.[round];
+  if (slot == null) return originalTeamId;
+  if (typeof slot === 'object') {
+    const moved = slot[String(originalTeamId)];
+    return moved != null ? moved : originalTeamId;
+  }
+  return slot;   // legacy single-owner record (pre per-team tracking)
 }
 function pickRemoved(year, round, teamId) {
   const rm = (LG().removedPicks||{});
@@ -1379,9 +1386,12 @@ function removeOnePick(teamId, round, startYear, log) {
       if (!nxt) { log && log(`${teamById(teamId).name}: no available R${round} pick to forfeit`); return false; }
       // mark the next own pick as removed (the team's penalty), and reassign the trade
       // obligation: the receiver (owner) now gets the team's pick at nxt.year instead.
-      LG().draftPicks[nxt.year] = LG().draftPicks[nxt.year] || {};
-      LG().draftPicks[nxt.year][round] = owner;            // obligation follows forward
-      delete LG().draftPicks[y][round];                    // original traded slot reverts
+      const dp = LG().draftPicks;
+      dp[nxt.year] = dp[nxt.year] || {};
+      if (typeof dp[nxt.year][round] !== 'object' || dp[nxt.year][round] == null) dp[nxt.year][round] = {};
+      dp[nxt.year][round][String(teamId)] = owner;         // obligation follows forward
+      if (typeof dp[y][round] === 'object' && dp[y][round]) delete dp[y][round][String(teamId)];
+      else delete dp[y][round];                            // legacy single-owner record
       LG().removedPicks[nxt.year] = LG().removedPicks[nxt.year] || {};
       LG().removedPicks[nxt.year][round] = LG().removedPicks[nxt.year][round] || {};
       // NOTE: the pick still exists for the receiver; what's removed is the team's USE
@@ -2695,18 +2705,18 @@ function computeRecords() {
     const totals = {}; let anyPlayed = false;
     teams.forEach(id => { const tot = teamWeekTotal(id, wk); totals[id]=tot; if (tot>0) anyPlayed=true; });
     if (!anyPlayed) continue;
-    // head-to-head
+    // head-to-head — each matchup processed once, result credited to BOTH teams
+    teams.forEach(id => { rec[id].pf += totals[id]; });
     const counted = new Set();
     teams.forEach(id => {
       const opp = opponentFor(id, wk);
-      rec[id].pf += totals[id];
-      if (opp && !counted.has(id+'-'+opp)) {
-        counted.add(opp+'-'+id);
-        rec[id].pa += totals[opp]||0;
-        if (totals[id] > (totals[opp]||0)) rec[id].w++;
-        else if (totals[id] < (totals[opp]||0)) rec[id].l++;
-        else rec[id].t++;
-      }
+      if (!opp || counted.has(id+'-'+opp)) return;
+      counted.add(id+'-'+opp); counted.add(opp+'-'+id);
+      const a = totals[id]||0, b = totals[opp]||0;
+      rec[id].pa += b; rec[opp].pa += a;
+      if (a > b) { rec[id].w++; rec[opp].l++; }
+      else if (a < b) { rec[id].l++; rec[opp].w++; }
+      else { rec[id].t++; rec[opp].t++; }
     });
     // bonus win: top half of weekly scorers get +W, bottom half +L
     if (bonus) {
@@ -3641,6 +3651,14 @@ function ensureLineupExists(week) {
 window.moveToSlot = function(espnId, slotIdx) {
   const week = activeWeek();
   if (isWeekLocked(week)) { toast('Week is locked', 'err'); return; }
+  // eligibility guard — the picker UI only offers valid slots, but enforce here too
+  if (slotIdx !== 'bench') {
+    const slotDef = (activeLineupSlots()||[])[slotIdx];
+    const pl = teamRoster(myTeamId()).find(r => String(r.espnId)===String(espnId));
+    if (!slotDef || !pl || !slotDef.eligible.some(e => (pl.eligible||[]).includes(e))) {
+      toast('Not eligible for that slot', 'err'); return;
+    }
+  }
   ensureLineupExists(week);
   const assign = LG().lineups[myTeamId()][week].assignments;
   // remove player from any current slot
@@ -4804,11 +4822,11 @@ function viewSettings() {
         <span class="sub">Bonus win<br><span style="font-size:.62rem;color:var(--sage-dim)">extra W for top-half scorers each week</span></span>
         <button class="btn btn-sm ${LSET().bonusWin?'btn-amber':'btn-ghost'}" onclick="toggleBonusWin()">${LSET().bonusWin?'ON':'OFF'}</button>
       </div>
-      ${LSET().useSalaryCap ? `
       <div class="row-between" style="padding:.4rem 0;border-top:1px solid rgba(42,61,48,.4)">
-        <span class="sub">Trade/signing deadline (week)</span>
+        <span class="sub">Trade${LSET().useSalaryCap?'/signing':''} deadline (week)</span>
         <input class="input" type="number" min="1" max="26" value="${LSET().tradeDeadlineWeek||20}" style="width:80px;text-align:right" onchange="setLeagueSetting('tradeDeadlineWeek',this.value)">
       </div>
+      ${LSET().useSalaryCap ? `
       <div class="row-between" style="padding:.4rem 0">
         <span class="sub">Playoffs start (week)<br><span style="font-size:.62rem;color:var(--sage-dim)">rosters lock, penalties apply</span></span>
         <input class="input" type="number" min="1" max="26" value="${LSET().playoffStartWeek||23}" style="width:80px;text-align:right" onchange="setLeagueSetting('playoffStartWeek',this.value)">
@@ -6649,9 +6667,14 @@ function commitRookiePick(espnId, team) {
   ensureRD();
   if (!team) return;
   const taken = new Set((RD().picks||[]).map(p => String(p.playerId)));
-  if (taken.has(String(espnId))) return;
+  const rostered = new Set((LG().draft.picks||[]).map(p => String(p.playerId)));
+  if (taken.has(String(espnId)) || rostered.has(String(espnId))) return;
   const idx = rookiePickIndex();
   LG().rookieDraft.picks.push({ pick: idx+1, label: rookiePickLabel(idx), teamId: team, playerId: espnId, rookie: true });
+  // rosters derive from draft.picks — add the rookie there too so they actually
+  // join the team (and can't be re-drafted or added as a free agent)
+  const maxPick = (LG().draft.picks||[]).reduce((m,pk)=>Math.max(m,pk.pick||0), 0);
+  LG().draft.picks.push({ teamId: team, playerId: espnId, pick: maxPick+1, rookie: true, addedFA: true });
   LG().rookieDraft.pickStartedAt = Date.now();
   _rookieGuard = -1;
   if (rookieDone()) { finishRookieDraft(); return; }
@@ -6663,6 +6686,7 @@ function autoRookiePick() {
   const team = rookieCurrentTeam();
   if (!team) { if (RD().live) finishRookieDraft(); return; }
   const taken = new Set((RD().picks||[]).map(p => String(p.playerId)));
+  (LG().draft.picks||[]).forEach(p => taken.add(String(p.playerId)));  // already rostered
   // rookie pool = players flagged rookie if available, else best available by ADP
   const pool = [...LG().playerPool].sort((a,b)=>a.adp-b.adp);
   let pick = pool.find(p => p.isRookie && !taken.has(String(p.espnId)))
@@ -6862,10 +6886,12 @@ window.openPickAssets = function() {
       // acquired picks from other teams this year
       const acquired = [];
       Object.keys(LG().draftPicks?.[y]||{}).forEach(r => {
-        if (String(LG().draftPicks[y][r])===String(t.id)) {
-          // find whose pick it was (any team whose own line maps here)
-          acquired.push(`+R${r}`);
-        }
+        const slot = LG().draftPicks[y][r];
+        if (typeof slot === 'object' && slot != null) {
+          Object.keys(slot).forEach(orig => {
+            if (String(slot[orig])===String(t.id) && String(orig)!==String(t.id)) acquired.push(`+R${r}`);
+          });
+        } else if (String(slot)===String(t.id)) acquired.push(`+R${r}`);
       });
       return `<td style="font-size:.66rem;white-space:nowrap">${parts.join(' ')}${acquired.length?` <span class="amber">${acquired.join(' ')}</span>`:''}</td>`;
     }).join('');
@@ -7105,8 +7131,14 @@ window.confirmAddPick = function(side) {
   if (!arr.some(p=>p.year===year && p.round===round)) arr.push({ year, round });
   renderTradeBuilder();
 };
+/* trades close at the trade deadline (same week that closes contract signing) */
+function tradesOpen() {
+  const deadlineWk = LSET().tradeDeadlineWeek || 20;
+  return currentWeekNow() <= deadlineWk;
+}
 window.sendTradeProposal = function() {
   const tr = window._trade;
+  if (!tradesOpen()) { toast(`Trades are closed (deadline was week ${LSET().tradeDeadlineWeek||20})`, 'err'); return; }
   if (!tr.to) { toast('Pick a trade partner', 'err'); return; }
   const nAssets = tr.fromPlayers.length + tr.toPlayers.length + tr.fromPicks.length + tr.toPicks.length + (tr.money?.length||0);
   if (nAssets === 0) { toast('Add at least one asset', 'err'); return; }
@@ -7130,6 +7162,7 @@ window.sendTradeProposal = function() {
 window.acceptTrade = function(id) {
   const t = (LG().trades||[]).find(x => x.id===id);
   if (!t || t.status!=='pending') { toast('Trade no longer available', 'err'); return; }
+  if (!tradesOpen()) { toast(`Trades are closed (deadline was week ${LSET().tradeDeadlineWeek||20})`, 'err'); return; }
   if (String(t.to)!==String(myTeamId())) { toast('Only the receiving team can accept', 'err'); return; }
   const ok = executeTrade(t);
   if (!ok) { toast('Trade could not be applied — nothing changed', 'err'); return; }
@@ -7163,6 +7196,11 @@ function executeTrade(t) {
   if (!t || !t.from || !t.to) return false;
   const picks = (LG().draft && LG().draft.picks) ? LG().draft.picks : null;
   if (!picks) { console.error('executeTrade: no draft picks array'); return false; }
+  // STALE-TRADE GUARD: every offered player must still be on the offering team
+  // (they may have been dropped or traded elsewhere since the proposal was sent).
+  const owns = (pid, tid) => picks.some(x => String(x.playerId)===String(pid) && String(x.teamId)===String(tid));
+  if ((t.fromPlayers||[]).some(pid => !owns(pid, t.from))) return false;
+  if ((t.toPlayers||[]).some(pid => !owns(pid, t.to))) return false;
   // PLAYERS: reassign draft-pick ownership (rosters derive from draft.picks.teamId)
   const reassign = (playerIds, newTeam) => {
     (playerIds||[]).forEach(pid => {
@@ -7180,17 +7218,20 @@ function executeTrade(t) {
   try {
     reassign(t.fromPlayers, t.to);
     reassign(t.toPlayers, t.from);
-    // PICKS: record ownership transfer in draftPicks[year][round] = owning team
+    // PICKS: record ownership transfer per ORIGINAL team:
+    // draftPicks[year][round][origTeam] = newOwner (a "from" pick is the sender's own pick)
     LG().draftPicks = LG().draftPicks || {};
-    const movePick = (pks, newOwner) => {
+    const movePick = (pks, newOwner, origTeam) => {
       (pks||[]).forEach(pk => {
         if (!pk || pk.year==null || pk.round==null) return;
-        LG().draftPicks[pk.year] = LG().draftPicks[pk.year] || {};
-        LG().draftPicks[pk.year][pk.round] = newOwner;
+        const dp = LG().draftPicks;
+        dp[pk.year] = dp[pk.year] || {};
+        if (typeof dp[pk.year][pk.round] !== 'object' || dp[pk.year][pk.round] == null) dp[pk.year][pk.round] = {};
+        dp[pk.year][pk.round][String(origTeam)] = newOwner;
       });
     };
-    movePick(t.fromPicks, t.to);
-    movePick(t.toPicks, t.from);
+    movePick(t.fromPicks, t.to, t.from);
+    movePick(t.toPicks, t.from, t.to);
     // MONEY: record each cash consideration. dir 'fromTo' = proposer(t.from) sends to t.to;
     // 'toFrom' = t.to sends to t.from. Store normalized {from,to,amount,years,startYear}.
     if (t.money && t.money.length) {
