@@ -435,9 +435,21 @@ input.input, select, textarea {
 </div>
 
 <script type="module">
-import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.0/firebase-app.js';
-import { getFirestore, doc, getDoc, setDoc, onSnapshot }
-  from 'https://www.gstatic.com/firebasejs/10.7.0/firebase-firestore.js';
+/* Firebase loads lazily so a CDN failure can't take down the whole app —
+   without it the app still runs in local (offline) mode. */
+let initializeApp, getFirestore, doc, getDoc, setDoc, onSnapshot;
+const _fbLoad = (async () => {
+  try {
+    const appMod = await import('https://www.gstatic.com/firebasejs/10.7.0/firebase-app.js');
+    const fsMod  = await import('https://www.gstatic.com/firebasejs/10.7.0/firebase-firestore.js');
+    initializeApp = appMod.initializeApp;
+    ({ getFirestore, doc, getDoc, setDoc, onSnapshot } = fsMod);
+    return true;
+  } catch (e) {
+    console.warn('Firebase SDK failed to load — running in local mode:', e);
+    return false;
+  }
+})();
 
 /* ============================================================
    CONFIG
@@ -897,9 +909,11 @@ function loadLocal() {
   }
 }
 
-function initFirebase() {
+async function initFirebase() {
   loadLocal();  // device data first, instant
   if (FB_CONFIG.apiKey.startsWith('REPLACE')) { fbErr = 'Firebase not configured'; return; }
+  const loaded = await _fbLoad;
+  if (!loaded) { fbErr = 'offline (Firebase SDK unreachable)'; renderActive(); return; }
   try {
     const app = initializeApp(FB_CONFIG);
     db = getFirestore(app);
@@ -1146,7 +1160,7 @@ function normName(name) {
     .normalize('NFD').replace(/[\u0300-\u036f]/g, '')   // strip accents
     .toLowerCase()
     .replace(/\b(jr|sr|ii|iii|iv)\b\.?/g, '')            // strip suffixes
-    .replace(/[^a-z\s]/g, '')                             // strip punctuation
+    .replace(/[^a-z0-9\s]/g, '')                          // strip punctuation (keep digits)
     .replace(/\s+/g, ' ').trim();
 }
 
@@ -2048,32 +2062,52 @@ function standingsBestFirst() {
     return (rb.w - ra.w) || (rb.pf - ra.pf);
   });
 }
+/* Standard bracket seeding order for a power-of-two bracket (1 vs size, etc.) */
+function bracketSeedOrder(size) {
+  let ord = [1];
+  while (ord.length < size) {
+    const m = ord.length * 2;
+    const next = [];
+    ord.forEach(s => { next.push(s, m + 1 - s); });
+    ord = next;
+  }
+  return ord;
+}
+/* Seeded single-elimination bracket for ANY playoff size (2..teams).
+   Bracket pads to the next power of two; top seeds get first-round byes.
+   One week per round starting at playoffStartWeek. In pair slots:
+   null = bye, undefined = participant not yet decided (TBD). */
 function playoffBracket() {
   const start = Number(LSET().playoffStartWeek) || 0;
   if (!start) return null;
-  const n = Number(LSET().playoffTeams) || 4;
+  const teamCount = LG().teams.length;
+  const n = Math.min(Math.max(2, Number(LSET().playoffTeams) || 4), teamCount);
   const seeds = standingsBestFirst().slice(0, n);
   if (seeds.length < 2) return null;
   const cur = currentWeekNow();
-  const scoreOf = (tid, wk) => cur >= wk ? teamWeekTotal(tid, wk) : null;
+  const seedRank = tid => seeds.findIndex(s => String(s) === String(tid));
   const winner = (a, b, wk) => {
-    if (a==null) return b; if (b==null) return a;
-    const sa = scoreOf(a, wk), sb = scoreOf(b, wk);
-    if (cur <= wk || sa===null || sb===null) return null;   // round not decided yet
-    return sa >= sb ? a : b;                                // tie → higher seed (a)
+    if (a === undefined || b === undefined) return undefined;  // waiting on prior round
+    if (a === null) return b; if (b === null) return a;        // bye advances immediately
+    if (cur <= wk) return undefined;                           // round not played yet
+    const sa = teamWeekTotal(a, wk), sb = teamWeekTotal(b, wk);
+    if (sa > sb) return a; if (sb > sa) return b;
+    return seedRank(a) <= seedRank(b) ? a : b;                 // tie → higher seed
   };
-  if (n <= 2) {
-    const champ = winner(seeds[0], seeds[1], start);
-    return { rounds: [{ week: start, label:'Championship', pairs:[[seeds[0],seeds[1]]] }], champ };
+  const size = 2 ** Math.ceil(Math.log2(n));
+  let slots = bracketSeedOrder(size).map(s => s <= n ? seeds[s - 1] : null);
+  const roundLabel = c => c === 2 ? 'Championship' : c === 4 ? 'Semifinals' : c === 8 ? 'Quarterfinals' : `Round of ${c}`;
+  const rounds = [];
+  let wk = start;
+  while (slots.length > 1) {
+    const pairs = [];
+    for (let i = 0; i < slots.length; i += 2) pairs.push([slots[i], slots[i + 1]]);
+    // an all-bye round can't happen (n>=2), but a pair may be a pure bye
+    rounds.push({ week: wk, label: roundLabel(slots.length), pairs });
+    slots = pairs.map(([a, b]) => winner(a, b, wk));
+    wk++;
   }
-  const semiWk = start, finalWk = start + 1;
-  const w1 = winner(seeds[0], seeds[3] ?? null, semiWk);
-  const w2 = winner(seeds[1], seeds[2] ?? null, semiWk);
-  const champ = (w1 && w2) ? winner(w1, w2, finalWk) : null;
-  return { rounds: [
-    { week: semiWk, label:'Semifinals', pairs: [[seeds[0], seeds[3] ?? null],[seeds[1], seeds[2] ?? null]] },
-    { week: finalWk, label:'Championship', pairs: [[w1, w2]] },
-  ], champ };
+  return { rounds, champ: slots[0] ?? null };
 }
 
 /* ---- KEEPERS (traditional) ----
@@ -2186,7 +2220,12 @@ window.setBGScope = function(v) { if (fmtGuard()) return; ensureSettings(); LG()
 window.setKeeperCount = function(v) { if (fmtGuard()) return; ensureSettings(); LG().settings.keeperCount = Math.max(1, Math.min(15, Number(v)||3)); save(); renderActive(); };
 window.setWaiverMode = function(v) { ensureSettings(); LG().settings.waiverMode = v; save(); renderActive(); };
 window.setFaabBudget = function(v) { ensureSettings(); LG().settings.faabBudget = Math.max(1, Number(v)||100); save(); renderActive(); };
-window.setPlayoffTeams = function(v) { ensureSettings(); LG().settings.playoffTeams = Number(v)||4; save(); renderActive(); };
+window.setPlayoffTeams = function(v) {
+  ensureSettings();
+  const max = Math.max(2, LG().teams.length || 2);
+  LG().settings.playoffTeams = Math.min(Math.max(2, Number(v)||4), max);
+  save(); renderActive();
+};
 window.setPlayoffStartWeek = function(v) { ensureSettings(); LG().settings.playoffStartWeek = Math.max(0, Number(v)||0); save(); renderActive(); };
 
 /* ============================================================
@@ -2784,9 +2823,10 @@ function viewStandings() {
     ${(() => {
       const br = playoffBracket(); if (!br) return '';
       const rr = br.rounds.map(r => {
+        const slotName = s => s === null ? '<span class="sub">BYE</span>' : s === undefined ? '<span class="sub">TBD</span>' : esc(teamName(s));
         const ps = r.pairs.map(([a,b]) =>
           `<div class="row-between" style="padding:.3rem 0;font-size:.76rem">
-            <span>${a?esc(teamName(a)):'TBD'}</span><span class="sub" style="font-size:.6rem">wk ${r.week}</span><span>${b?esc(teamName(b)):'TBD'}</span>
+            <span>${slotName(a)}</span><span class="sub" style="font-size:.6rem">wk ${r.week}</span><span>${slotName(b)}</span>
           </div>`).join('');
         return `<p class="sub" style="font-size:.64rem;letter-spacing:1px;margin-top:.4rem">${r.label.toUpperCase()}</p>${ps}`;
       }).join('');
@@ -3403,6 +3443,50 @@ function rosterActiveCount(teamId) {
   const ir = LG().irStash?.[teamId] || [];
   return teamRoster(teamId).filter(p => !ir.includes(String(p.espnId))).length;
 }
+function isOnIR(espnId, teamId) {
+  return ((LG().irStash||{})[teamId] || []).includes(String(espnId));
+}
+function irCount(teamId) { return ((LG().irStash||{})[teamId] || []).length; }
+
+/* ---- INJURED LIST ----
+   IL players don't count against the roster cap and can't be started.
+   Only injury-flagged players may be stashed (no stashing healthy depth);
+   the commissioner can override for unflagged edge cases. */
+window.moveToIR = function(espnId) {
+  if (!FEAT().ir) { toast(`${SP().label} leagues don't use an IL`, 'err'); return; }
+  const tid = myTeamId(); if (!tid) return;
+  const p = teamRoster(tid).find(x => String(x.espnId)===String(espnId));
+  if (!p) { toast('Not on your roster', 'err'); return; }
+  const max = SP().irCount || 0;
+  if (irCount(tid) >= max) { toast(`IL is full (${max} slots)`, 'err'); return; }
+  if (!p.injured && !(window._masterUnlocked || commishUnlocked())) {
+    toast(`${p.name} isn't flagged injured — only the commissioner can IL a healthy player`, 'err'); return;
+  }
+  LG().irStash = LG().irStash || {};
+  LG().irStash[tid] = LG().irStash[tid] || [];
+  LG().irStash[tid].push(String(espnId));
+  // pull them out of the current + all future lineups
+  const weeks = LG().lineups?.[tid] || {};
+  const nowWk = currentWeekNow();
+  Object.keys(weeks).forEach(wk => {
+    if (Number(wk) < nowWk) return;
+    const as = weeks[wk]?.assignments || {};
+    for (const k of Object.keys(as)) if (String(as[k])===String(espnId)) delete as[k];
+  });
+  logTxn('drop', `${teamName(tid)} placed ${p.name} on the IL`);
+  save(); closeModal(); toast(`${p.name} → IL`, 'ok'); renderActive();
+};
+window.activateFromIR = function(espnId) {
+  const tid = myTeamId(); if (!tid) return;
+  if (!isOnIR(espnId, tid)) return;
+  if (rosterActiveCount(tid) >= rosterCap()) {
+    toast('No roster room — drop someone before activating', 'err'); return;
+  }
+  LG().irStash[tid] = LG().irStash[tid].filter(x => String(x)!==String(espnId));
+  const p = LG().playerPool.find(x=>String(x.espnId)===String(espnId));
+  logTxn('add', `${teamName(tid)} activated ${p?.name||'a player'} from the IL`);
+  save(); closeModal(); toast(`${p?.name||'Player'} activated`, 'ok'); renderActive();
+};
 
 /* ADD a free-agent player to my team (respects cap; changes apply to upcoming week only) */
 window.openAddDrop = function() {
@@ -3457,8 +3541,10 @@ window.addPlayer = function(espnId) {
 window.dropPlayer = function(espnId) {
   const tid = myTeamId();
   const p = LG().playerPool.find(x=>String(x.espnId)===String(espnId));
+  const dead = (LSET().useSalaryCap && p && playerContract(p)) ? dropDeadCap(p) : 0;
   openModal(`
     <div class="h2">Drop ${esc(p?.name||'player')}?</div>
+    ${dead ? `<p class="sub mt mb" style="color:var(--bad)">⚠ Under contract — dropping incurs a <b>${fmtMoney(dead)}</b> dead-cap hit (2× this year's salary).</p>` : ''}
     <p class="sub mt mb">They'll return to free agency. This affects your upcoming roster only.</p>
     <button class="btn btn-amber btn-block" onclick="confirmDrop('${espnId}')">Drop player</button>
     <button class="btn btn-ghost btn-block mt" onclick="openAddDrop()">Cancel</button>
@@ -3470,6 +3556,7 @@ window.confirmDrop = function(espnId) {
   if (lp && playerLockedForWeek(lp, activeWeek())) {
     toast(`🔒 ${lp.name} is locked — their game already started this week`, 'err'); return;
   }
+  applyDropDeadCap(espnId, tid);   // signed players always cost dead cap to drop
   // remove from draft picks
   LG().draft.picks = LG().draft.picks.filter(pk =>
     !(String(pk.teamId)===String(tid) && String(pk.playerId)===String(espnId)));
@@ -3511,7 +3598,9 @@ function getLineup(teamId, week) {
    best-ADP eligible un-used player. Ensures unset/locked weeks still score. */
 function defaultLineup(teamId) {
   const slots = activeLineupSlots() || [];
-  const roster = teamRoster(teamId).slice().sort((a,b)=>a.adp-b.adp); // best first
+  const ir = (LG().irStash||{})[teamId] || [];
+  const roster = teamRoster(teamId).filter(p => !ir.includes(String(p.espnId)))
+    .slice().sort((a,b)=>a.adp-b.adp); // best first, IL players excluded
   const used = new Set();
   const assign = {};
   slots.forEach((s, idx) => {
@@ -3525,7 +3614,11 @@ function defaultLineup(teamId) {
 /* starters = the set of player IDs assigned to any slot */
 function getStarters(teamId, week) {
   const lu = getLineup(teamId, week);
-  return Object.values(lu.assignments || {}).filter(Boolean).map(String);
+  const ir = (LG().irStash||{})[teamId] || [];
+  // IL players never score, even via carried-forward lineups (current week on)
+  const filterIR = week >= currentWeekNow();
+  return Object.values(lu.assignments || {}).filter(Boolean).map(String)
+    .filter(pid => !filterIR || !ir.includes(pid));
 }
 
 window.pickMyTeam = function(teamId) {
@@ -3651,6 +3744,7 @@ function ensureLineupExists(week) {
 window.moveToSlot = function(espnId, slotIdx) {
   const week = activeWeek();
   if (isWeekLocked(week)) { toast('Week is locked', 'err'); return; }
+  if (isOnIR(espnId, myTeamId())) { toast('Player is on the IL — activate them first', 'err'); return; }
   // eligibility guard — the picker UI only offers valid slots, but enforce here too
   if (slotIdx !== 'bench') {
     const slotDef = (activeLineupSlots()||[])[slotIdx];
@@ -4275,6 +4369,11 @@ function renderPlayerModal(p, loading) {
     ) : ''}
     ${onMyTeam ? `
       <button class="btn btn-ghost btn-block" onclick="closeModal();go('home')">View on my team →</button>
+      ${FEAT().ir ? (
+        isOnIR(p.espnId, myTeamId())
+          ? `<button class="btn btn-ghost btn-block mt" onclick="activateFromIR('${p.espnId}')">🩹 Activate from IL (${irCount(myTeamId())}/${SP().irCount||0} IL used)</button>`
+          : `<button class="btn btn-ghost btn-block mt" onclick="moveToIR('${p.espnId}')">🩹 Place on IL${p.injured?'':' (not flagged injured)'}</button>`
+      ) : ''}
       ${LSET().useSalaryCap ? signContractSection(p) : ''}
       <button class="btn btn-block mt" style="background:var(--bad);color:#fff" onclick="dropFromCard('${p.espnId}')">Drop ${esc(p.name)}${LSET().useSalaryCap&&playerContract(p)?` (dead cap ${fmtMoney(dropDeadCap(p))})`:''}</button>
     ` : ''}
@@ -4360,7 +4459,17 @@ window.setSignTerm = function(espnId, val) {
 window.confirmSign = function(espnId) {
   const p = LG().playerPool.find(x=>String(x.espnId)===String(espnId));
   if (!p || !signingOpen()) { toast('Signing closed', 'err'); return; }
+  // GUARD: you can only sign players on YOUR OWN roster (no signing free agents
+  // or sabotaging another team's cap with an unwanted contract)
+  const onMyRoster = (LG().draft.picks||[]).some(pk =>
+    String(pk.playerId)===String(espnId) && String(pk.teamId)===String(myTeamId()));
+  if (!onMyRoster) { toast('You can only sign players on your own roster', 'err'); return; }
   const existing = playerContract(p);
+  // GUARD: an edit can extend a deal but never shorten it — shortening would erase
+  // future salary obligations without the dead-cap cost of a drop
+  if (existing && (window._signTerm||1) < existing.termYears) {
+    toast(`Contracts can't be shortened (currently ${existing.termYears}yr). Drop the player to void it (2× dead cap).`, 'err'); return;
+  }
   // editing keeps the FROZEN baseAAV and original signedYear; new signing uses import + now
   const aav = existing ? existing.baseAAV : importedAAV(p);
   if (aav == null) { toast('No AAV — cannot sign', 'err'); return; }
@@ -4398,18 +4507,10 @@ window.dropFromCard = function(espnId) {
 };
 window.confirmDropCard = function(espnId) {
   const p = LG().playerPool.find(x=>String(x.espnId)===String(espnId));
-  const c = LSET().useSalaryCap ? playerContract(p) : null;
-  let dead = 0;
-  if (c) {
-    dead = dropDeadCap(p);                 // capture BEFORE deleting the contract
-    const tid = myTeamId();
-    LG().deadCap = LG().deadCap || {};
-    LG().deadCap[tid] = LG().deadCap[tid] || [];
-    LG().deadCap[tid].push({ playerId: String(espnId), amount: dead, year: currentSeasonYear(), name: p.name });
-    delete LG().contracts[String(espnId)]; // void contract; AAV refreshes on future signing
-  }
-  doDropPlayer(espnId);
-  toast(c ? `Dropped — ${fmtMoney(dead)} dead cap applied` : 'Player dropped', 'ok');
+  const hadContract = LSET().useSalaryCap && !!playerContract(p);
+  const dead = hadContract ? dropDeadCap(p) : 0;   // capture BEFORE the contract is voided
+  doDropPlayer(espnId);                            // applies dead cap + voids contract
+  toast(hadContract ? `Dropped — ${fmtMoney(dead)} dead cap applied` : 'Player dropped', 'ok');
   closeModal();
   renderActive();
 };
@@ -4446,9 +4547,26 @@ window.confirmSwap = function(addId, dropId) {
   renderActive();
 };
 
+/* SALARY-CAP GUARD: dropping a signed player ALWAYS costs 2x dead cap, no matter
+   which drop path is used (card, add/drop modal, add-with-swap). Voids the contract. */
+function applyDropDeadCap(espnId, tid) {
+  if (!LSET().useSalaryCap) return 0;
+  const p = LG().playerPool.find(x=>String(x.espnId)===String(espnId));
+  const c = p ? playerContract(p) : null;
+  if (!c) return 0;
+  const dead = dropDeadCap(p);
+  LG().deadCap = LG().deadCap || {};
+  LG().deadCap[tid] = LG().deadCap[tid] || [];
+  LG().deadCap[tid].push({ playerId: String(espnId), amount: dead, year: currentSeasonYear(), name: p.name });
+  delete LG().contracts[String(espnId)];
+  logTxn('drop', `${teamName(tid)} took ${fmtMoney(dead)} dead cap dropping ${p.name}`);
+  return dead;
+}
+
 /* shared drop logic: remove from picks + clear from upcoming lineup */
 function doDropPlayer(espnId) {
   const tid = myTeamId();
+  applyDropDeadCap(espnId, tid);
   LG().draft.picks = LG().draft.picks.filter(pk =>
     !(String(pk.teamId)===String(tid) && String(pk.playerId)===String(espnId)));
   const wk = activeWeek();
@@ -4797,11 +4915,8 @@ function viewSettings() {
         <input class="input" type="number" min="1" value="${LSET().faabBudget||100}" style="width:80px;text-align:right" onchange="setFaabBudget(this.value)">
       </div>` : ''}
       <div class="row-between" style="padding:.4rem 0;border-top:1px solid rgba(42,61,48,.4)">
-        <span class="sub">Playoff teams</span>
-        <div class="row" style="gap:.3rem">
-          <button class="btn btn-sm ${Number(LSET().playoffTeams)===2?'btn-amber':'btn-ghost'}" onclick="setPlayoffTeams(2)">2</button>
-          <button class="btn btn-sm ${Number(LSET().playoffTeams||4)===4?'btn-amber':'btn-ghost'}" onclick="setPlayoffTeams(4)">4</button>
-        </div>
+        <span class="sub">Playoff teams<br><span style="font-size:.62rem;color:var(--sage-dim)">any number 2–${LG().teams.length||2}; top seeds get byes, ${(() => { const n=Math.min(Math.max(2,Number(LSET().playoffTeams)||4), LG().teams.length||2); return Math.ceil(Math.log2(n)); })()} round(s)</span></span>
+        <input class="input" type="number" min="2" max="${LG().teams.length||2}" value="${Number(LSET().playoffTeams)||4}" style="width:80px;text-align:right" onchange="setPlayoffTeams(this.value)">
       </div>
       ${!LSET().useSalaryCap ? `
       <div class="row-between" style="padding:.4rem 0;border-top:1px solid rgba(42,61,48,.4)">
@@ -6439,7 +6554,7 @@ window.generateTeamsPrompt = function() {
     <p class="sub mt mb">How many teams in the league? They'll be created as generic
       (Team 1, Team 2…). Owners rename them when they join.</p>
     <div class="field"><label>Number of teams</label>
-      <input class="input" id="gen-count" type="number" min="2" max="20" value="${LG().teams.length||10}"
+      <input class="input" id="gen-count" type="number" min="2" max="64" value="${LG().teams.length||10}"
         style="text-align:center;font-size:1.2rem"></div>
     <button class="btn btn-block" onclick="doGenerateTeams()">Generate</button>
     ${LG().teams.length?`<p class="sub mt" style="font-size:.7rem">⚠ This replaces the current ${LG().teams.length} teams and clears the draft.</p>`:''}
@@ -6447,7 +6562,7 @@ window.generateTeamsPrompt = function() {
   `);
 };
 window.doGenerateTeams = function() {
-  const n = Math.max(2, Math.min(20, parseInt($('gen-count')?.value)||10));
+  const n = Math.max(2, Math.min(64, parseInt($('gen-count')?.value)||10));
   LG().teams = [];
   for (let i=1;i<=n;i++) {
     LG().teams.push({ id:'t'+i, name:`Team ${i}`, owner:'', abbrev:`T${i}`, claimed:false });
@@ -6621,14 +6736,22 @@ window.startRookieDraft = function() {
 };
 
 /* rookie draft sequence: uses its own order (or team order if none) + rounds.
-   Snake honored. */
+   Snake honored. In dynasty leagues each slot consults pick ownership for the
+   current season year: penalty-removed picks are SKIPPED and traded picks are
+   made by their new owner — so cap penalties and pick trades actually bite. */
 function rookieSequence() {
   const order = RD().order?.length ? RD().order : LG().teams.map(t=>t.id);
   const rounds = RD().rounds || 4;
+  const year = currentSeasonYear();
   const seq = [];
   for (let r = 0; r < rounds; r++) {
     const ro = (RD().snake && r % 2 === 1) ? [...order].reverse() : order;
-    ro.forEach(tid => seq.push(tid));
+    ro.forEach(tid => {
+      if (!isDynasty()) { seq.push(tid); return; }
+      const round = r + 1;
+      if (pickRemoved(year, round, tid)) return;        // lost to an over-cap penalty
+      seq.push(pickOwner(year, round, tid));            // traded pick → new owner picks
+    });
   }
   return seq;
 }
@@ -7088,6 +7211,7 @@ window.addTradeMoney = function() {
   const perYearM = md.split.map(v => parseFloat(v)||0);
   const totalM = perYearM.reduce((s,v)=>s+v, 0);
   if (totalM <= 0) { toast('Enter an amount (in millions)', 'err'); return; }
+  if (perYearM.some(v => v < 0)) { toast('Per-year amounts must all be positive', 'err'); return; }
   // convert millions → dollars
   const perYearList = perYearM.map(m => Math.round(m * 1000000));
   const amount = perYearList.reduce((s,v)=>s+v, 0);
@@ -7201,11 +7325,24 @@ function executeTrade(t) {
   const owns = (pid, tid) => picks.some(x => String(x.playerId)===String(pid) && String(x.teamId)===String(tid));
   if ((t.fromPlayers||[]).some(pid => !owns(pid, t.from))) return false;
   if ((t.toPlayers||[]).some(pid => !owns(pid, t.to))) return false;
+  // ROSTER GUARD: an uneven trade can't push either team over the roster cap
+  const nFrom = (t.fromPlayers||[]).length, nTo = (t.toPlayers||[]).length;
+  if (rosterActiveCount(t.from) - nFrom + nTo > rosterCap()) return false;
+  if (rosterActiveCount(t.to) - nTo + nFrom > rosterCap()) return false;
+  // CASH GUARD: every cash consideration must be a positive amount with positive
+  // per-year values — negative "cash" would silently shift cap the wrong way
+  for (const m of (t.money||[])) {
+    if (!(m.amount > 0) || (m.years||1) < 1) return false;
+    if (m.perYearList && m.perYearList.some(v => !(v >= 0))) return false;
+  }
   // PLAYERS: reassign draft-pick ownership (rosters derive from draft.picks.teamId)
   const reassign = (playerIds, newTeam) => {
     (playerIds||[]).forEach(pid => {
       const pk = picks.find(x => String(x.playerId)===String(pid));
       if (pk) pk.teamId = newTeam;
+      // contract (and its future cap hits) follows the player to the new team
+      const c = (LG().contracts||{})[String(pid)];
+      if (c) c.teamId = newTeam;
       // clear from any team's lineup assignments
       const lineups = LG().lineups || {};
       Object.values(lineups).forEach(weeks => Object.values(weeks||{}).forEach(wk => {

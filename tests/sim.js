@@ -10,17 +10,10 @@ const consoleErrors = [];
 
 function startServer() {
   let html = fs.readFileSync(require('path').join(__dirname, '..', 'index.html'), 'utf8');
-  // Test transform: run the app as a classic script with Firebase stubbed out so
-  // module-scoped internals (STATE, LG, ...) are reachable from page.evaluate.
+  // Test transform: run the app as a classic script so module-scoped internals
+  // (STATE, LG, ...) are reachable from page.evaluate. Firebase loads via dynamic
+  // import inside the app and fails gracefully offline (local mode).
   html = html.replace('<script type="module">', '<script>');
-  html = html.replace(/import \{ initializeApp \} from[^;]+;/, `
-    const initializeApp = () => ({});`);
-  html = html.replace(/import \{ getFirestore, doc, getDoc, setDoc, onSnapshot \}\s*from[^;]+;/, `
-    const getFirestore = () => ({});
-    const doc = (...a) => ({ __path: a.slice(1).join('/') });
-    const getDoc = async () => ({ exists: () => false, data: () => null });
-    const setDoc = async () => {};
-    const onSnapshot = () => (() => {});`);
   return new Promise(res => {
     const s = http.createServer((req, resp) => {
       resp.writeHead(200, { 'content-type': 'text/html' });

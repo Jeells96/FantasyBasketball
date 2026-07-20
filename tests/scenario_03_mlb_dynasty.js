@@ -61,7 +61,7 @@
   C(T + 'pick ownership moved', String(pickOwner(2027, 1, 't2')) === 't3');
   // pick collision: t4 trades THEIR 2027 R1 to t5 — does it clobber t2->t3?
   S.as(4);
-  window._trade = { to: 't5', fromPlayers: [], toPlayers: [String(teamRoster('t5')[6].espnId)],
+  window._trade = { to: 't5', fromPlayers: [String(teamRoster('t4')[6].espnId)], toPlayers: [String(teamRoster('t5')[6].espnId)],
     fromPicks: [{ year: 2027, round: 1 }], toPicks: [], money: [] };
   sendTradeProposal();
   S.as(5); acceptTrade(lg.trades[lg.trades.length - 1].id);
