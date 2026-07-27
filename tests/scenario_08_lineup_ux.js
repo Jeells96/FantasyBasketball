@@ -166,6 +166,18 @@
   C(H + 'no-id player renders placeholder, never a broken img',
     !/<img/.test(headshotImg({ name: 'No Id' }, 40)));
 
+  // ---- "extra" MLB players (added via search, synthetic non-numeric espnId) ----
+  // must still hit the MLB CDN by mlbId instead of skipping straight to initials.
+  const extraP = { espnId: 'mlb_660271', mlbId: 660271, name: 'Shohei Ohtani' };
+  C(H + 'extra player has no ESPN-id url (synthetic espnId)', headshotUrl(extraP, 96) === null);
+  C(H + 'extra player DOES have an mlbId fallback url', /midfield\.mlbstatic\.com\/v1\/people\/660271\//.test(headshotFallbackUrl(extraP)),
+    headshotFallbackUrl(extraP));
+  const extraHtml = headshotImg(extraP, 40);
+  C(H + 'extra player renders the MLB CDN <img>, not an initials chip',
+    /<img/.test(extraHtml) && /midfield\.mlbstatic\.com\/v1\/people\/660271\//.test(extraHtml), extraHtml);
+  C(H + 'extra player img has no further fallback to loop to (already the last resort)',
+    !/data-fb=/.test(extraHtml), extraHtml);
+
   // ---- injection safety: names/ids come from an external API + commissioner input ----
   const hostile = [
     { espnId: 1, name: `A" onerror="window.__pwned=1` },
