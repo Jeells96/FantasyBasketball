@@ -37,6 +37,45 @@
   C(T + 'master scope reveals the site-wide cards', MASTER.every(m => h.includes(m)), h.join(' | '));
   C(T + 'master scope restores the sport switcher', /onclick="switchSport\(/.test(html()));
 
+  // ---- master scope must not be tied to the league you came from ----
+  const A = 'MasterUntied: ';
+  const mHtml = html();
+  C(A + 'site-wide admin does not present the bound league',
+    !/You're in <b class="amber">ScopeLeague/.test(mHtml));
+  C(A + 'no share-this-league ID in site-wide admin', !/SHARE THIS LEAGUE ID/.test(mHtml));
+  C(A + 'no leave-league button in site-wide admin', !/onclick="leaveLeague\(\)"/.test(mHtml));
+  C(A + 'no push-to-league-ID button in site-wide admin', !/bindToLeaguePrompt\(\)/.test(mHtml));
+  C(A + 'says outright that nothing here is league-specific',
+    /Nothing here is tied to one league/.test(mHtml));
+  C(A + 'offers a way back to the league you came from',
+    /onclick="closeMasterScope\(\)"/.test(mHtml));
+  C(A + 'the eyebrow stops naming the league', /class="eyebrow">Control center/.test(mHtml));
+  C(A + 'the binding itself survives — you can still return',
+    STATE.activeLeagueDoc === STATE.approvals['12345'].leagueDocId);
+  closeMasterScope();
+  C(A + 'and returning lands back in league scope', window._settingsScope === 'league');
+  C(A + 'league scope shows the league controls again',
+    /onclick="leaveLeague\(\)"/.test(html()));
+  C(A + 'without needing the PIN again', window._masterUnlocked === true);
+  openMasterScope();
+
+  // site-wide cap rules are quoted against a reference league, not the bound one
+  STATE.salaryDB = {};
+  const bound = capBasis();
+  const ref = capBasis(referenceShape());
+  C(A + 'a reference shape prices a different league than the bound one',
+    ref.teams === 12 && bound.teams === 4, `${ref.teams} vs ${bound.teams}`);
+  C(A + 'the reference league is a real, priceable shape',
+    ref.spots > 0 && ref.cap > 0 && ref.cap % 5000000 === 0, `${ref.spots} spots, ${ref.cap}`);
+  openSalaryConfig();
+  const capHtml = document.getElementById('modal-body')?.innerHTML
+    || document.querySelector('.modal')?.innerHTML || '';
+  C(A + 'the cap modal labels its numbers as a worked example',
+    /Worked example/.test(capHtml), capHtml.slice(0, 120));
+  C(A + 'and does not label them with the bound league name',
+    !/ScopeLeague/.test(capHtml));
+  closeModal();
+
   // ---- the door is PIN-gated: it must not work while master is locked ----
   window._settingsScope = 'league';
   window._masterUnlocked = false;
