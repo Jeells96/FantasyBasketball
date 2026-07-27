@@ -4312,7 +4312,7 @@ function viewPlayersReal() {
 
   // NBA stats aren't wired yet, so points never compute for it — don't show a
   // perpetual "loading points" spinner for sports whose stats provider isn't live.
-  const statsLive = SP().statsApi === 'mlb';
+  const statsLive = !!FEAT().gameLogs;   // sport has a real per-game stats provider
   const havePoints = !statsLive || LG().playerPool.some(p => p.ptsSeason != null);
   const shown = list.slice(0, 150);
   const rows = shown.map(p => {
@@ -4353,7 +4353,7 @@ function viewPlayersReal() {
         Loading player points…</p>
     </div>` : ''}
     ${!statsLive ? `<div class="card card-tight mt">
-      <p class="sub" style="font-size:.72rem;text-align:center">${SP().label} shows ADP & ownership from ESPN. Live per-game ${SP().statsApi.toUpperCase()} scoring isn't wired up yet, so points stay at 0.</p>
+      <p class="sub" style="font-size:.72rem;text-align:center">${SP().label} shows ADP &amp; ownership from ESPN. This sport has no per-game stats provider yet, so points stay at 0.</p>
     </div>` : ''}
 
     <div class="field mt">
@@ -4627,7 +4627,7 @@ function renderPlayerModal(p, loading) {
   const onMyTeam = pk && String(pk.teamId) === String(myTeamId());
   const isFreeAgent = !pk;
   const isNBA = SP().statsApi === 'nba';
-  const statsLive = SP().statsApi === 'mlb';
+  const statsLive = !!FEAT().gameLogs;   // sport has a real per-game stats provider
   const havePts = p.ptsSeason != null;
   const cap = rosterCap(), count = myTeamId() ? rosterActiveCount(myTeamId()) : 0;
   const full = count >= cap;
@@ -5035,10 +5035,24 @@ function syncExtraIfRostered(espnId) {
 function viewSettings() {
   const havePool = LG().playerPool.length > 0;
   const unlocked = window._masterUnlocked;
+  // SCOPE: opened from inside a league, this page configures THAT league only.
+  // Site-wide admin (player pool, approvals, salary defaults, cross-sport switching)
+  // belongs to the hub and is reached explicitly, so league settings can't be confused
+  // with settings that affect every league. _settingsScope is set to 'master' only by
+  // the hub's Master settings entry, since being bound to a league doesn't by itself
+  // mean you're viewing that league.
+  const inLeague = !!STATE.activeLeagueDoc && window._settingsScope !== 'master';
+  const showMaster = unlocked && !inLeague;
   return `
-    <div class="eyebrow">Control center</div>
+    <div class="eyebrow">${inLeague ? esc(LG().leagueName || 'League') : 'Control center'}</div>
     <div class="h1">Settings</div>
 
+    ${inLeague ? `
+    <div class="card mt">
+      <div class="h2">Sport</div>
+      <p class="sub">${SP().icon} <b>${esc(SP().label)}</b> — set by this league and can't be changed here.
+        Use <span class="plink" onclick="goToHub()">the hub</span> to open a league in another sport.</p>
+    </div>` : `
     <div class="card mt">
       <div class="h2">Sport</div>
       <p class="sub mb">Each sport keeps its own teams, draft, and players.</p>
@@ -5047,7 +5061,7 @@ function viewSettings() {
           `<button class="btn btn-sm ${STATE.sport===sp.key?'btn-amber':'btn-ghost'}" onclick="switchSport('${sp.key}')">${sp.icon} ${sp.label}</button>`
         ).join('')}
       </div>
-    </div>
+    </div>`}
 
     <div class="card" style="border-color:${STATE.activeLeagueDoc?'var(--good)':'var(--line)'}">
       <div class="h2">League</div>
@@ -5078,24 +5092,31 @@ function viewSettings() {
       })()}
     </div>
 
-    ${unlocked ? `
+    ${inLeague && unlocked ? `
+    <div class="card" style="border-color:var(--amber)">
+      <p class="sub" style="font-size:.72rem">You're editing <b>${esc(LG().leagueName||'this league')}</b>.
+        Site-wide admin (player pool, approvals, salary defaults) applies to every league.</p>
+      <button class="btn btn-ghost btn-block mt" onclick="openMasterScope()">⚙ Site-wide admin settings →</button>
+    </div>` : ''}
+
+    ${showMaster ? `
     <div class="card" style="border-color:var(--amber)">
       <div class="row-between">
         <div class="h2" style="margin:0">🔓 Master settings</div>
         <button class="btn btn-sm btn-ghost" onclick="lockMaster()">Lock</button>
       </div>
       <p class="sub mt" style="font-size:.72rem">
-        Admin layer: player pool, ${SP().statsApi === 'mlb' ? 'MLB mapping, ' : ''}commissioner approvals, salary defaults, eligibility, and quick test.</p>
+        Admin layer: player pool, ${SP().statsApi === 'mlb' ? 'MLB mapping, ' : 'stat links, '}commissioner approvals, salary defaults, eligibility, and quick test.</p>
       <p class="sub" style="font-size:.68rem">
         Pool: ${havePool?`✓ ${LG().playerPool.length}`:'○ none'} ·
-        ${SP().statsApi==='mlb'?`Mapped: ${LG().playerPool.filter(p=>p.mlbId).length} · `:''}
+        Linked: ${LG().playerPool.filter(p=>p.mlbId).length} · 
         Firebase: ${fbReady?'<span class="amber">live</span>':esc(fbErr||'offline')}</p>
     </div>
 
     <div class="card">
       <div class="h2">Player pool</div>
-      <p class="sub mb">Pull the ${SP().label} player pool from ESPN. ADP, ownership${SP().statsApi==='mlb'?' & stats':''} reflect the season you pick below. No league ID needed.</p>
-      <label class="sub">Season for ADP${SP().statsApi==='mlb'?' & stats':''}</label>
+      <p class="sub mb">Pull the ${SP().label} player pool from ESPN. ADP, ownership &amp; stats reflect the season you pick below. No league ID needed.</p>
+      <label class="sub">Season for ADP &amp; stats</label>
       <div class="row mt mb" style="gap:.35rem;flex-wrap:wrap">
         ${seasonChoices().map(y => `<button class="btn btn-sm ${SP().season===y?'btn-amber':'btn-ghost'}" onclick="setPoolSeason(${y})">${y}</button>`).join('')}
       </div>
@@ -5113,7 +5134,9 @@ function viewSettings() {
       <button class="btn btn-amber btn-block mt" onclick="scoringDiag()">🧪 Test scoring on a real player</button>
     </div>` : `<div class="card">
       <div class="h2">${SP().label} stats</div>
-      <p class="sub">${SP().label} players are keyed by their ESPN ID (already pulled with the pool), so there's no MLB-style ID mapping to do. Live ${SP().statsApi.toUpperCase()} stat scoring isn't wired up yet — ADP, rosters, drafting, salaries, and contracts all work, but per-game stats don't populate yet.</p>
+      <p class="sub mb">${SP().label} players are keyed by their ESPN ID, which the pool already carries — there's no separate ID-mapping step like baseball needs. Per-game stats and game times both come from ESPN, so scoring, standings and per-player lineup locks all run live.</p>
+      <p class="sub" style="font-size:.7rem">Game logs cached: <b class="amber">${Object.keys(LG().gameLogs||{}).length}</b> players · pool: ${LG().playerPool.length}</p>
+      <button class="btn btn-ghost btn-block mt" onclick="doMapIds()">Refresh ${SP().label} stat links</button>
     </div>`}
 
     <div class="card">
@@ -5393,8 +5416,16 @@ function slog(msg, kind='pending') {
    Master is reachable ONLY from the bare-URL landing (gateOpenMaster). Inside a
    league there is no master UI at all — members and league commissioners only
    ever see their league's page. */
+/* Jump from a league's settings to the site-wide admin layer. Only reachable when
+   the master PIN is already unlocked; it just changes which scope Settings renders. */
+window.openMasterScope = function() {
+  if (!window._masterUnlocked) { toast('Master PIN required', 'err'); return; }
+  window._settingsScope = 'master';
+  renderActive();
+};
 window.lockMaster = function() {
   window._masterUnlocked = false;
+  window._settingsScope = 'league';
   toast('Master settings locked', 'ok');
   renderActive();
   if (gateNeeded()) showGate('landing');   // locked at the hub → back to the front door
@@ -5783,6 +5814,7 @@ window.gateOpenMaster = function() {
   if (pin == null) return;
   if (pin !== ADMIN_PIN) { toast('Wrong PIN', 'err'); return; }
   window._masterUnlocked = true;
+  window._settingsScope = 'master';   // site-wide admin, not one league's settings
   hideGate();
   go('settings');
   toast('Master settings unlocked', 'ok');
@@ -5842,6 +5874,7 @@ function joinLeagueById(id, opts = {}) {
   // restore this device's identity in THIS league if it was here before (so switching
   // between league URLs doesn't lose which team you claimed); otherwise start fresh.
   STATE.memberId = (STATE.memberByLeague || {})[docId] || null;
+  window._settingsScope = 'league';   // Settings now configures THIS league
   saveLocal();
   // make this league's URL its own address: #league=<id> (bookmarkable, survives refresh)
   setLeagueHash(id);
