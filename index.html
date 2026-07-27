@@ -1194,15 +1194,21 @@ window.headshotFail = function(img) {
   span.textContent = img.dataset.ini || '?';
   img.replaceWith(span);
 };
-/* <img> with a chained fallback; ends as an initials chip if every source 404s */
+/* <img> with a chained fallback; ends as an initials chip if every source 404s.
+   ESPN's id-keyed CDN is tried first, but "extra" players (added via MLB search
+   outside the top-300 pool) carry a synthetic non-numeric espnId like 'mlb_660271' —
+   headshotUrl() returns null for those, so the MLB-id fallback must be checked
+   BEFORE giving up, not only as an onerror step after a successful ESPN request. */
 function headshotImg(p, size) {
   const px = size || 40;
   const url = headshotUrl(p, px*2);          // 2x for retina
   const initials = esc(playerInitials(p && p.name));
-  if (!url) return `<span class="headshot ph" style="width:${px}px;height:${px}px">${initials}</span>`;
   const fb = headshotFallbackUrl(p);
+  const primary = url || fb;
+  if (!primary) return `<span class="headshot ph" style="width:${px}px;height:${px}px">${initials}</span>`;
+  const secondary = url ? fb : null;          // already-tried source is never reused
   return `<img class="headshot" loading="lazy" width="${px}" height="${px}" alt=""
-    src="${esc(url)}" data-ini="${initials}"${fb?` data-fb="${esc(fb)}"`:''}
+    src="${esc(primary)}" data-ini="${initials}"${secondary?` data-fb="${esc(secondary)}"`:''}
     style="width:${px}px;height:${px}px" onerror="headshotFail(this)">`;
 }
 
