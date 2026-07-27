@@ -138,7 +138,60 @@ const SIM_SETUP = () => {
   };
 };
 
+/* ---------------------------------------------------------------------------
+   SOURCE AUDIT — inline event handlers must be reachable from the GLOBAL scope.
+
+   The app ships as <script type="module">, so its top-level functions are
+   module-scoped, not global. An inline handler (onclick="foo()") is evaluated
+   against the global scope, so referencing a module-scoped function makes the
+   control silently dead: ReferenceError, no visible error, nothing happens.
+
+   This audit exists because the harness below rewrites the module script to a
+   classic one (so tests can reach internals) — which makes every module-scoped
+   function global and hides exactly this class of bug. So we check the SOURCE
+   text, not the running page. Static analysis also covers handlers in code
+   paths the scenarios never render.
+   --------------------------------------------------------------------------- */
+function auditInlineHandlers(src) {
+  const exposed = new Set();
+  for (const m of src.matchAll(/window\.(\w+)\s*=\s*(?:async\s+)?(?:function|\()/g)) exposed.add(m[1]);
+  for (const m of src.matchAll(/window\.(\w+)\s*=\s*(\w+)\s*;/g)) exposed.add(m[1]);
+
+  const BUILTINS = new Set(['if','for','while','switch','return','typeof','new','function','catch',
+    'parseInt','parseFloat','String','Number','Boolean','Array','Object','JSON','Math','Date',
+    'alert','confirm','prompt','isNaN','encodeURIComponent','decodeURIComponent','setTimeout']);
+
+  const missing = new Map();
+  const attr = /\bon(?:click|change|input|keydown|keyup|submit)\s*=\s*"([^"]*)"/g;
+  for (const m of src.matchAll(attr)) {
+    const body = m[1];
+    for (const c of body.matchAll(/([A-Za-z_$][\w$]*)\s*\(/g)) {
+      const name = c[1];
+      if (BUILTINS.has(name) || exposed.has(name)) continue;
+      // skip method calls (this.foo(), x.foo()) and render-time template calls (${esc(...)})
+      const at = c.index;
+      const before = body.slice(Math.max(0, at - 2), at);
+      if (before.endsWith('.')) continue;
+      if (body.slice(0, at).lastIndexOf('${') > body.slice(0, at).lastIndexOf('}')) continue;
+      if (!new RegExp(`function\\s+${name}\\s*\\(`).test(src)) continue;  // not ours; ignore
+      missing.set(name, (missing.get(name) || 0) + 1);
+    }
+  }
+  return missing;
+}
+
 async function main() {
+  const srcText = fs.readFileSync(require('path').join(__dirname, '..', 'index.html'), 'utf8');
+  const missingHandlers = auditInlineHandlers(srcText);
+  results.push({
+    name: 'Source: every inline on*= handler is reachable from the global scope',
+    pass: missingHandlers.size === 0,
+    detail: missingHandlers.size
+      ? [...missingHandlers.entries()].map(([n, c]) => `${n} (${c} refs)`).join(', ') +
+        ' — module-scoped, so these controls throw ReferenceError and do nothing'
+      : '',
+  });
+
   const server = await startServer();
   const exe = process.env.CHROMIUM_PATH || '/opt/pw-browsers/chromium';
   const browser = await chromium.launch(fs.existsSync(exe) ? { executablePath: exe } : {});
