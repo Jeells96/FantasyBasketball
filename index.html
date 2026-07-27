@@ -937,6 +937,9 @@ async function initFirebase() {
         // a shared league link (id OR name-slug) may be waiting on approvals — try it now
         if ((window._pendingDeepLink || window._pendingSlug) && typeof tryDeepLinkJoin === 'function') tryDeepLinkJoin();
         renderActive();
+        // the landing gate's "Your leagues" list depends on approvals — refresh it in
+        // place if that's what's currently showing (renderActive() doesn't touch the gate)
+        if (typeof refreshGateIfLanding === 'function') refreshGateIfLanding();
         // pool likely just arrived from master — compute points if needed
         if (typeof ensurePoolPoints === 'function') ensurePoolPoints();
       }
@@ -5518,23 +5521,70 @@ function gateNeeded() {
 function showGate(step) {
   const gate = $('gate');
   gate.style.display = 'flex';
+  window._gateStep = step || 'landing';
   if (step === 'league') renderGateLeague();
   else renderGateLanding();
 }
 function hideGate() {
   $('gate').style.display = 'none';
+  window._gateStep = null;
 }
-/* LANDING — the main entry. Two paths: open Master settings (admin, PIN), or
-   join/open a specific league by ID. Members normally arrive via an invite link
-   and skip this entirely. */
+/* Re-render the landing gate IN PLACE if it's the one currently showing — used after
+   approvals arrive/update asynchronously (Firebase master snapshot), since renderActive()
+   only touches in-app pages, never the gate overlay. Cheap no-op otherwise. */
+function refreshGateIfLanding() {
+  if (window._gateStep === 'landing' && $('gate')?.style.display === 'flex') renderGateLanding();
+}
+/* All leagues THIS DEVICE has ever joined (claimed a team in), across every sport —
+   built from memberByLeague (leagueDocId -> memberId, set the moment a team is claimed
+   and never cleared by "leave league") cross-referenced with approvals for the name/
+   sport/current-id needed to quick-join. Two approval keys can alias the same data doc
+   (a league migrated from a text key to a 5-digit id) — dedupe to one row, preferring
+   the numeric id as the canonical join target. */
+function joinedLeaguesList() {
+  const mbl = STATE.memberByLeague || {};
+  const appr = STATE.approvals || {};
+  const byDoc = {};
+  Object.keys(appr).forEach(id => {
+    const a = appr[id];
+    const docId = a.leagueDocId || ('league_' + id);
+    if (!mbl[docId]) return;                          // only leagues we've actually joined
+    const cur = byDoc[docId];
+    if (!cur || (!/^\d{5}$/.test(cur.id) && /^\d{5}$/.test(id))) {
+      byDoc[docId] = { id, leagueDocId: docId, leagueName: a.leagueName || ('League ' + id),
+        sport: (a.sport && SPORTS[a.sport]) ? a.sport : 'flb', approved: a.approved !== false };
+    }
+  });
+  return Object.values(byDoc).sort((a,b) => (a.leagueName||'').localeCompare(b.leagueName||''));
+}
+/* LANDING — the main entry. Quick-join any previously-joined league, open Master
+   settings (admin, PIN), or join/open a new league by ID. Members normally arrive via
+   an invite link and skip this entirely. */
 function renderGateLanding() {
+  const joined = joinedLeaguesList();
+  const joinedHtml = joined.length ? `
+    <div class="step-label" style="margin-top:.5rem">Your leagues</div>
+    <div style="max-height:38vh;overflow-y:auto;margin-bottom:1rem">
+      ${joined.map(j => `
+        <div class="row-between" style="padding:.5rem 0;border-bottom:1px solid rgba(42,61,48,.4)">
+          <div style="min-width:0">
+            <div style="font-weight:600;font-size:.85rem">${esc(j.leagueName)}</div>
+            <span class="sub" style="font-size:.66rem">${SPORTS[j.sport]?.icon||''} ${esc(SPORTS[j.sport]?.label||j.sport)}
+              ${!j.approved?' · <span class="cell-neg">access paused</span>':''}
+              ${j.leagueDocId===STATE.activeLeagueDoc?' · current':''}</span>
+          </div>
+          <button class="btn btn-sm ${j.leagueDocId===STATE.activeLeagueDoc?'btn-ghost':'btn-amber'}"
+            onclick="joinLeagueById('${j.id}')" ${j.leagueDocId===STATE.activeLeagueDoc?'disabled':''}>
+            ${j.leagueDocId===STATE.activeLeagueDoc?'Current':'Join →'}</button>
+        </div>`).join('')}
+    </div>` : '';
   $('gate-inner').innerHTML = `
     <div class="brand-big">BGL<span class="mark">.</span></div>
     <div class="tagline">Best Game League</div>
-    <p class="sub" style="text-align:center;margin:1rem 0">Open the master hub to create & manage leagues, or jump into a league with its ID.</p>
+    ${joinedHtml}
     <button class="btn btn-amber btn-block" onclick="gateOpenMaster()">⚙ Master settings</button>
     <div style="text-align:center;margin:1.2rem 0 .6rem;padding-top:1rem;border-top:1px solid var(--line)">
-      <span class="sub" style="font-size:.7rem">Have a League ID?</span>
+      <span class="sub" style="font-size:.7rem">${joined.length?'Have a different League ID?':'Have a League ID?'}</span>
     </div>
     <input class="input" id="gate-ln" placeholder="5-digit ID" inputmode="numeric" maxlength="5"
       style="text-align:center;font-size:1.6rem;letter-spacing:6px" onkeydown="if(event.key==='Enter')gateJoinLeague()">
