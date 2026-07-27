@@ -7843,6 +7843,24 @@ function proTeamAbbr(id) {
 }
 
 /* ============================================================
+   GLOBAL HANDLER EXPOSURE
+   This file runs as <script type="module">, so its top-level functions are
+   module-scoped, NOT global. Inline HTML handlers (onclick="foo()") are
+   evaluated against the GLOBAL scope, so any function reached from markup
+   must be published on window or the click silently throws ReferenceError
+   and the button does nothing.
+   Most handlers are declared as `window.foo = function` already; these are
+   plain declarations that are also referenced from markup, so they are
+   published here. tests/ audits this automatically — see the inline-handler
+   check in tests/sim.js.
+   ============================================================ */
+window.joinLeagueById   = joinLeagueById;
+window.goToHub          = goToHub;
+window.showGate         = showGate;
+window.renderActive     = renderActive;
+window.renderTradeBuilder = renderTradeBuilder;
+
+/* ============================================================
    BOOT
    ============================================================ */
 /* Read a shared league link like  ...#league=68261  so opening the link
