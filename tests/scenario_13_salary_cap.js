@@ -26,8 +26,18 @@
   C(T + 'editing NBA rules leaves MLB untouched', SALCFG('flb').defaultCap === mlb.defaultCap,
     SALCFG('flb').defaultCap);
   C(T + 'headroom edit is per sport too',
-    SALCFG('fba').headroom.dynasty === 1.4 && SALCFG('flb').headroom.dynasty === 1.25,
+    SALCFG('fba').headroom.dynasty === 1.4 && SALCFG('flb').headroom.dynasty === mlb.headroom.dynasty,
     `nba ${SALCFG('fba').headroom.dynasty} / mlb ${SALCFG('flb').headroom.dynasty}`);
+
+  // The multiplier has to be tight enough that a careless drafter can actually bust
+  // it. At 1.25 a snake draft's natural spread kept everyone under and the cap was
+  // decorative; mock drafts put the break-even around 1.10.
+  C(T + 'default multiplier is tight enough for the cap to bind',
+    ['dynasty','keeper','redraft'].every(t => mlb.headroom[t] <= 1.10 && mlb.headroom[t] >= 1.0)
+    && ['dynasty','keeper','redraft'].every(t => nba.headroom[t] <= 1.10 && nba.headroom[t] >= 1.0),
+    JSON.stringify(mlb.headroom));
+  C(T + 'dynasty still gets the most slack of the three',
+    mlb.headroom.dynasty > mlb.headroom.keeper && mlb.headroom.keeper > mlb.headroom.redraft);
 
   // ---- legacy migration: one flat config becomes the baseball config ----
   STATE.salaryConfig = { defaultCap: 300000000, arbSalary: 7000000, maxTerm: 12 };
@@ -120,6 +130,35 @@
     settings: { leagueType: 'dynasty', useSalaryCap: true, salaryCapDollars: 200000000 } });
   C(T + 'cap is per league, not per sport', leagueCap() === 200000000 && capA !== 200000000,
     `${capA} vs ${leagueCap()}`);
+
+  // ---- the minimum salary tracks the data, not a constant ----
+  const M = 'CapMinimum: ';
+  STATE.salaryConfig = {};
+  STATE.salaryDB = {};
+  S.setupLeague('flb', { teams: 10, week: 2, name: 'MinSalary', settings: { leagueType: 'dynasty' } });
+  const bakedIn = SALCFG().arbSalary;
+  C(M + 'with no data it falls back to the built-in minimum', bakedIn === 5000000, bakedIn);
+  C(M + 'and says so', SALCFG().arbSalaryDerived === false);
+  // a salary world where everything costs 10x today's money — a league started years from now
+  STATE.salaryDB = { flb: {} };
+  LG().playerPool.forEach((p, i) => {
+    STATE.salaryDB.flb[normName(p.name)] = { aav: i < 60 ? 300000000 - i * 1000000 : 40000000 };
+  });
+  const future = SALCFG();
+  C(M + 'a loaded salary database sets the minimum itself', future.arbSalaryDerived === true);
+  C(M + 'the derived minimum reflects that data, not 2026 money',
+    future.arbSalary === 40000000, future.arbSalary);
+  C(M + 'so the suggested cap is priced in that era\'s money',
+    capBasis().minSalary === 40000000);
+  // an explicit number in master settings still wins
+  setSalCfgM('arbSalary', 3);
+  C(M + 'a hand-set minimum overrides the derived one',
+    SALCFG().arbSalary === 3000000 && SALCFG().arbSalaryDerived !== true, SALCFG().arbSalary);
+  setSalCfgM('arbSalary', 0);   // clearing it hands control back to the data
+  C(M + 'clearing it hands control back to the data',
+    SALCFG().arbSalary === 40000000 && SALCFG().arbSalaryDerived === true, SALCFG().arbSalary);
+  C(M + 'and never leaves the minimum at zero', SALCFG().arbSalary > 0);
+  STATE.salaryConfig = {};
 
   STATE.salaryDB = {};
   const bad = S.renderAll();
