@@ -58,9 +58,22 @@
   // search from the "Your leagues" list, not the tagline (which repeats the league name)
   const listStart = html.indexOf('Your leagues');
   const rowFor = (name) => html.slice(html.indexOf(name, listStart), html.indexOf(name, listStart) + 500);
-  C(T + 'current league shows a disabled "Current" button, not a join link',
-    /disabled[^>]*>\s*Current<\/button>/.test(rowFor('Best Game League')), rowFor('Best Game League'));
-  C(T + 'non-current leagues get a live join button', /onclick="joinLeagueById\('67890'\)"/.test(html));
+  // REGRESSION: the landing gate is the front door — you are NOT inside any league
+  // while it is showing, so EVERY listed league must be enterable. A previous build
+  // rendered the still-bound league as a disabled "Current" chip, which left a user
+  // who was bound to a league with no way back into it.
+  C(T + 'every joined league has a live Enter button, including the bound one',
+    list.every(j => new RegExp(`onclick="joinLeagueById\\('${j.id}'\\)"`).test(html)),
+    html.match(/joinLeagueById\('\d+'\)/g)?.join(',') || 'none');
+  C(T + 'no league row is rendered disabled', !/disabled/.test(html));
+  C(T + 'the bound league is enterable rather than a dead "Current" chip',
+    /onclick="joinLeagueById\('12345'\)"/.test(rowFor('Best Game League'))
+      && !/disabled/.test(rowFor('Best Game League')), rowFor('Best Game League'));
+  C(T + 'buttons cannot be squeezed away by a long league name',
+    (html.match(/flex:none/g) || []).length === list.length,
+    (html.match(/flex:none/g) || []).length + ' of ' + list.length);
+  C(T + 'the bound league is still marked so you know where you left off',
+    /last opened/.test(rowFor('Best Game League')));
 
   // ---- quick-join actually switches leagues (and sport) ----
   const fbaLg = S.setupLeague('fba', { teams: 4, week: 1, name: 'Hoops Night' });

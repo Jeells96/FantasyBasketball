@@ -5733,11 +5733,10 @@ function renderGateLanding() {
             <div style="font-weight:600;font-size:.85rem">${esc(j.leagueName)}</div>
             <span class="sub" style="font-size:.66rem">${SPORTS[j.sport]?.icon||''} ${esc(SPORTS[j.sport]?.label||j.sport)}
               ${!j.approved?' · <span class="cell-neg">access paused</span>':''}
-              ${j.leagueDocId===STATE.activeLeagueDoc?' · current':''}</span>
+              ${j.leagueDocId===STATE.activeLeagueDoc?' · last opened':''}</span>
           </div>
-          <button class="btn btn-sm ${j.leagueDocId===STATE.activeLeagueDoc?'btn-ghost':'btn-amber'}"
-            onclick="joinLeagueById('${j.id}')" ${j.leagueDocId===STATE.activeLeagueDoc?'disabled':''}>
-            ${j.leagueDocId===STATE.activeLeagueDoc?'Current':'Join →'}</button>
+          <button class="btn btn-sm btn-amber" style="flex:none"
+            onclick="joinLeagueById('${j.id}')">Enter →</button>
         </div>`).join('')}
     </div>` : '';
   $('gate-inner').innerHTML = `
@@ -5811,16 +5810,18 @@ function joinLeagueById(id, opts = {}) {
     STATE.sport = appr.sport;   // this league belongs to a specific sport
   }
   LG().leagueName = appr.leagueName;
-  STATE.activeLeagueDoc = appr.leagueDocId;
+  // leagueDocFor(): a migrated/legacy approval may not carry an explicit leagueDocId
+  const docId = leagueDocFor(id);
+  STATE.activeLeagueDoc = docId;
   // restore this device's identity in THIS league if it was here before (so switching
   // between league URLs doesn't lose which team you claimed); otherwise start fresh.
-  STATE.memberId = (STATE.memberByLeague || {})[appr.leagueDocId] || null;
+  STATE.memberId = (STATE.memberByLeague || {})[docId] || null;
   saveLocal();
   // make this league's URL its own address: #league=<id> (bookmarkable, survives refresh)
   setLeagueHash(id);
-  subscribeLeague(appr.leagueDocId);
+  subscribeLeague(docId);
   hideGate();
-  if (!opts.silent) toast(`Joined ${appr.leagueName}`, 'ok');
+  if (!opts.silent) toast(`Opened ${appr.leagueName}`, 'ok');
   go('home');
   return true;
 }
