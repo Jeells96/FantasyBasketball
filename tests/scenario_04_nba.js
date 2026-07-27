@@ -20,14 +20,26 @@
   }
   C(T + 'default lineups fill all slots', allValid, det);
 
-  // ---- weekly scoring: NBA has no stats provider ----
+  // ---- weekly scoring: NBA now has a real stats provider (ESPN game logs) ----
+  S.genLogs(26);
   S.setWeek(10);
   const totals = lg.teams.map(t => teamWeekTotal(t.id, 5));
-  C(T + 'weekly team scores are non-zero (expected for H2H to work)', totals.some(x => x > 0),
-    'all week-5 totals: ' + totals.join(','));
+  C(T + 'weekly team scores are non-zero', totals.every(x => x > 0),
+    'week-5 totals: ' + totals.join(','));
   const rec = computeRecords();
   const played = Object.values(rec).map(r => r.w + r.l + r.t);
-  C(T + 'records accumulate (expected)', played.some(x => x > 0), played.join(','));
+  C(T + 'records accumulate', played.every(x => x === 10), played.join(','));
+  const gw = Object.values(rec).reduce((a,r)=>a+r.w,0), gl2 = Object.values(rec).reduce((a,r)=>a+r.l,0);
+  C(T + 'league W == league L', gw === gl2, gw + '/' + gl2);
+  // NBA scoring uses the basketball catalog (pts/reb/ast/stl*2/blk*2/to*-1)
+  const nbaP = lg.playerPool[0];
+  const g = (LG().gameLogs[nbaP.mlbId] || [])[0];
+  const expect = g.stat.points + g.stat.rebounds + g.stat.assists
+               + g.stat.steals*2 + g.stat.blocks*2 - g.stat.turnovers;
+  C(T + 'a game scores per the NBA catalog', gamePoints(g.stat, g.group) === expect,
+    gamePoints(g.stat, g.group) + ' vs ' + expect);
+  C(T + 'NBA is schedule-backed (real tip-off times available)', FEAT().schedule === true);
+  C(T + 'NBA gameLogs feature enabled', FEAT().gameLogs === true);
   const br = (S.setWeek(21), playoffBracket());
   C(T + 'playoff bracket forms', !!br, br && JSON.stringify(br.rounds[0].pairs));
 
