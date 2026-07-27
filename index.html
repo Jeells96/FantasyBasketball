@@ -1479,15 +1479,27 @@ function SALCFG(sportKey) {
    watches the money stays under in every league shape tested. A cap you can't
    break isn't a cap.
    ============================================================ */
-function capHeadroom() {
+function capHeadroom(leagueType) {
   const h = SALCFG().headroom || {};
-  const t = LSET().leagueType || 'redraft';
+  const t = leagueType || LSET().leagueType || 'redraft';
   return Number(h[t]) > 0 ? Number(h[t]) : 1.10;
 }
-/* the pieces behind the suggestion, so the UI can show its work */
-function capBasis() {
-  const teams = Math.max(2, (LG().teams || []).length || 10);
-  const spots = Math.max(1, rosterCap());
+/* A neutral league to quote site-wide numbers against. Master settings configures
+   every league, so it must not describe whichever one this device happens to be
+   bound to — a commissioner tweaking the multiplier there would otherwise see it
+   explained in terms of their own league's team count and roster size. */
+function referenceShape() {
+  const sp = SP();
+  return { teams: 12, leagueType: 'redraft',
+           spots: Math.max(1, (sp.lineupSlots || []).length + (sp.benchCount ?? 5)) };
+}
+/* the pieces behind the suggestion, so the UI can show its work.
+   Pass a shape ({teams, spots, leagueType}) to price a hypothetical league instead
+   of the active one. */
+function capBasis(shape) {
+  const sh = shape || {};
+  const teams = Math.max(2, sh.teams || (LG().teams || []).length || 10);
+  const spots = Math.max(1, sh.spots || rosterCap());
   const need  = teams * spots;
   const arb   = SALCFG().arbSalary;
   const priced = (LG().playerPool || [])
@@ -1497,7 +1509,7 @@ function capBasis() {
   // pad with arb-rate players if the pool is smaller than the league needs
   const total = priced.reduce((a, b) => a + b, 0) + Math.max(0, need - priced.length) * arb;
   const perTeam = total / teams;
-  const headroom = capHeadroom();
+  const headroom = capHeadroom(sh.leagueType);
   // round to a clean $5M so the number reads as a decision, not a calculation
   const cap = Math.max(arb * spots, Math.round((perTeam * headroom) / 5000000) * 5000000);
   return { teams, spots, need, perTeam: Math.round(perTeam), headroom, cap,
@@ -5175,6 +5187,11 @@ function viewSettings() {
   // mean you're viewing that league.
   const inLeague = !!STATE.activeLeagueDoc && window._settingsScope !== 'master';
   const showMaster = unlocked && !inLeague;
+  // Site-wide admin is not "my league's settings with extra cards". A device stays
+  // bound to a league while you're in here (so you can go back to it), but nothing
+  // on this page should be about that league — the binding controls, its ID, its
+  // name and its leave button all belong to league scope.
+  const masterScope = window._settingsScope === 'master';
   return `
     <div class="eyebrow">${inLeague ? esc(LG().leagueName || 'League') : 'Control center'}</div>
     <div class="h1">Settings</div>
@@ -5195,6 +5212,13 @@ function viewSettings() {
       </div>
     </div>`}
 
+    ${masterScope && STATE.activeLeagueDoc ? `
+    <div class="card">
+      <div class="h2">League</div>
+      <p class="sub">Nothing here is tied to one league — every setting below applies to
+        all ${esc(SP().label)} leagues on this site.</p>
+      <button class="btn btn-ghost btn-block mt" onclick="closeMasterScope()">← Back to ${esc(LG().leagueName || 'league')} settings</button>
+    </div>` : `
     <div class="card" style="border-color:${STATE.activeLeagueDoc?'var(--good)':'var(--line)'}">
       <div class="h2">League</div>
       ${(() => {
@@ -5222,7 +5246,7 @@ function viewSettings() {
           <button class="btn btn-ghost btn-block mt" onclick="forcePushLeague()">Re-sync to current doc</button>
           <button class="btn btn-ghost btn-block mt" onclick="leaveLeague()">Leave / switch league</button>`;
       })()}
-    </div>
+    </div>`}
 
     ${inLeague && unlocked ? `
     <div class="card" style="border-color:var(--amber)">
@@ -5566,6 +5590,12 @@ function slog(msg, kind='pending') {
 window.openMasterScope = function() {
   if (!window._masterUnlocked) { toast('Master PIN required', 'err'); return; }
   window._settingsScope = 'master';
+  renderActive();
+};
+/* Step back out of site-wide admin into the league this device is bound to,
+   without locking master — the door swings both ways. */
+window.closeMasterScope = function() {
+  window._settingsScope = 'league';
   renderActive();
 };
 window.lockMaster = function() {
@@ -6480,7 +6510,12 @@ window.openSalaryConfig = function() {
         onchange="setPenaltyPicks(${i}, this.value)">
     </div>`).join('');
   const hr = c.headroom || {};
-  const basis = capBasis();
+  // Site-wide rules get quoted against a reference league, never the one this
+  // device is bound to.
+  const inMaster = window._settingsScope === 'master';
+  const ref = inMaster ? referenceShape() : {};
+  const forType = ref.leagueType || LSET().leagueType || 'redraft';
+  const basis = capBasis(ref);
   openModal(`<div class="h2">Cap rules & penalties</div>
     <p class="sub mb" style="font-size:.72rem">${SP().icon} These rules apply to <b>${esc(SP().label)}</b> only —
       each sport keeps its own cap, minimum salary and contract limits.</p>
@@ -6491,11 +6526,14 @@ window.openSalaryConfig = function() {
       slack, so dynasty defaults highest.</p>
     ${['dynasty','keeper','redraft'].map(t => `
       <div class="row-between" style="padding:.3rem 0">
-        <span class="sub" style="text-transform:capitalize">${t}${LSET().leagueType===t?' <span class="amber">· this league</span>':''}</span>
+        <span class="sub" style="text-transform:capitalize">${t}${forType===t?` <span class="amber">· ${inMaster?'shown below':'this league'}</span>`:''}</span>
         <input class="input" type="number" step="0.05" min="1" max="3" value="${hr[t] ?? 1.1}"
           style="width:90px;text-align:right" onchange="setCapHeadroom('${t}', this.value)">
       </div>`).join('')}
     <div class="card card-tight mt">
+      <div class="divlabel" style="margin-top:0">${inMaster
+        ? `Worked example · a ${basis.teams}-team ${esc(forType)} league`
+        : `${esc(LG().leagueName || 'This league')}`}</div>
       <div class="row-between" style="font-size:.74rem"><span class="sub">Teams × roster spots</span>
         <b>${basis.teams} × ${basis.spots}</b></div>
       <div class="row-between" style="font-size:.74rem"><span class="sub">Salary slots sampled</span>
@@ -6506,13 +6544,14 @@ window.openSalaryConfig = function() {
         <b>${fmtMoney(basis.minSalary)}</b></div>
       <div class="row-between" style="font-size:.74rem"><span class="sub">Even payroll per team</span>
         <b>${fmtMoney(basis.perTeam)}</b></div>
-      <div class="row-between" style="font-size:.74rem"><span class="sub">× ${esc(LSET().leagueType||'redraft')} multiplier</span>
+      <div class="row-between" style="font-size:.74rem"><span class="sub">× ${esc(forType)} multiplier</span>
         <b>×${basis.headroom}</b></div>
       <div class="row-between" style="font-size:.8rem;border-top:1px solid var(--line);padding-top:.35rem;margin-top:.35rem">
         <span class="sub">Suggested cap</span><b class="amber">${fmtMoney(basis.cap)}</b></div>
     </div>
     <p class="sub" style="font-size:.66rem;margin-top:.3rem">
-      The top ${basis.need} salaries in the database are what this league will actually roster
+      ${inMaster ? 'These rules apply to every league; the numbers above are only a worked example, since each league is priced from its own shape. ' : ''}The
+      top ${basis.need} salaries in the database are what ${inMaster?'such a league':'this league'} would actually roster
       (${basis.teams} teams × ${basis.spots} spots), so the suggestion tracks whatever salary data is
       loaded${basis.minDerived?' — including the minimum, read off the bottom of that data rather than a fixed number':''}.</p>
 
