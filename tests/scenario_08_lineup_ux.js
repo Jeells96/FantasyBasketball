@@ -94,12 +94,13 @@
   C(T + 'and is therefore not locked', !playerLockedForWeek(anyP, curWk));
   lg.gameLogs = savedLogs0;
   C(T + 'a player who already logged a game this week IS locked', playerLockedForWeek(anyP, curWk));
-  // a sport with NO schedule source (NBA) falls back to the start of the week —
-  // which is still LATER than the old league-wide Sunday-11am lock
+  // BOTH sports are schedule-backed now (NBA got a real provider), so neither falls
+  // back to the blunt week-start lock while a schedule is reachable
+  C(T + 'MLB is schedule-backed', FEAT().schedule === true);
   STATE.sport = 'fba';
-  const nbaLock = playerLockTime({ espnId: 2001, name: 'N' }, futureWk);
-  C(T + 'no-schedule sport falls back to week start', nbaLock === weekStart(futureWk).getTime(), String(nbaLock));
-  C(T + 'that fallback is later than the old Sunday 11am lock', nbaLock > weekLockTime(futureWk).getTime());
+  C(T + 'NBA is schedule-backed too', FEAT().schedule === true);
+  C(T + 'NBA unknown game => fails open, not locked for the week',
+    playerLockTime({ espnId: 2001, name: 'N' }, futureWk) === null);
   STATE.sport = 'flb';
 
   // schedule-driven: player with a game later today is still editable

@@ -45,7 +45,7 @@ const SIM_SETUP = () => {
         const cyc = [['PG'],['SG'],['SF'],['PF'],['C'],['PG','SG'],['SF','PF'],['PF','C']];
         for (let i = 0; i < n; i++) {
           pool.push({ espnId: 2000 + i, name: 'Nba ' + this.alpha(i) + ' Player', adp: i + 1, eligible: cyc[i % cyc.length],
-            proTeam: 'BOS', seasonPts: 2000 - i, gp: 70, fpg: (2000 - i) / 70 });
+            proTeam: 'BOS', mlbId: String(2000 + i), mlbTeamId: 2, seasonPts: 2000 - i, gp: 70, fpg: (2000 - i) / 70 });
         }
       }
       return pool;
@@ -83,8 +83,23 @@ const SIM_SETUP = () => {
       this._logWeeks = W;
       const lg = LG();
       lg.gameLogs = {};
+      const isNba = STATE.sport === 'fba';
       for (const p of lg.playerPool) {
         if (!p.mlbId) continue;
+        if (isNba) {
+          const logs = [];
+          for (let w = 1; w <= W; w++) {
+            const days = weekDays(w).map(ymd);
+            for (let gi = 0; gi < 3; gi++) {
+              const seed = (p.espnId * 31 + w * 7 + gi * 3) % 13;
+              logs.push({ date: days[gi * 2], group: 'stats', teamId: 2,
+                stat: { points: 10 + seed, rebounds: 2 + (seed % 5), assists: 1 + (seed % 4),
+                        steals: seed % 3, blocks: seed % 2, turnovers: seed % 4 } });
+            }
+          }
+          lg.gameLogs[p.mlbId] = logs;
+          continue;
+        }
         const pit = /SP|RP/.test((p.eligible || []).join(','));
         const logs = [];
         for (let w = 1; w <= W; w++) {

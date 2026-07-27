@@ -538,6 +538,7 @@ const SPORTS = {
       arb: true,              // arbitration / no-contract placeholder salaries
       pitchers: true,         // SP/RP split, pitcher-specific logic
       probableStarters: true, // probable starting pitchers
+      schedule: true,         // live game schedule (per-player locks, matchup grid)
       statWindows: true,      // 7d/14d/30d/season/best-avg stat windows
       ir: true,               // injured reserve slots
       gameLogs: true,         // per-game logs (best-game weekly scoring)
@@ -561,7 +562,9 @@ const SPORTS = {
       5:['PG','SG'], 6:['SF','PF'], 7:['PF','C'], 8:['SF','SG'],
     },
     benchSlots: [12,13],
-    proTeams: {}, // filled when basketball is activated
+    proTeams: {0:'FA',1:'ATL',2:'BOS',3:'NO',4:'CHI',5:'CLE',6:'DAL',7:'DEN',8:'DET',9:'GS',
+      10:'HOU',11:'IND',12:'LAC',13:'LAL',14:'MIA',15:'MIL',16:'MIN',17:'BKN',18:'NY',19:'ORL',
+      20:'PHI',21:'PHX',22:'POR',23:'SAC',24:'SA',25:'OKC',26:'UTAH',27:'WSH',28:'TOR',29:'MEM',30:'CHA'},
     posFilters: ['ALL','PG','SG','SF','PF','C','G','F'],
     lineupSlots: [
       { slot: 'PG',  eligible: ['PG'] },
@@ -577,10 +580,11 @@ const SPORTS = {
     features: {
       arb: false,
       pitchers: false,
-      probableStarters: false,
-      statWindows: false,     // NBA shows per-game fantasy points instead
+      probableStarters: false, // basketball has no probable-starter concept
+      schedule: true,          // ESPN scoreboard → real tip-off times, per-player locks
+      statWindows: false,      // NBA shows per-game fantasy points instead
       ir: false,
-      gameLogs: false,        // not wired yet (would need ESPN box scores)
+      gameLogs: true,          // ESPN gamelog, keyed by the espnId we already store
       perGameScoring: true,   // show FP/G
       mapping: false,         // ESPN ID is the stats key; no separate mapping
     },
@@ -674,6 +678,7 @@ function blankLeague(name) {
     gameLogs: {},               // cached MLB logs: gameLogs[mlbId] = [{date, group, stat}]
     scheduleCache: {},          // cached MLB schedule per week
     irStash: {},                // {teamId: [playerId]} players on IL
+    holdovers: {},              // {teamId: {week: [playerId]}} mid-week drops that still count that week
     viewWeek: null,             // week the user is viewing (null = auto current)
     schedule: { opener: null, durations: {} },  // custom week schedule
     rosterOverride: null,       // commissioner roster slot override (null = use sport default)
@@ -1025,6 +1030,7 @@ function leaguePayload() {
     lineups: lg.lineups || {},
     members: lg.members || {},
     irStash: lg.irStash || {},
+    holdovers: lg.holdovers || {},
     transactions: lg.transactions || [],
     waivers: lg.waivers || {},
     waiverPriority: lg.waiverPriority || [],
@@ -1119,6 +1125,7 @@ function applyLeague(league) {
   if (league.gameLogs) lg.gameLogs = league.gameLogs;
   if (league.scheduleCache) lg.scheduleCache = league.scheduleCache;
   if (league.irStash) lg.irStash = league.irStash;
+  if (league.holdovers) lg.holdovers = league.holdovers;
   if (league.transactions) lg.transactions = league.transactions;
   if (league.waivers) lg.waivers = league.waivers;
   if (league.waiverPriority) lg.waiverPriority = league.waiverPriority;
@@ -1592,6 +1599,13 @@ function nbaPointsFromEspn(pl) {
    (runs in browser; not testable from build env but API is stable)
    ============================================================ */
 const MLB = 'https://statsapi.mlb.com/api/v1';
+/* NBA stats come from ESPN's public site API. Two things make this a clean fit:
+   it is keyed by the SAME ESPN athlete id the player pool already stores (so there
+   is no id-mapping step at all, unlike baseball), and it sends
+   access-control-allow-origin:*, so the browser can call it directly with no key
+   and no proxy. */
+const NBA_CORE = 'https://site.api.espn.com/apis/site/v2/sports/basketball/nba';
+const NBA_WEB  = 'https://site.web.api.espn.com/apis/common/v3/sports/basketball/nba';
 
 /* search MLB for a player by name → returns best mlbId match */
 async function mlbLookup(name) {
@@ -1675,6 +1689,82 @@ function statSeasonNow() { return SP().season; }
 
 /* Fetch a player's game-by-game log from MLB StatsAPI for the current season.
    Returns [{date, gamePk, opp, stat:{...}}] for both hitting and pitching. */
+/* ---- NBA GAME LOG (ESPN, keyed by espnId) ----
+   Returns the same shape the MLB log uses, so all downstream scoring
+   (gamePoints / playerWeekScore / applyPointFields) works unchanged.
+   Games are bucketed by their US-Eastern calendar date — the NBA's own "game day" —
+   which is what a fantasy week means, and matches how the MLB feed groups games. */
+const NBA_ET_DATE = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' });
+function nbaGameDay(iso) {
+  try { return NBA_ET_DATE.format(new Date(iso)); } catch(e) { return String(iso||'').slice(0,10); }
+}
+async function nbaGameLog(espnId, season) {
+  const yr = season || statSeasonNow();
+  const res = await fetch(`${NBA_WEB}/athletes/${espnId}/gamelog?season=${yr}`);
+  if (!res.ok) throw new Error(`ESPN NBA gameLog HTTP ${res.status}`);
+  const data = await res.json();
+  const names = data.names || [];               // stat keys, aligned with each event's stats[]
+  const idx = {};
+  names.forEach((n, i) => { idx[n] = i; });
+  const num = (arr, key) => {
+    const i = idx[key]; if (i == null) return 0;
+    const v = parseFloat(arr[i]); return isNaN(v) ? 0 : v;
+  };
+  const meta = data.events || {};
+  const out = [];
+  // regular season only — preseason/postseason don't belong in a fantasy season total
+  (data.seasonTypes || [])
+    .filter(st => /regular season/i.test(st.displayName || ''))
+    .forEach(st => (st.categories || []).forEach(cat => (cat.events || []).forEach(ev => {
+      const m = meta[ev.eventId] || {};
+      if (!m.gameDate) return;
+      const s = ev.stats || [];
+      out.push({
+        date: nbaGameDay(m.gameDate),
+        gamePk: ev.eventId,
+        opp: m.opponent?.abbreviation || '',
+        isHome: m.atVs === 'vs',
+        teamId: m.team?.id != null ? Number(m.team.id) : null,
+        group: 'stats',
+        stat: {
+          points:    num(s, 'points'),
+          rebounds:  num(s, 'totalRebounds'),
+          assists:   num(s, 'assists'),
+          steals:    num(s, 'steals'),
+          blocks:    num(s, 'blocks'),
+          turnovers: num(s, 'turnovers'),
+        },
+      });
+    })));
+  return out.sort((a,b) => a.date.localeCompare(b.date));
+}
+/* NBA schedule for a date range → same per-date shape as the MLB schedule, so
+   per-player locks and the daily matchup grid work for basketball too. */
+async function fetchNbaSchedule(startYmd, endYmd) {
+  const d = s => String(s).replace(/-/g, '');
+  const res = await fetch(`${NBA_CORE}/scoreboard?dates=${d(startYmd)}-${d(endYmd)}&limit=400`);
+  if (!res.ok) throw new Error(`ESPN NBA schedule HTTP ${res.status}`);
+  const data = await res.json();
+  const byDate = {};
+  (data.events || []).forEach(ev => {
+    const comp = (ev.competitions || [])[0]; if (!comp) return;
+    const home = (comp.competitors || []).find(c => c.homeAway === 'home');
+    const away = (comp.competitors || []).find(c => c.homeAway === 'away');
+    const day = nbaGameDay(ev.date);
+    (byDate[day] = byDate[day] || []).push({
+      homeId: home?.team?.id != null ? Number(home.team.id) : null,
+      awayId: away?.team?.id != null ? Number(away.team.id) : null,
+      homeAbbr: home?.team?.abbreviation || '',
+      awayAbbr: away?.team?.abbreviation || '',
+      homeProb: null, awayProb: null,          // basketball has no probable starters
+      time: ev.date || null,                    // ISO start → per-player locks
+      status: ev.status?.type?.description || null,
+    });
+  });
+  return byDate;
+}
+
 async function mlbGameLog(mlbId, group, season) {
   const yr = season || statSeasonNow();
   const url = `${MLB}/people/${mlbId}/stats?stats=gameLog&season=${yr}&group=${group}`;
@@ -1720,14 +1810,16 @@ async function fetchSchedule(startYmd, endYmd) {
 
 /* cache schedule for a fantasy week in LG().scheduleCache[weekKey] */
 async function getWeekSchedule(week) {
-  if (!FEAT().probableStarters) return {};   // only MLB uses the probable-pitcher schedule
+  if (!FEAT().schedule) return {};           // sport has no live schedule source
   const days = weekDays(week);
   const startYmd = ymd(days[0]), endYmd = ymd(days[days.length-1]);
   const key = `${SP().season}_${startYmd}_${endYmd}`;
   LG().scheduleCache = LG().scheduleCache || {};
   if (LG().scheduleCache[key]) return LG().scheduleCache[key];
   try {
-    const sched = await fetchSchedule(startYmd, endYmd);
+    const sched = SP().statsApi === 'nba'
+      ? await fetchNbaSchedule(startYmd, endYmd)
+      : await fetchSchedule(startYmd, endYmd);
     LG().scheduleCache[key] = sched;
     return sched;
   } catch(e) { return {}; }
@@ -1792,13 +1884,20 @@ function gameBreakdown(statObj, group) {
    shift automatically, then resume standard 7-day spacing.
    Stored: LG().schedule = { opener: 'YYYY-MM-DD', durations: {week: days} }
    ============================================================ */
-const SEASON_OPENERS = { 2025: '2025-03-24', 2026: '2026-03-23', 2027: '2027-03-29' };
+const SEASON_OPENERS = {
+  // Monday of each season's opening week. Commissioners can override per league.
+  flb: { 2025: '2025-03-24', 2026: '2026-03-23', 2027: '2027-03-29' },
+  // ESPN labels an NBA season by its ENDING year (2026 = the 2025-26 season)
+  fba: { 2025: '2024-10-21', 2026: '2025-10-20', 2027: '2026-10-19' },
+};
 
 function seasonOpenerMonday() {
   // user override first
   const custom = LG().schedule?.opener;
   if (custom) return new Date(custom + 'T00:00:00');
-  const iso = SEASON_OPENERS[SP().season] || `${SP().season}-03-30`;
+  const table = SEASON_OPENERS[STATE.sport] || SEASON_OPENERS.flb;
+  const fallback = STATE.sport === 'fba' ? `${SP().season - 1}-10-20` : `${SP().season}-03-30`;
+  const iso = table[SP().season] || fallback;
   return new Date(iso + 'T00:00:00');
 }
 /* duration (days) of a given week — custom or default 7 */
@@ -1941,7 +2040,7 @@ function playerWeekScore(p, week) {
    original scheduled time (lock is purely time-based). Same-timezone rule:
    whoever loads the app computes locks against the schedule clock. */
 function schedForWeekSync(week) {
-  if (!FEAT().probableStarters) return null;   // sport has no live schedule source
+  if (!FEAT().schedule) return null;           // sport has no live schedule source
   const days = weekDays(week);
   const key = `${SP().season}_${ymd(days[0])}_${ymd(days[days.length-1])}`;
   const c = LG().scheduleCache?.[key];
@@ -1984,7 +2083,7 @@ function playerFirstGameTime(p, week) {
 function playerLockTime(p, week) {
   const first = playerFirstGameTime(p, week);
   if (first != null) return first;
-  if (FEAT().probableStarters) return null;      // schedule-backed sport → no known lock
+  if (FEAT().schedule) return null;              // schedule-backed sport → no known lock
   return weekStart(week).getTime();              // no schedule source → lock at week start
 }
 /* A player is locked once their own first game of the week has started. Applies to
@@ -2000,16 +2099,9 @@ function playerLockedForWeek(p, week) {
   if (t == null) return false;                   // nothing to lock against → stays editable
   return Date.now() >= t;
 }
-/* DROP lock — distinct from the lineup lock above. Dropping is allowed at any time
-   except in best-game leagues, where a player who has already played this week must
-   stay put (otherwise you could bank a big game and cut the player the same week). */
-function playerDropLocked(p, week) {
-  if (LSET().scoringFormat !== 'bestGame') return false;
-  if (SP().statsApi !== 'mlb') return false;
-  if (!p || !p.mlbTeamId) return false;
-  const first = playerFirstGameTime(p, week);
-  return first != null && Date.now() >= first;
-}
+/* NOTE: there is no separate "drop lock" any more. Dropping is always allowed —
+   a player who has already played this week is HELD OVER (see holdoversFor): they
+   finish that week in your lineup and the roster spot frees up from the next week. */
 /* Countdown until a specific player locks ('Locked' once their game has started) */
 function playerLockCountdown(p, week) {
   if (playerLockedForWeek(p, week)) return 'Locked';
@@ -2370,10 +2462,18 @@ async function computePoolPoints(force, progressFn) {
         // reuse cached log if present and not forcing
         let log = LG().gameLogs[p.mlbId];
         if (!log || force) {
-          const isPitcher = /SP|RP/.test((p.eligible||[]).join('')) && !/1B|2B|3B|SS|OF|C|DH/.test((p.eligible||[]).join(''));
-          const grp = isPitcher ? 'pitching' : 'hitting';
-          const raw = await mlbGameLog(p.mlbId, grp);
-          log = raw.map(g => ({...g, group: grp}));
+          if (SP().statsApi === 'nba') {
+            log = await nbaGameLog(p.espnId);          // already carries group:'stats'
+            // adopt the team id from the most recent game so per-player locks can
+            // match this player against the schedule
+            const last = log[log.length - 1];
+            if (last && last.teamId != null) p.mlbTeamId = last.teamId;
+          } else {
+            const isPitcher = /SP|RP/.test((p.eligible||[]).join('')) && !/1B|2B|3B|SS|OF|C|DH/.test((p.eligible||[]).join(''));
+            const grp = isPitcher ? 'pitching' : 'hitting';
+            const raw = await mlbGameLog(p.mlbId, grp);
+            log = raw.map(g => ({...g, group: grp}));
+          }
           LG().gameLogs[p.mlbId] = log;
           await new Promise(r=>setTimeout(r,40));
         }
@@ -2395,8 +2495,12 @@ async function resolveMlbIds(logFn, progressFn) {
   const api = SP().statsApi;
   if (api === 'mlb') return resolveIds(logFn, progressFn, mlbLookup, 'MLB');
   if (api === 'nba') {
-    logFn?.('NBA stats provider is not yet integrated — players cannot be auto-mapped to NBA IDs. ESPN ADP/roster data still works; live NBA stats are pending.', 'err');
-    return { mapped: 0, failed: LG().playerPool.length, failures: [] };
+    // ESPN's NBA stats are keyed by the same athlete id the pool already carries,
+    // so "mapping" is just adopting it — no lookups, no failures, no network.
+    let mapped = 0;
+    LG().playerPool.forEach(p => { if (p.espnId != null) { p.mlbId = String(p.espnId); mapped++; } });
+    logFn?.(`Mapped ${mapped} NBA players (ESPN IDs used directly)`, 'ok');
+    return { mapped, failed: 0, failures: [] };
   }
   logFn?.(`No stat provider for ${SP().label}`, 'err');
   return { mapped: 0, failed: 0, failures: [] };
@@ -2806,7 +2910,7 @@ function filteredPool() {
 }
 /* a team's total for a given week = sum of its starters' best single game */
 function teamWeekTotal(teamId, week) {
-  const roster = teamRoster(teamId);
+  const roster = rosterForWeek(teamId, week);   // includes mid-week-drop holdovers
   const starters = getStarters(teamId, week);
   let total = 0;
   starters.forEach(pid => {
@@ -3129,16 +3233,16 @@ function viewMyTeam() {
   const isMine = String(viewingId) === String(mine);
   const t = teamById(viewingId);
   const week = activeWeek();
-  const roster = teamRoster(viewingId);
+  // week-aware: a player dropped mid-week still shows in the week they were locked into
+  const roster = rosterForWeek(viewingId, week);
   const starters = getStarters(viewingId, week);
   const haveLogs = Object.keys(LG().gameLogs||{}).length > 0;
 
   // team weekly total = sum of STARTERS' best game
-  let teamTotal = 0;
-  starters.forEach(pid => {
-    const p = roster.find(r => String(r.espnId)===String(pid));
-    if (p?.mlbId) { const bg = playerBestGame(p.mlbId, week); if (bg) teamTotal += bg.pts; }
-  });
+  // use the league's ACTUAL scoring rule so this matches standings/matchups. (It used
+  // to always sum best-games, which silently disagreed with the real total in
+  // every-game-counts leagues.)
+  const teamTotal = teamWeekTotal(viewingId, week);
 
   const { start, end } = weekDateRange(week);
   const dayHeads = weekDays(week).map(d =>
@@ -3195,9 +3299,12 @@ function viewMyTeam() {
 
     // tappable slot badge → opens position picker. Lock is PER PLAYER: this player
     // is frozen once their own first game of the week starts.
-    const pLocked = locked || playerLockedForWeek(p, week);
+    // a held-over player was dropped mid-week — frozen in place for this week only
+    const pLocked = locked || p.heldOver || playerLockedForWeek(p, week);
     const onIR = isOnIR(p.espnId, viewingId);
-    const badge = onIR
+    const badge = p.heldOver
+      ? `<span class="starter-badge s" style="opacity:.8" title="Dropped mid-week — still counts for week ${week}">${esc(slot?.label||'')} 🔒</span>`
+      : onIR
       ? `<span class="starter-badge b" style="opacity:.7">IL</span>`
       : isStarter
       ? `<span class="starter-badge s" style="cursor:${pLocked?'default':'pointer'}"
@@ -3214,7 +3321,8 @@ function viewMyTeam() {
             ${p.injured?`<span class="il-badge" title="On injured list">IL</span>`:''}
             <span class="plink" style="margin-left:.4rem" onclick="showPlayer('${p.espnId}')">${esc(p.name)}</span>
             <span class="sub" style="font-size:.7rem"> ${esc((p.eligible||[]).join('/'))}</span>
-            ${pLocked && !onIR ? `<span class="sub" style="font-size:.6rem;display:block">🔒 locked</span>` : ''}
+            ${p.heldOver ? `<span class="sub" style="font-size:.6rem;display:block;color:var(--amber)">dropped — final week here</span>`
+              : pLocked && !onIR ? `<span class="sub" style="font-size:.6rem;display:block">🔒 locked</span>` : ''}
           </div>
         </div>
         <div style="text-align:right">
@@ -3324,7 +3432,7 @@ function viewMyTeam() {
       <div class="row-between">
         <div>
           <div class="sub" style="font-size:.65rem">${dayLabel(start)}–${dayLabel(end)}</div>
-          <div class="display" style="font-size:.9rem;color:var(--sage)">Starters' best games</div>
+          <div class="display" style="font-size:.9rem;color:var(--sage)">${LSET().scoringFormat==='regular'?'All starters\u2019 games':'Starters\u2019 best games'}</div>
         </div>
         <div style="text-align:right">
           <div class="num amber display" style="font-size:2rem">${teamTotal.toFixed(1)}</div>
@@ -3619,6 +3727,34 @@ function teamRoster(teamId) {
     .filter(Boolean);
 }
 
+/* ---- MID-WEEK DROP HOLDOVERS ----
+   Dropping a player whose game has already started doesn't erase what they did for
+   you: they finish out the locked week in the slot they started in, and the roster
+   spot frees up for the following (unlocked) weeks. holdovers[teamId][week] lists the
+   players who were dropped mid-week but still count for THAT week only. */
+function holdoversFor(teamId, week) {
+  return ((LG().holdovers || {})[teamId] || {})[week] || [];
+}
+function addHoldover(teamId, week, espnId) {
+  LG().holdovers = LG().holdovers || {};
+  LG().holdovers[teamId] = LG().holdovers[teamId] || {};
+  const list = LG().holdovers[teamId][week] = LG().holdovers[teamId][week] || [];
+  if (!list.some(x => String(x) === String(espnId))) list.push(String(espnId));
+}
+/* The roster AS IT COUNTED for a given week: today's roster plus anyone dropped
+   mid-week who was locked in. Scoring and the roster view use this; roster-size
+   limits deliberately do NOT (a held-over player's spot is already free). */
+function rosterForWeek(teamId, week) {
+  const roster = teamRoster(teamId);
+  const have = new Set(roster.map(p => String(p.espnId)));
+  holdoversFor(teamId, week).forEach(pid => {
+    if (have.has(String(pid))) return;
+    const p = LG().playerPool.find(x => String(x.espnId) === String(pid));
+    if (p) roster.push({ ...p, heldOver: true });
+  });
+  return roster;
+}
+
 /* Max roster size = starting slots + bench. IL players don't count. */
 function rosterCap() {
   return (activeLineupSlots()||[]).length + rosterBenchCount();
@@ -3722,32 +3858,27 @@ window.dropPlayer = function(espnId) {
   const tid = myTeamId();
   const p = LG().playerPool.find(x=>String(x.espnId)===String(espnId));
   const dead = (LSET().useSalaryCap && p && playerContract(p)) ? dropDeadCap(p) : 0;
+  const wk = currentWeekNow();
+  const held = !!(p && getStarters(tid, wk).some(pid => String(pid)===String(p.espnId)) && playerLockedForWeek(p, wk));
   openModal(`
     <div class="h2">Drop ${esc(p?.name||'player')}?</div>
     ${dead ? `<p class="sub mt mb" style="color:var(--bad)">⚠ Under contract — dropping incurs a <b>${fmtMoney(dead)}</b> dead-cap hit (2× this year's salary).</p>` : ''}
-    <p class="sub mt mb">They'll return to free agency. This affects your upcoming roster only.</p>
+    ${held ? `<p class="sub mt mb" style="color:var(--amber)">🔒 They've already played this week, so they stay in your week ${wk} lineup and you keep those points. The roster spot opens up from week ${wk+1}.</p>`
+           : `<p class="sub mt mb">They'll return to free agency. This affects your upcoming roster only.</p>`}
     <button class="btn btn-amber btn-block" onclick="confirmDrop('${espnId}')">Drop player</button>
     <button class="btn btn-ghost btn-block mt" onclick="openAddDrop()">Cancel</button>
   `);
 };
 window.confirmDrop = function(espnId) {
   const tid = myTeamId();
-  const lp = LG().playerPool.find(x=>String(x.espnId)===String(espnId));
-  if (lp && playerDropLocked(lp, activeWeek())) {
-    toast(`🔒 ${lp.name} is locked — their game already started this week`, 'err'); return;
-  }
-  applyDropDeadCap(espnId, tid);   // signed players always cost dead cap to drop
-  // remove from draft picks
-  LG().draft.picks = LG().draft.picks.filter(pk =>
-    !(String(pk.teamId)===String(tid) && String(pk.playerId)===String(espnId)));
-  clearFromLineups(tid, espnId);   // current week onward, not just the week being viewed
+  const held = doDropPlayer(espnId, tid);   // holdover-aware: locked starters finish the week
   // dropped players sit on waivers before becoming instant-add free agents
   const wp = LG().playerPool.find(x=>String(x.espnId)===String(espnId));
   LG().waivers = LG().waivers || {};
   LG().waivers[espnId] = { until: Date.now() + (LSET().waiverDays||1)*86400000, claims: [] };
-  logTxn('drop', `${teamName(tid)} dropped ${wp?.name||'a player'}`);
+  logTxn('drop', `${teamName(tid)} dropped ${wp?.name||'a player'}${held?` (stays in week ${currentWeekNow()} — already played)`:''}`);
   save();
-  toast('Player dropped — on waivers', 'ok');
+  toast(held ? `Dropped — ${wp?.name||'they'} still count for week ${currentWeekNow()}` : 'Player dropped — on waivers', 'ok');
   openAddDrop();
 };
 
@@ -3760,11 +3891,20 @@ function getLineup(teamId, week) {
   // otherwise clearing a slot would be silently undone by the default/carry-forward
   if (lu?.userSet && lu.assignments) return lu;
   if (lu?.assignments && Object.keys(lu.assignments).length) return lu;
-  // carry forward most recent prior week's lineup
+  // carry forward most recent prior week's lineup — but only players who still count
+  // for THIS week. A player dropped mid-week is held over for the week they were
+  // locked into; they must not ride the carry-forward into later weeks as well.
   for (let w = week-1; w >= 1; w--) {
     const prev = LG().lineups?.[teamId]?.[w];
-    if (prev?.assignments && Object.keys(prev.assignments).length)
-      return { assignments: {...prev.assignments}, carried: true };
+    if (prev?.assignments && Object.keys(prev.assignments).length) {
+      const eligible = new Set(rosterForWeek(teamId, week).map(p => String(p.espnId)));
+      const carried = {};
+      Object.keys(prev.assignments).forEach(idx => {
+        const pid = prev.assignments[idx];
+        carried[idx] = (pid && eligible.has(String(pid))) ? pid : null;
+      });
+      return { assignments: carried, carried: true };
+    }
   }
   // never set → build a sensible default lineup so scoring still works
   return { assignments: defaultLineup(teamId), isDefault: true };
@@ -4713,7 +4853,7 @@ function applyDropDeadCap(espnId, tid) {
    history and must keep their record). Vacated slots become null, not deleted. */
 function clearFromLineups(teamId, espnId, opts = {}) {
   const weeks = LG().lineups?.[teamId] || {};
-  const from = currentWeekNow();
+  const from = opts.fromWeek != null ? opts.fromWeek : currentWeekNow();
   const pl = opts.respectLocks
     ? LG().playerPool.find(x => String(x.espnId)===String(espnId)) : null;
   Object.keys(weeks).forEach(wk => {
@@ -4728,12 +4868,21 @@ function clearFromLineups(teamId, espnId, opts = {}) {
 }
 
 /* shared drop logic: remove from picks + clear from upcoming lineups */
-function doDropPlayer(espnId) {
-  const tid = myTeamId();
+function doDropPlayer(espnId, teamId) {
+  const tid = teamId || myTeamId();
   applyDropDeadCap(espnId, tid);
+  // MID-WEEK DROP: if this player is already locked into the current week's lineup,
+  // they finish the week for you (you keep what they scored) and the roster spot only
+  // opens up from next week on. Otherwise the drop takes effect immediately.
+  const wk = currentWeekNow();
+  const pl = LG().playerPool.find(x => String(x.espnId)===String(espnId));
+  const startingNow = getStarters(tid, wk).some(pid => String(pid)===String(espnId));
+  const held = !!(pl && startingNow && playerLockedForWeek(pl, wk));
+  if (held) addHoldover(tid, wk, espnId);
   LG().draft.picks = LG().draft.picks.filter(pk =>
     !(String(pk.teamId)===String(tid) && String(pk.playerId)===String(espnId)));
-  clearFromLineups(tid, espnId);
+  clearFromLineups(tid, espnId, held ? { fromWeek: wk + 1 } : {});
+  return held;
 }
 /* weekly scoring breakdown table for the player modal — rows expand on tap */
 function renderWeeklyBreakdown(p) {
