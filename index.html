@@ -19,7 +19,7 @@
 <meta name="apple-mobile-web-app-title" content="The League">
 <style>
 /* ============================================================
-   BGL v10.1 — Design System
+   The League — Design System
    Subject: competitive fantasy baseball; hook = best single game/week
    Palette: stadium-at-night
    ============================================================ */
@@ -76,20 +76,24 @@ body {
   font-family: var(--display); font-weight: 700; font-size: 1.4rem;
   letter-spacing: 1px; color: var(--chalk); cursor: pointer;
   display: flex; align-items: baseline; gap: .4rem;
+  flex: none; white-space: nowrap;
 }
 .brand .ver { font-size: .55rem; color: var(--sage-dim); letter-spacing: 1px; }
 .brand .mark { color: var(--amber); }
-.topbar-right { display: flex; align-items: center; gap: .75rem; }
+.topbar-right { display: flex; align-items: center; gap: .75rem; min-width: 0; }
 .week-pill {
   font-family: var(--mono); font-size: .72rem; color: var(--sage);
   border: 1px solid var(--line); border-radius: 999px;
   padding: .25rem .7rem;
+  /* never let 'WK 19' break onto two lines when the header is tight */
+  white-space: nowrap; flex: none;
 }
 .week-pill b { color: var(--amber); }
 .league-chip {
   font-family: var(--body); font-size: .68rem; font-weight: 600; color: var(--chalk);
   background: var(--field-3); border: 1px solid var(--line); border-radius: 999px;
-  padding: .25rem .65rem; cursor: pointer; max-width: 140px; overflow: hidden;
+  /* shrinks first when the header is tight, so the wordmark never gets clipped */
+  padding: .25rem .65rem; cursor: pointer; max-width: 140px; min-width: 0; flex: 0 1 auto; overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap; transition: border-color .15s;
 }
 .league-chip:hover { border-color: var(--amber); }
@@ -288,8 +292,24 @@ body {
   width: 100%; max-width: 440px;
 }
 .gate .brand-big {
-  font-family: var(--display); font-size: 2.5rem; font-weight: 800;
-  text-align: center; color: var(--chalk); margin-bottom: .25rem; letter-spacing: -1px;
+  font-family: var(--display); font-weight: 800;
+  text-align: center; color: var(--chalk); margin-bottom: .25rem;
+  display: flex; flex-direction: column; align-items: center; line-height: 1;
+}
+/* two-line lockup: small wide-tracked THE sitting over the big LEAGUE. */
+.gate .brand-big .bl-the  { font-size: 1.05rem; letter-spacing: .42em;
+  text-indent: .42em; color: var(--sage); font-weight: 600; }
+.gate .brand-big .bl-name { font-size: 3rem; letter-spacing: -1px; margin-top: .12rem; }
+@media (max-width: 360px) { .gate .brand-big .bl-name { font-size: 2.5rem; } }
+/* very narrow phones: tighten the header so the wordmark, league chip, week
+   pill and settings gear all fit on one row without horizontal scroll */
+@media (max-width: 360px) {
+  .topbar { padding: .65rem .75rem; }
+  .topbar-right { gap: .5rem; }
+  /* scale the wordmark back a touch so the league chip keeps readable text
+     rather than collapsing to just its sport icon */
+  .brand { font-size: 1.12rem; }
+  .league-chip { max-width: 116px; }
 }
 .gate .brand-big .mark { color: var(--amber); }
 .gate .tagline { text-align: center; color: var(--sage-dim); font-size: .8rem; margin-bottom: 2rem; }
@@ -410,8 +430,7 @@ input.input, select, textarea {
 <!-- ============ TOP BAR ============ -->
 <div class="topbar">
   <div class="brand" onclick="go('home')">
-    <span>BGL<span class="mark">.</span></span>
-    <span class="ver">v10.1</span>
+    <span>THE LEAGUE<span class="mark">.</span></span>
   </div>
   <div class="topbar-right">
     <button class="league-chip" id="league-chip" onclick="openLeagueSwitcher()" title="Change league or sport"></button>
@@ -604,8 +623,12 @@ const SPORTS = {
   },
 };
 
+// NOTE: the 'bgl_' prefix on this key and LOCAL_LS_KEY predates the rename to
+// The League. They are STORAGE IDENTIFIERS, not branding — renaming either would
+// orphan every existing league doc / device identity. Leave them alone.
 const FB_DOC_ID = 'bgl_multisport'; // single Firebase doc holds all sports
 const ADMIN_PIN = '2325';
+const APP_VERSION = 'v10.1';   // shown in Settings; the topbar shows the wordmark only
 
 /* the active sport — persisted in STATE.sport */
 function SP() {
@@ -646,8 +669,8 @@ const STATE = {
   sport: 'flb',                 // active sport
   // per-sport league data lives under leagues[sportKey]
   leagues: {
-    flb: blankLeague('Best Game League'),
-    fba: blankLeague('BGL Hoops'),
+    flb: blankLeague('My Baseball League'),
+    fba: blankLeague('My Basketball League'),
   },
   idOverrides: {},              // shared name->realId overrides
   salaryDB: {},                 // {sport: {normName: {pos,team,age,start,end,years,total,aav}}}
@@ -823,7 +846,7 @@ function enforceLeagueApproval() {
   if (a && a.approved === false && (inApp || window._pausedFor === STATE.activeLeagueDoc)) {
     window._pausedFor = STATE.activeLeagueDoc;
     $('gate-inner').innerHTML = `
-      <div class="brand-big">BGL<span class="mark">.</span></div>
+      <div class="brand-big"><span class="bl-the">THE</span><span class="bl-name">LEAGUE<span class="mark">.</span></span></div>
       <div class="step-label" style="color:var(--bad)">Access paused</div>
       <p class="sub" style="text-align:center;margin-bottom:1rem">
         <b>${esc(a.leagueName||'This league')}</b> is currently paused by the site admin.<br>
@@ -5280,7 +5303,8 @@ function viewSettings() {
       <div class="log" id="settings-log"><span class="sage">Ready.</span></div>
       <button class="btn btn-ghost btn-sm mt" onclick="dumpState()">Export JSON</button>
       <p class="sub mt" style="font-size:.72rem">
-        Firebase: ${fbReady ? `<span class="amber">${FB_CONFIG.projectId}</span>` : esc(fbErr||'offline')}</p>
+        Firebase: ${fbReady ? `<span class="amber">${FB_CONFIG.projectId}</span>` : esc(fbErr||'offline')}
+        <br>The League · ${esc(APP_VERSION)}</p>
     </div>
 
     <div class="card">
@@ -5740,8 +5764,8 @@ function renderGateLanding() {
         </div>`).join('')}
     </div>` : '';
   $('gate-inner').innerHTML = `
-    <div class="brand-big">BGL<span class="mark">.</span></div>
-    <div class="tagline">Best Game League</div>
+    <div class="brand-big"><span class="bl-the">THE</span><span class="bl-name">LEAGUE<span class="mark">.</span></span></div>
+    <div class="tagline">Fantasy baseball &amp; basketball</div>
     ${joinedHtml}
     <button class="btn btn-amber btn-block" onclick="gateOpenMaster()">⚙ Master settings</button>
     <div style="text-align:center;margin:1.2rem 0 .6rem;padding-top:1rem;border-top:1px solid var(--line)">
@@ -5749,7 +5773,9 @@ function renderGateLanding() {
     </div>
     <input class="input" id="gate-ln" placeholder="5-digit ID" inputmode="numeric" maxlength="5"
       style="text-align:center;font-size:1.6rem;letter-spacing:6px" onkeydown="if(event.key==='Enter')gateJoinLeague()">
-    <button class="btn btn-block mt" onclick="gateJoinLeague()">Open league</button>`;
+    <button class="btn btn-block mt" onclick="gateJoinLeague()">Open league</button>
+    <p class="sub" style="text-align:center;font-size:.62rem;margin-top:1.1rem;color:var(--sage-dim)">
+      The League · ${esc(APP_VERSION)}</p>`;
 }
 /* PIN-gate master settings from the landing. */
 window.gateOpenMaster = function() {
@@ -5764,8 +5790,8 @@ window.gateOpenMaster = function() {
 /* (sport-picker gate removed — a league's ID determines its sport automatically) */
 function renderGateLeague() {
   $('gate-inner').innerHTML = `
-    <div class="brand-big">BGL<span class="mark">.</span></div>
-    <div class="tagline">Best Game League</div>
+    <div class="brand-big"><span class="bl-the">THE</span><span class="bl-name">LEAGUE<span class="mark">.</span></span></div>
+    <div class="tagline">Fantasy baseball &amp; basketball</div>
     <div class="step-label">Enter your League ID</div>
     <p class="sub" style="text-align:center;margin-bottom:1rem">
       Enter the 5-digit ID from your invite — it opens that league and its sport automatically.</p>
@@ -5797,7 +5823,7 @@ function joinLeagueById(id, opts = {}) {
   }
   if (!appr.approved) {
     $('gate-inner').innerHTML = `
-      <div class="brand-big">BGL<span class="mark">.</span></div>
+      <div class="brand-big"><span class="bl-the">THE</span><span class="bl-name">LEAGUE<span class="mark">.</span></span></div>
       <div class="step-label" style="color:var(--bad)">Access paused</div>
       <p class="sub" style="text-align:center;margin-bottom:1rem">
         This league's access is currently turned off. Please contact the site admin.</p>
