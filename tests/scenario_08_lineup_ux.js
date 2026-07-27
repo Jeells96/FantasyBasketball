@@ -16,11 +16,20 @@
   const starterId = assign()[0];
   C(T + 'slot 0 starts filled', !!starterId);
   moveToSlot(starterId, 'bench');
-  C(T + 'benching leaves the slot key absent (renders empty, not removed)', assign()[0] === undefined);
-  C(T + 'other slots untouched', Object.keys(assign()).length === slots.length - 1,
+  // vacancy is an explicit null, never a deleted key: league sync uses setDoc(merge:true),
+  // which cannot remove a field, so a deleted key would come back on the next snapshot
+  C(T + 'benching writes an explicit null (survives merge:true sync)', assign()[0] === null,
+    JSON.stringify(assign()[0]));
+  C(T + 'slot key is retained, not deleted', Object.prototype.hasOwnProperty.call(assign(), '0'));
+  C(T + 'other slots untouched', Object.keys(assign()).length === slots.length,
     Object.keys(assign()).length + ' of ' + slots.length);
   // getLineup must NOT auto-refill the emptied slot
-  C(T + 'getLineup does not resurrect an emptied slot', getLineup('t1', futureWk).assignments[0] === undefined);
+  C(T + 'getLineup does not resurrect an emptied slot', !getLineup('t1', futureWk).assignments[0]);
+  // simulate a Firestore merge round-trip: merge cannot delete keys, so a null must persist
+  const merged = Object.assign({}, { 0: starterId, 1: assign()[1] }, assign());
+  C(T + 'after a merge round-trip the slot is still empty', !merged[0], JSON.stringify(merged[0]));
+  C(T + 'player is not left in two slots after a merge',
+    Object.values(merged).filter(v => v && String(v) === String(starterId)).length === 0);
   C(T + 'emptied slot excluded from starters', !getStarters('t1', futureWk).includes(String(starterId)));
 
   // ---- empty every slot: still not auto-refilled ----
@@ -36,6 +45,34 @@
   C(T + 'slot refills', String(assign()[emptyIdx]) === String(cand.espnId));
   C(T + 'refilled player scores again', getStarters('t1', futureWk).includes(String(cand.espnId)));
 
+  // ---- consistency: getStarters agrees with what the roster view shows ----
+  const staleWk = futureWk;
+  const a2 = lg.lineups['t1'][staleWk].assignments;
+  const assignedNow = new Set(Object.values(a2).filter(Boolean).map(String));
+  const benched = teamRoster('t1').find(p => !assignedNow.has(String(p.espnId)));
+  a2[999] = benched.espnId;                          // stale index past the slot count
+  C(T + 'stale slot index does not count as a starter',
+    !getStarters('t1', staleWk).includes(String(benched.espnId)),
+    'starters=' + getStarters('t1', staleWk).length);
+  delete a2[999];
+  // a dropped player left in an assignment must not score
+  const ghost = teamRoster('t1')[3];
+  const gIdx = slots.findIndex((s, i) => s.eligible.some(e => ghost.eligible.includes(e)));
+  a2[gIdx] = ghost.espnId;
+  confirmDrop(ghost.espnId);
+  C(T + 'dropping clears the player from current+future lineups, not just the viewed week',
+    !getStarters('t1', staleWk).includes(String(ghost.espnId)));
+  C(T + 'dropped player contributes no points', !teamRoster('t1').some(p => String(p.espnId) === String(ghost.espnId)));
+  // IL players never occupy a starting slot
+  const ilP = teamRoster('t1').find(p => !isOnIR(p.espnId, 't1'));
+  const ilIdx = slots.findIndex(s => s.eligible.some(e => ilP.eligible.includes(e)));
+  a2[ilIdx] = ilP.espnId;
+  ilP.injured = true;
+  lg.playerPool.find(x => String(x.espnId) === String(ilP.espnId)).injured = true;
+  moveToIR(ilP.espnId);
+  C(T + 'IL player is pulled from the lineup', !getStarters('t1', staleWk).includes(String(ilP.espnId)));
+  activateFromIR(ilP.espnId);
+
   // ---- 2. edit-lineup editor is gone ----
   C(T + 'editLineup removed', typeof window.editLineup === 'undefined');
   C(T + 'assignSlot removed', typeof window.assignSlot === 'undefined');
@@ -44,15 +81,26 @@
   C(T + 'pickPosition available', typeof window.pickPosition === 'function');
 
   // ---- 3. per-player locks ----
-  // no schedule (test env) → lock falls back to week start; a past week is locked
   const pastWk = 2, curWk = currentWeekNow();
   const anyP = teamRoster('t1')[0];
   C(T + 'past week is locked', playerLockedForWeek(anyP, pastWk));
   C(T + 'future week is open', !playerLockedForWeek(anyP, futureWk));
-  // current week: week already started (setWeek puts today mid-week) → locked by fallback
-  C(T + 'current week locked once week has begun (no-schedule fallback)', playerLockedForWeek(anyP, curWk));
-  C(T + 'lock fallback = week start, not Sunday 11am',
-    playerLockTime(anyP, futureWk) === weekStart(futureWk).getTime());
+  // MLB is schedule-backed: with no game found, the lock FAILS OPEN rather than
+  // locking someone out over a game that isn't happening / hasn't loaded
+  const savedLogs0 = lg.gameLogs; lg.gameLogs = {};
+  lg.scheduleCache = {};
+  C(T + 'schedule-backed sport with no known game stays editable', playerLockTime(anyP, curWk) === null,
+    String(playerLockTime(anyP, curWk)));
+  C(T + 'and is therefore not locked', !playerLockedForWeek(anyP, curWk));
+  lg.gameLogs = savedLogs0;
+  C(T + 'a player who already logged a game this week IS locked', playerLockedForWeek(anyP, curWk));
+  // a sport with NO schedule source (NBA) falls back to the start of the week —
+  // which is still LATER than the old league-wide Sunday-11am lock
+  STATE.sport = 'fba';
+  const nbaLock = playerLockTime({ espnId: 2001, name: 'N' }, futureWk);
+  C(T + 'no-schedule sport falls back to week start', nbaLock === weekStart(futureWk).getTime(), String(nbaLock));
+  C(T + 'that fallback is later than the old Sunday 11am lock', nbaLock > weekLockTime(futureWk).getTime());
+  STATE.sport = 'flb';
 
   // schedule-driven: player with a game later today is still editable
   const days = weekDays(curWk).map(ymd);

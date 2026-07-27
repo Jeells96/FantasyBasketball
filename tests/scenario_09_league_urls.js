@@ -54,6 +54,54 @@
   C(T + 'nameless league gets league-<id> slug', leagueSlug('33333') === 'league-33333', leagueSlug('33333'));
   C(T + 'nameless slug resolves', leagueIdFromHash('league-33333') === '33333');
 
+  // ---- a migrated league (two approval keys, ONE data doc) is not a name collision ----
+  STATE.approvals['77777'] = { leagueName: 'Hoops Night', leagueDocId: 'league_11111',
+                               approved: true, sport: 'fba', migratedFrom: '11111' };
+  C(T + 'aliases of the same league do not trigger the collision suffix',
+    leagueSlug('11111') === 'hoops-night' && leagueSlug('77777') === 'hoops-night',
+    leagueSlug('11111') + ' / ' + leagueSlug('77777'));
+  C(T + 'the shared name still resolves after migration', leagueIdFromHash('hoops-night') !== null,
+    String(leagueIdFromHash('hoops-night')));
+  C(T + 'both aliases point at the same data doc',
+    leagueDocFor('11111') === leagueDocFor('77777'), leagueDocFor('77777'));
+  delete STATE.approvals['77777'];
+
+  // ---- migrated leagues keep their original data doc ----
+  STATE.approvals['44444'] = { leagueName: 'Old Timers', leagueDocId: 'league_old-timers-text-key',
+                               approved: true, sport: 'flb', migratedFrom: 'old-timers' };
+  C(T + 'doc id comes from the approval, not league_<id>',
+    leagueDocFor('44444') === 'league_old-timers-text-key', leagueDocFor('44444'));
+  C(T + 'doc id defaults to league_<id> when unset', leagueDocFor('12345') === 'league_12345');
+  C(T + 'migrated league still addressable by name', leagueIdFromHash('old-timers') === '44444');
+
+  // ---- a legacy TEXT-keyed league is reachable by name (not rejected as "invalid id") ----
+  STATE.approvals['jarens-league'] = { leagueName: 'Jarens League', leagueDocId: 'league_jarens-league',
+                                       approved: true, sport: 'flb' };
+  C(T + 'legacy text-key league resolves from its name', leagueIdFromHash('jarens-league') === 'jarens-league');
+  const okJoin = joinLeagueById('jarens-league', { silent: true });
+  C(T + 'joining a text-key league is not rejected by the 5-digit format guard', okJoin === true, String(okJoin));
+  C(T + 'garbage id is still rejected', joinLeagueById('!!!nope!!!', { silent: true }) === false);
+  delete STATE.approvals['jarens-league'];
+  delete STATE.approvals['44444'];
+
+  // ---- a league literally NAMED "12345" is still reachable ----
+  STATE.approvals['55555'] = { leagueName: '12345', leagueDocId: 'league_55555', approved: true, sport: 'flb' };
+  C(T + 'bare id wins when that id exists', leagueIdFromHash('12345') === '12345');
+  delete STATE.approvals['12345'];
+  C(T + 'league named "12345" resolves once no such id exists', leagueIdFromHash('12345') === '55555',
+    String(leagueIdFromHash('12345')));
+  STATE.approvals['12345'] = { leagueName: 'Best Game League', leagueDocId: 'league_12345', approved: true, sport: 'flb' };
+  delete STATE.approvals['55555'];
+
+  // ---- hash written before approvals load must still be resolvable ----
+  const savedAll = STATE.approvals;
+  STATE.approvals = {};
+  setLeagueHash('99999');
+  C(T + 'unknown league falls back to the resolvable legacy form', location.hash === '#league=99999', location.hash);
+  C(T + 'that fallback round-trips', leagueIdFromHash(location.hash.slice(1)) === '99999');
+  STATE.approvals = savedAll;
+  setLeagueHash(null);
+
   // ---- deep link parking: slug seen before approvals load ----
   const savedAppr = STATE.approvals;
   STATE.approvals = {}; STATE._loaded = false;
@@ -71,4 +119,16 @@
   C(T + 'parked slug resolves once approvals arrive', resolved === '12345', String(resolved));
   window._pendingSlug = null; window._pendingDeepLink = null;
   location.hash = '';
+
+  // ---- the league directory is cached locally so #slug resolves offline / pre-sync ----
+  saveLocal();
+  const cached = JSON.parse(localStorage.getItem('bgl_local_v1') || '{}');
+  C(T + 'approvals are persisted locally', !!cached.approvals && !!cached.approvals['12345'],
+    Object.keys(cached.approvals || {}).join(','));
+  const liveAppr = STATE.approvals;
+  STATE.approvals = {};                 // simulate a cold boot with Firebase unreachable
+  loadLocal();
+  C(T + 'loadLocal restores the directory', !!STATE.approvals['12345']);
+  C(T + 'a name URL resolves with no Firebase at all', leagueIdFromHash('best-game-league') === '12345');
+  STATE.approvals = liveAppr;
 })();

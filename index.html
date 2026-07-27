@@ -866,6 +866,9 @@ function saveLocal() {
     leaguesBySport: STATE.leaguesBySport,
     memberByLeague: STATE.memberByLeague,
     seasonOverride: STATE.seasonOverride || {},
+    // cached league directory: lets a name-based #slug resolve on boot (and offline)
+    // before the master doc arrives. Firebase overwrites this whenever it syncs.
+    approvals: STATE.approvals || {},
   };
   try {
     localStorage.setItem(LOCAL_LS_KEY, JSON.stringify(identity));
@@ -896,6 +899,8 @@ function loadLocal() {
   STATE.leaguesBySport = id.leaguesBySport || {};
   STATE.memberByLeague = id.memberByLeague || {};
   STATE.seasonOverride = id.seasonOverride || {};
+  // restore the cached league directory (master overwrites it on sync)
+  if (id.approvals && !Object.keys(STATE.approvals || {}).length) STATE.approvals = id.approvals;
   if (id.sport) STATE.sport = id.sport;
   // prefer the per-sport entry for the active sport
   const entry = STATE.leaguesBySport[STATE.sport];
@@ -1931,9 +1936,15 @@ function schedForWeekSync(week) {
   const days = weekDays(week);
   const key = `${SP().season}_${ymd(days[0])}_${ymd(days[days.length-1])}`;
   const c = LG().scheduleCache?.[key];
-  if (!c && !window._schedFetching) {
+  // Lock checks call this for every player on every render, so a failing fetch must
+  // not become a hot retry loop — back off for a minute per week-key after a miss.
+  window._schedRetryAt = window._schedRetryAt || {};
+  if (!c && !window._schedFetching && (window._schedRetryAt[key] || 0) <= Date.now()) {
     window._schedFetching = true;
-    getWeekSchedule(week).then(()=>{ window._schedFetching=false; renderActive(); }).catch(()=>{ window._schedFetching=false; });
+    window._schedRetryAt[key] = Date.now() + 60000;
+    getWeekSchedule(week)
+      .then(()=>{ window._schedFetching=false; renderActive(); })
+      .catch(()=>{ window._schedFetching=false; });
   }
   return c || null;
 }
@@ -1955,13 +1966,17 @@ function playerFirstGameTime(p, week) {
   }
   return first;
 }
-/* When does THIS player lock for THIS week? Their first game's start time.
-   Fallback when no schedule/team is known: the week's own start (midnight of day 1),
-   which is the latest defensible moment — never the old league-wide Sunday lock. */
+/* When does THIS player lock for THIS week? Their first game's start time, or null
+   when there is nothing to lock against.
+   Policy: if the sport HAS a schedule source, an unknown (schedule still loading, team
+   unresolved, or simply no game this week) FAILS OPEN — you can't be locked out by a
+   game that isn't happening or hasn't loaded. Only a sport with no schedule at all
+   (NBA today) falls back to the start of the week, the one signal available. */
 function playerLockTime(p, week) {
   const first = playerFirstGameTime(p, week);
   if (first != null) return first;
-  return weekStart(week).getTime();
+  if (FEAT().probableStarters) return null;      // schedule-backed sport → no known lock
+  return weekStart(week).getTime();              // no schedule source → lock at week start
 }
 /* A player is locked once their own first game of the week has started. Applies to
    every sport and scoring format — you can edit a position until its game begins.
@@ -1972,7 +1987,9 @@ function playerLockedForWeek(p, week) {
   if (week > currentWeekNow()) return false;               // future weeks always open
   // a game already played this week → certainly started
   if (p.mlbId && playerWeekGames(p.mlbId, week).length) return true;
-  return Date.now() >= playerLockTime(p, week);
+  const t = playerLockTime(p, week);
+  if (t == null) return false;                   // nothing to lock against → stays editable
+  return Date.now() >= t;
 }
 /* DROP lock — distinct from the lineup lock above. Dropping is allowed at any time
    except in best-game leagues, where a player who has already played this week must
@@ -1987,7 +2004,9 @@ function playerDropLocked(p, week) {
 /* Countdown until a specific player locks ('Locked' once their game has started) */
 function playerLockCountdown(p, week) {
   if (playerLockedForWeek(p, week)) return 'Locked';
-  const ms = playerLockTime(p, week) - Date.now();
+  const t = playerLockTime(p, week);
+  if (t == null) return 'no game yet';
+  const ms = t - Date.now();
   if (ms <= 0) return 'Locked';
   const d = Math.floor(ms/86400000), h = Math.floor((ms%86400000)/3600000), m = Math.floor((ms%3600000)/60000);
   if (d > 0) return `${d}d ${h}h`;
@@ -3026,7 +3045,8 @@ function viewTeams() {
     const metricLbl = showPts ? 'SEASON PTS' : 'AVG ADP';
     const preview = roster.slice(0,5).map(p =>
       `<div class="row-between" style="padding:.2rem 0;font-size:.8rem">
-        <span class="plink" onclick="showPlayer('${p.espnId}')">${esc(p.name)}</span>
+        <span class="row" style="gap:.35rem;align-items:center">${headshotImg(p, 22)}
+        <span class="plink" onclick="showPlayer('${p.espnId}')">${esc(p.name)}</span></span>
         <span class="num sage">${showPts ? (p.seasonPts||0).toFixed(0) : (p.adp<9999?p.adp.toFixed(0):'—')}</span></div>`).join('');
     return `<div class="card" onclick="showTeam('${t.id}')" style="cursor:pointer">
       <div class="row-between">
@@ -3057,7 +3077,8 @@ window.showTeam = function(teamId) {
   const rosterRows = roster.map(p =>
     `<tr>
       <td class="pos">${p.round}.${String(p.pick).padStart(2,'0')}</td>
-      <td><span class="plink" onclick="showPlayer('${p.espnId}')">${esc(p.name)}</span></td>
+      <td><span class="row" style="gap:.35rem;align-items:center">${headshotImg(p, 24)}
+        <span class="plink" onclick="showPlayer('${p.espnId}')">${esc(p.name)}</span></span></td>
       <td class="pos">${esc((p.eligible||[]).join('/')||p.pos)}</td>
       <td class="pos">${esc(p.proTeam||'')}</td>
       <td class="r num cell-best">${showPts ? (p.seasonPts||0).toFixed(0) : (p.adp<9999?p.adp.toFixed(0):'—')}</td>
@@ -3212,16 +3233,28 @@ function viewMyTeam() {
           : `<span class="sub" style="font-size:.65rem">—</span>`}
       </div>
     </div>`;
-  const starterCards = (activeLineupSlots()||[]).map((s, idx) => {
+  // a slot only counts as filled if it resolves to a real, non-IL rostered player —
+  // a stale id (dropped/traded) or an IL player leaves the slot genuinely empty
+  const slotPlayer = (idx) => {
     const pid = assign[idx];
-    const p = pid ? roster.find(r => String(r.espnId)===String(pid)) : null;
+    if (!pid) return null;
+    const p = roster.find(r => String(r.espnId)===String(pid));
+    if (!p || isOnIR(p.espnId, viewingId)) return null;
+    return p;
+  };
+  const shown = new Set();
+  const starterCards = (activeLineupSlots()||[]).map((s, idx) => {
+    const p = slotPlayer(idx);
+    if (p) shown.add(String(p.espnId));
     return p ? cardFor(p) : emptySlotCard(s, idx);
   }).join('');
-  const benchList = roster.filter(p => !slotOf[String(p.espnId)] && !isOnIR(p.espnId, viewingId));
+  // bench = everyone not occupying a slot above and not on IL (covers players whose
+  // assignment index no longer exists after a roster-size change)
+  const benchList = roster.filter(p => !shown.has(String(p.espnId)) && !isOnIR(p.espnId, viewingId));
   const irList = roster.filter(p => isOnIR(p.espnId, viewingId));
   const benchCards = benchList.map(cardFor).join('');
   const irCards = irList.map(cardFor).join('');
-  const filledCount = (activeLineupSlots()||[]).filter((s, idx) => assign[idx]).length;
+  const filledCount = shown.size;
 
   return `
     <div class="eyebrow">${isMine?'★ Your team':'👁 Viewing'} · ${esc(t.name)}${t.owner?` · ${esc(t.owner)}`:''}</div>
@@ -3253,7 +3286,7 @@ function viewMyTeam() {
       const openPlayers = roster.filter(p => !playerLockedForWeek(p, week));
       const nextLock = openPlayers
         .map(p => ({ p, t: playerLockTime(p, week) }))
-        .filter(x => x.t > Date.now())
+        .filter(x => x.t != null && x.t > Date.now())
         .sort((a,b) => a.t - b.t)[0];
       const allLocked = openPlayers.length === 0;
       return `<div class="card" style="padding:.5rem .75rem;margin-top:.5rem;border-color:${allLocked?'var(--bad)':'var(--line)'}">
@@ -3329,9 +3362,10 @@ function renderTeamStats(roster, slotOf) {
   const rows = sorted.map(p => {
     const isStarter = !!slotOf[String(p.espnId)];
     return `<tr style="${isStarter?'':'opacity:.7'}">
-      <td><span class="plink" onclick="showPlayer('${p.espnId}')">${esc(p.name)}</span>
+      <td><span class="row" style="gap:.4rem;align-items:center">${headshotImg(p, 24)}
+        <span><span class="plink" onclick="showPlayer('${p.espnId}')">${esc(p.name)}</span>
         ${p.injured?'<span class="il-badge">IL</span>':''}
-        <span class="sub" style="font-size:.6rem;display:block">${esc((p.eligible||[]).join('/'))}${isStarter?' · '+slotOf[String(p.espnId)].label:' · bench'}</span></td>
+        <span class="sub" style="font-size:.6rem;display:block">${esc((p.eligible||[]).join('/'))}${isStarter?' · '+slotOf[String(p.espnId)].label:' · bench'}</span></span></span></td>
       <td class="r num cell-best" style="font-weight:700">${p.bestAvg!=null?p.bestAvg.toFixed(1):'—'}</td>
       <td class="r num">${p.ptsSeason!=null?p.ptsSeason.toFixed(0):'—'}</td>
       <td class="r num" style="font-size:.72rem">${p.pts30!=null?p.pts30.toFixed(0):'—'}</td>
@@ -3400,8 +3434,8 @@ function renderTeamContracts(teamId, isMine) {
   const ordered = [];
   const seen = new Set();
   // assigned starters, in slot order
-  slotOrder.forEach(slot => {
-    const pid = assignments[slot];
+  slotOrder.forEach((slot, idx) => {
+    const pid = assignments[idx];        // assignments are keyed by slot INDEX
     if (pid && !seen.has(String(pid))) {
       const p = roster.find(x => String(x.espnId)===String(pid));
       if (p) { ordered.push(p); seen.add(String(pid)); }
@@ -3607,14 +3641,9 @@ window.moveToIR = function(espnId) {
   LG().irStash = LG().irStash || {};
   LG().irStash[tid] = LG().irStash[tid] || [];
   LG().irStash[tid].push(String(espnId));
-  // pull them out of the current + all future lineups
-  const weeks = LG().lineups?.[tid] || {};
-  const nowWk = currentWeekNow();
-  Object.keys(weeks).forEach(wk => {
-    if (Number(wk) < nowWk) return;
-    const as = weeks[wk]?.assignments || {};
-    for (const k of Object.keys(as)) if (String(as[k])===String(espnId)) delete as[k];
-  });
+  // pull them out of current + future lineups, but never vacate a slot they are
+  // already locked into this week (IL must not become a mid-week slot reset)
+  clearFromLineups(tid, espnId, { respectLocks: true });
   logTxn('drop', `${teamName(tid)} placed ${p.name} on the IL`);
   save(); closeModal(); toast(`${p.name} → IL`, 'ok'); renderActive();
 };
@@ -3702,14 +3731,7 @@ window.confirmDrop = function(espnId) {
   // remove from draft picks
   LG().draft.picks = LG().draft.picks.filter(pk =>
     !(String(pk.teamId)===String(tid) && String(pk.playerId)===String(espnId)));
-  // remove from any lineup assignment in the upcoming (active) week
-  const wk = activeWeek();
-  const lu = LG().lineups?.[tid]?.[wk];
-  if (lu?.assignments) {
-    for (const k of Object.keys(lu.assignments)) {
-      if (String(lu.assignments[k])===String(espnId)) delete lu.assignments[k];
-    }
-  }
+  clearFromLineups(tid, espnId);   // current week onward, not just the week being viewed
   // dropped players sit on waivers before becoming instant-add free agents
   const wp = LG().playerPool.find(x=>String(x.espnId)===String(espnId));
   LG().waivers = LG().waivers || {};
@@ -3760,10 +3782,24 @@ function defaultLineup(teamId) {
 function getStarters(teamId, week) {
   const lu = getLineup(teamId, week);
   const ir = (LG().irStash||{})[teamId] || [];
+  const slots = activeLineupSlots() || [];
   // IL players never score, even via carried-forward lineups (current week on)
   const filterIR = week >= currentWeekNow();
-  return Object.values(lu.assignments || {}).filter(Boolean).map(String)
-    .filter(pid => !filterIR || !ir.includes(pid));
+  const out = [];
+  Object.keys(lu.assignments || {}).forEach(idx => {
+    const pid = lu.assignments[idx];
+    if (!pid) return;                                   // null = deliberately empty slot
+    if (!slots[idx]) return;                            // stale index after a roster resize
+    const s = String(pid);
+    if (filterIR && ir.includes(s)) {
+      // an IL'd player still holding a slot they were locked into keeps scoring for
+      // that week — their games already happened and the slot can't be reused
+      const pl = LG().playerPool.find(x => String(x.espnId)===s);
+      if (!pl || !playerLockedForWeek(pl, week)) return;
+    }
+    if (!out.includes(s)) out.push(s);                  // never count one player twice
+  });
+  return out;
 }
 
 window.pickMyTeam = function(teamId) {
@@ -3946,14 +3982,15 @@ window.moveToSlot = function(espnId, slotIdx) {
       toast(`🔒 ${occ.name} is locked in that slot — their game has started`, 'err'); return;
     }
   }
-  // vacate the player's current slot. The slot KEY is intentionally left absent:
-  // an unassigned index renders as an empty slot, it does not disappear.
+  // Vacate the player's current slot by writing an explicit null, NOT by deleting the
+  // key: league sync uses setDoc(merge:true), which never removes a field, so a deleted
+  // key would be resurrected by the next snapshot (and could leave one player in two
+  // slots). null is a real "this slot is empty" value that survives the merge.
   for (const k of Object.keys(assign)) {
-    if (String(assign[k])===String(espnId)) delete assign[k];
+    if (String(assign[k])===String(espnId)) assign[k] = null;
   }
   if (slotIdx !== 'bench') {
-    if (assign[slotIdx]) delete assign[slotIdx];  // bumped player → bench (just unassigned)
-    assign[slotIdx] = espnId;
+    assign[slotIdx] = espnId;                    // bumped occupant (if any) is replaced
   }
   // mark this lineup as explicitly set so an emptied lineup is never auto-refilled
   LG().lineups[tid][week].userSet = true;
@@ -4663,19 +4700,31 @@ function applyDropDeadCap(espnId, tid) {
   return dead;
 }
 
-/* shared drop logic: remove from picks + clear from upcoming lineup */
+/* Clear a player out of a team's lineups for the current week onward (past weeks are
+   history and must keep their record). Vacated slots become null, not deleted. */
+function clearFromLineups(teamId, espnId, opts = {}) {
+  const weeks = LG().lineups?.[teamId] || {};
+  const from = currentWeekNow();
+  const pl = opts.respectLocks
+    ? LG().playerPool.find(x => String(x.espnId)===String(espnId)) : null;
+  Object.keys(weeks).forEach(wk => {
+    if (Number(wk) < from) return;
+    // respectLocks: a locked player keeps the slot they already started in — vacating
+    // it would let the owner recycle one slot for two players' games in a week
+    if (opts.respectLocks && pl && playerLockedForWeek(pl, Number(wk))) return;
+    const as = weeks[wk]?.assignments;
+    if (!as) return;
+    for (const k of Object.keys(as)) if (String(as[k])===String(espnId)) as[k] = null;
+  });
+}
+
+/* shared drop logic: remove from picks + clear from upcoming lineups */
 function doDropPlayer(espnId) {
   const tid = myTeamId();
   applyDropDeadCap(espnId, tid);
   LG().draft.picks = LG().draft.picks.filter(pk =>
     !(String(pk.teamId)===String(tid) && String(pk.playerId)===String(espnId)));
-  const wk = activeWeek();
-  const lu = LG().lineups?.[tid]?.[wk];
-  if (lu?.assignments) {
-    for (const k of Object.keys(lu.assignments)) {
-      if (String(lu.assignments[k])===String(espnId)) delete lu.assignments[k];
-    }
-  }
+  clearFromLineups(tid, espnId);
 }
 /* weekly scoring breakdown table for the player modal — rows expand on tap */
 function renderWeeklyBreakdown(p) {
@@ -5518,7 +5567,12 @@ window.gateJoinLeague = function() {
 /* Core join logic, shared by the manual gate, the URL deep-link, and the switcher.
    Returns true if joined, false if not (with a toast/UI explaining why). */
 function joinLeagueById(id, opts = {}) {
-  if (!/^\d{5}$/.test(String(id))) { if (!opts.silent) toast('Invalid League ID', 'err'); return false; }
+  // Accept a 5-digit ID, or ANY key that actually exists in approvals — a name-based
+  // league URL can resolve to a legacy text key, which is still a real league.
+  const known = !!(STATE.approvals && STATE.approvals[id]);
+  if (!known && !/^\d{5}$/.test(String(id))) {
+    if (!opts.silent) toast('Invalid League ID', 'err'); return false;
+  }
   const appr = STATE.approvals?.[id];
   if (!appr) {
     if (!opts.silent) toast('League ID not found. Double-check it with your commissioner.', 'err');
@@ -5569,14 +5623,20 @@ function goToHub() {
 function setLeagueHash(id) {
   window._suppressHash = true;
   try {
-    const target = id ? (location.pathname + location.search + '#' + leagueSlug(id))
+    // never mint a name-slug before approvals exist — it wouldn't resolve on reload.
+    // Fall back to the always-resolvable legacy form until the name is known.
+    const frag = id ? (STATE.approvals?.[id] ? ('#' + leagueSlug(id)) : ('#league=' + id)) : '';
+    const target = id ? (location.pathname + location.search + frag)
                       : (location.pathname + location.search);
     const current = location.pathname + location.search + location.hash;
     // only push a new history entry if the URL is actually changing — prevents
     // double entries when the boot deep-link already put us at this league URL.
     if (target !== current) history.pushState({ league: id || null }, '', target);
   } catch(e) {
-    try { if (id) location.hash = leagueSlug(id); else location.hash = ''; } catch(e2) {}
+    try {
+      if (id) location.hash = STATE.approvals?.[id] ? leagueSlug(id) : ('league=' + id);
+      else location.hash = '';
+    } catch(e2) {}
   }
   setTimeout(() => { window._suppressHash = false; }, 50);
 }
@@ -6193,7 +6253,7 @@ window.confirmSeasonRollover = function() {
     // also clear them from any lineup assignments
     Object.values(LG().lineups||{}).forEach(weeks => Object.values(weeks||{}).forEach(wk => {
       if (wk?.assignments) for (const k of Object.keys(wk.assignments)) {
-        if (expSet.has(String(wk.assignments[k]))) delete wk.assignments[k];
+        if (expSet.has(String(wk.assignments[k]))) wk.assignments[k] = null;
       }
     }));
   }
@@ -7448,13 +7508,8 @@ function executeTrade(t) {
       // contract (and its future cap hits) follows the player to the new team
       const c = (LG().contracts||{})[String(pid)];
       if (c) c.teamId = newTeam;
-      // clear from any team's lineup assignments
-      const lineups = LG().lineups || {};
-      Object.values(lineups).forEach(weeks => Object.values(weeks||{}).forEach(wk => {
-        if (wk && wk.assignments) for (const k of Object.keys(wk.assignments)) {
-          if (String(wk.assignments[k])===String(pid)) delete wk.assignments[k];
-        }
-      }));
+      // clear from every team's CURRENT+FUTURE lineups; past weeks keep their record
+      Object.keys(LG().lineups || {}).forEach(tid => clearFromLineups(tid, pid));
     });
   };
   try {
@@ -7582,12 +7637,21 @@ function proTeamAbbr(id) {
    Resolution is by slug against the approvals list; the 5-digit ID remains the
    real identity, so a slug is only ever a friendly alias for one.
    ============================================================ */
+/* the Firestore doc a league id actually points at (migrated leagues keep their
+   original doc, so never assume 'league_'+id) */
+function leagueDocFor(id) {
+  return (STATE.approvals || {})[id]?.leagueDocId || ('league_' + id);
+}
 function leagueSlug(id) {
   const a = (STATE.approvals || {})[id];
   const base = normLeague(a?.leagueName || '') || ('league-' + id);
   // if another approved league slugifies the same way, suffix with the ID
+  // aliases of the same underlying league (e.g. a migrated text key + its new 5-digit
+  // id) are the SAME league, not a name collision
+  const myDoc = leagueDocFor(id);
   const clash = Object.keys(STATE.approvals || {}).some(other =>
     String(other) !== String(id) &&
+    leagueDocFor(other) !== myDoc &&
     (normLeague(STATE.approvals[other]?.leagueName || '') || ('league-' + other)) === base);
   return clash ? `${base}-${id}` : base;
 }
@@ -7598,16 +7662,20 @@ function leagueIdFromHash(h) {
   const legacy = params.get('league');                 // #league=12345
   if (legacy && /^\d{5}$/.test(legacy)) return legacy;
   const raw = String(h).replace(/^#/, '').trim();
-  if (/^\d{5}$/.test(raw)) return raw;                 // #12345
   if (!raw || raw.includes('=')) return null;
   const appr = STATE.approvals || {};
+  if (/^\d{5}$/.test(raw) && appr[raw]) return raw;    // #12345 (only if it exists,
+                                                       // so a league NAMED "12345" still resolves below)
   // exact slug match on current names
   for (const id of Object.keys(appr)) {
     if (leagueSlug(id) === raw) return id;
   }
-  // a "<slug>-<id>" form whose ID exists (covers renames + collisions)
-  const m = raw.match(/-(\d{5})$/);
-  if (m && appr[m[1]]) return m[1];
+  // A "<slug>-<id>" form whose ID exists. This is what keeps a shared link alive after
+  // a rename, and it is safe because exact-slug matching above already took precedence:
+  // we only fall back to the embedded id when no league currently claims this slug.
+  const m = raw.match(/^(.*)-(\d{5})$/);
+  if (m && appr[m[2]]) return m[2];
+  if (/^\d{5}$/.test(raw)) return raw;                 // unknown 5-digit id → let the join path report it
   // bare name match ignoring any disambiguator, when unambiguous
   const hits = Object.keys(appr).filter(id => normLeague(appr[id]?.leagueName || '') === raw);
   if (hits.length === 1) return hits[0];
@@ -7652,12 +7720,14 @@ function tryDeepLinkJoin() {
   }
   window._pendingDeepLink = null;
   // already in this exact league? just clear the gate.
-  const appr = STATE.approvals[id];
-  if (STATE.activeLeagueDoc === appr.leagueDocId) { hideGate(); return; }
+  if (STATE.activeLeagueDoc === leagueDocFor(id)) { hideGate(); return; }
   joinLeagueById(id, { silent: false });
 }
-readDeepLink();
+// initFirebase() runs loadLocal() synchronously before its first await, so the cached
+// league directory is in place; reading the deep link AFTER it lets a name-based #slug
+// resolve immediately (and offline) instead of parking until the master doc arrives.
 initFirebase();
+readDeepLink();
 go('home');
 if (!fbReady) setTimeout(() => { if (!STATE._loaded) renderActive(); }, 300);
 
@@ -7683,7 +7753,7 @@ if (window._pendingDeepLink || window._pendingSlug) {
   // A league URL — seed a hub entry underneath so the back button returns to the
   // hub even when someone opens the league link cold (no prior hub view).
   seedHubHistory();
-  const wantDoc = window._pendingDeepLink ? ('league_' + window._pendingDeepLink) : null;
+  const wantDoc = window._pendingDeepLink ? leagueDocFor(window._pendingDeepLink) : null;
   if (!wantDoc || STATE.activeLeagueDoc !== wantDoc) {
     // not already in it — clear any other league binding and join fresh
     showGate('landing');
@@ -7731,7 +7801,7 @@ function routeFromUrl() {
   }
   if (id) {
     // going to a league URL
-    const wantDoc = 'league_' + id;
+    const wantDoc = leagueDocFor(id);
     if (STATE.activeLeagueDoc === wantDoc) {
       hideGate();                    // already in it (e.g. forward button) → just show it
     } else {
@@ -7742,6 +7812,7 @@ function routeFromUrl() {
     // bare URL → the hub. This is the BACK-from-a-league case. Always show the
     // landing hub, even if this device is bound to a league.
     window._pendingDeepLink = null;
+    window._pendingSlug = null;
     window._pausedFor = null;
     showGate('landing');
   }
