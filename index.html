@@ -480,13 +480,13 @@ input.input, select, textarea {
 <script type="module">
 /* Firebase loads lazily so a CDN failure can't take down the whole app —
    without it the app still runs in local (offline) mode. */
-let initializeApp, getFirestore, doc, getDoc, setDoc, onSnapshot;
+let initializeApp, getFirestore, doc, getDoc, setDoc, onSnapshot, deleteDoc;
 const _fbLoad = (async () => {
   try {
     const appMod = await import('https://www.gstatic.com/firebasejs/10.7.0/firebase-app.js');
     const fsMod  = await import('https://www.gstatic.com/firebasejs/10.7.0/firebase-firestore.js');
     initializeApp = appMod.initializeApp;
-    ({ getFirestore, doc, getDoc, setDoc, onSnapshot } = fsMod);
+    ({ getFirestore, doc, getDoc, setDoc, onSnapshot, deleteDoc } = fsMod);
     return true;
   } catch (e) {
     console.warn('Firebase SDK failed to load — running in local mode:', e);
@@ -3558,7 +3558,12 @@ function viewStandings() {
     <div class="h1">Standings</div>
     <p class="sub mb" style="font-size:.72rem">Head-to-head record by weekly matchup.${LSET().bonusWin?' <b class="amber">Bonus win ON</b> — top-half scorers earn an extra W each week.':''}</p>
     ${(() => {
-      const wk = currentWeekNow();
+      // This card used to be pinned to the real current week while the rest of the app
+      // followed whatever week you had browsed to, so standings and matchups could sit
+      // on different weeks at the same time. It follows the viewed week now, and says
+      // so when that is not today.
+      const wk = activeWeek();
+      const now = currentWeekNow();
       const sched = matchupSchedule(); const rounds = Object.keys(sched).length;
       if (!rounds) return '';
       const pairs = sched[((wk-1)%rounds)+1] || [];
@@ -3568,7 +3573,19 @@ function viewStandings() {
           <span class="sub" style="font-size:.62rem">vs</span>
           <span><b class="amber">${teamWeekTotal(b,wk)}</b> ${esc(teamName(b))}</span>
         </div>`).join('');
-      return rows ? `<div class="card"><div class="h2">Week ${wk} matchups</div>${rows}</div>` : '';
+      if (!rows) return '';
+      return `<div class="card">
+        <div class="row-between" style="align-items:center;margin-bottom:.3rem">
+          <div class="h2" style="margin:0">Week ${wk} matchups</div>
+          <div class="row" style="gap:.3rem">
+            <button class="btn btn-sm btn-ghost" onclick="changeWeek(-1)" ${wk<=1?'disabled':''}>←</button>
+            <button class="btn btn-sm ${wk===now?'btn-ghost':'btn-amber'}" onclick="goToCurrentWeek()"
+              ${wk===now?'disabled':''} title="Jump to week ${now}">This week</button>
+            <button class="btn btn-sm btn-ghost" onclick="changeWeek(1)" ${wk>=26?'disabled':''}>→</button>
+          </div>
+        </div>
+        ${wk!==now?`<p class="sub" style="font-size:.66rem">Viewing week ${wk} — the season is on week ${now}.</p>`:''}
+        ${rows}</div>`;
     })()}
     ${(() => {
       const br = playoffBracket(); if (!br) return '';
@@ -3656,6 +3673,7 @@ function viewMatchups() {
         <span class="display amber">WEEK ${week}</span>
         <button class="btn btn-sm btn-ghost" onclick="changeWeek(1)" ${week>=26?'disabled':''}>Wk ${week+1} →</button>
       </div>
+      ${week!==currentWeekNow()?`<button class="btn btn-sm btn-amber btn-block mt" onclick="goToCurrentWeek()">↩ Back to week ${currentWeekNow()}</button>`:''}
     </div>
     ${cards || '<p class="sub">No matchups this week.</p>'}
     <p class="sub mt" style="font-size:.66rem;text-align:center">Each team's score = its starters' best single game that week.</p>`;
@@ -3981,6 +3999,10 @@ function viewMyTeam() {
       ${isMine ? '' : `<button class="btn btn-sm btn-amber" onclick="viewMyOwnTeam()">← My team</button>`}
     </div>
 
+    ${isMine && ilBlockReason(mine) ? `<div class="card card-tight mt" style="border-color:var(--bad)">
+      <p class="sub" style="font-size:.74rem;color:var(--bad)">🩹 ${esc(ilBlockReason(mine))}.
+        Adds and trades are blocked until you do. Tap their IL badge to activate.</p>
+    </div>` : ''}
     ${isMine && LSET().useSalaryCap ? (() => {
       // In a cap league payroll is the number you want in front of you at all times,
       // not one buried behind the Contracts tab.
@@ -4043,6 +4065,7 @@ function viewMyTeam() {
         <span class="display amber">WEEK ${week}</span>
         <button class="btn btn-sm btn-ghost" onclick="changeWeek(1)" ${week>=26?'disabled':''}>Wk ${week+1} →</button>
       </div>
+      ${week!==currentWeekNow()?`<button class="btn btn-sm btn-amber btn-block" style="margin-bottom:.5rem" onclick="goToCurrentWeek()">↩ Back to week ${currentWeekNow()}</button>`:''}
       <div class="row-between">
         <div>
           <div class="sub" style="font-size:.65rem">${dayLabel(start)}–${dayLabel(end)}</div>
@@ -4060,12 +4083,12 @@ function viewMyTeam() {
       : teamViewMode === 'stats'
       ? renderTeamStats(roster, slotOf)
       : `${!haveLogs ? `<div class="card"><p class="sub">No game data cached yet. Pull stats to see daily scoring.
-          <button class="btn btn-sm btn-block mt" onclick="pullAllStats()">Pull MLB stats for my roster</button></p></div>`
+          <button class="btn btn-sm btn-block mt" onclick="pullAllStats()">Pull ${SP().label} stats for my roster</button></p></div>`
           : (teamTotal===0 ? `<div class="card"><p class="sub" style="font-size:.78rem">
             No games found for your starters in week ${week} (${dayLabel(start)}–${dayLabel(end)}).
-            ${currentWeekNow()!==week?`Today is week ${currentWeekNow()} — `:''}use the week arrows above to find a week with games,
-            or re-pull stats.</p>
-            <button class="btn btn-sm btn-ghost btn-block mt" onclick="pullAllStats()">Re-pull MLB stats</button></div>` : '')}
+            ${currentWeekNow()!==week
+              ? `Today is week ${currentWeekNow()} — <span class="plink" onclick="goToCurrentWeek()">jump back to it</span>.`
+              : 'Use the week arrows above to find a week with games.'}</p></div>` : '')}
 
         <div class="row-between" style="align-items:center">
           <div class="divlabel" style="margin:0">Starters · ${filledCount}/${(activeLineupSlots()||[]).length}</div>
@@ -4487,6 +4510,28 @@ window.openAddDrop = function() {
   `);
 };
 
+/* AN IL SPOT IS FOR INJURED PLAYERS.
+   ESPN clears a player's injury tag when he comes back, but nothing moved him off
+   our IL — so a healthy player kept sitting in an IL slot, out of the roster count
+   and at a discounted cap hit. That is a free extra roster spot and, in a salary
+   league, free cap room.
+
+   Rather than yanking him out from under the manager mid-week (which would silently
+   break a lineup), the roster is simply not legal until they deal with it: no adds,
+   no trades, until every player on the IL is actually flagged injured. Lineup
+   changes and drops stay open, so there is always a way to get legal. */
+function ilOffenders(teamId) {
+  if (!FEAT().ir) return [];
+  return ((LG().irStash || {})[teamId] || [])
+    .map(id => (LG().playerPool || []).find(p => String(p.espnId) === String(id)))
+    .filter(p => p && !p.injured);
+}
+function ilBlockReason(teamId) {
+  const bad = ilOffenders(teamId);
+  if (!bad.length) return null;
+  const names = bad.map(p => p.name).join(', ');
+  return `${names} ${bad.length === 1 ? 'is' : 'are'} healthy but still on your IL — activate ${bad.length === 1 ? 'him' : 'them'} first`;
+}
 /* ACQUISITION LIMITS.
    Real leagues cap how often you can churn the waiver wire, otherwise the manager
    with the most free time simply streams the most games. Counted from the
@@ -4520,6 +4565,8 @@ function addBlockedReason(teamId) {
 window.addPlayer = function(espnId) {
   const tid = myTeamId();
   if (rosterActiveCount(tid) >= rosterCap()) { toast('Roster full — drop someone first', 'err'); return; }
+  const il = ilBlockReason(tid);
+  if (il) { toast(il, 'err'); return; }
   const blocked = addBlockedReason(tid);
   if (blocked) { toast(blocked, 'err'); return; }
   // add as a "pick" so it shows on the roster (pick number after current max)
@@ -4715,6 +4762,14 @@ window.confirmMyTeam = function(teamId) {
   autoPullStats(true);
 };
 
+/* Back to the week the season is actually on. Browsing weeks sets LG().viewWeek,
+   which is sticky and league-wide, so it is easy to leave the whole app parked on
+   week 9 and wonder why nothing has scores. */
+window.goToCurrentWeek = function() {
+  LG().viewWeek = null;
+  renderActive();
+  getWeekSchedule(currentWeekNow()).then(() => renderActive()).catch(()=>{});
+};
 window.changeWeek = function(delta) {
   const w = activeWeek() + delta;
   LG().viewWeek = Math.max(1, Math.min(26, w));
@@ -4736,8 +4791,19 @@ window.viewMyOwnTeam = function() {
    If the chosen slot is occupied, that player is bumped to bench. ---- */
 window.pickPosition = function(espnId) {
   const week = activeWeek();
-  const p = teamRoster(myTeamId()).find(x => String(x.espnId)===String(espnId));
+  const tidP = myTeamId();
+  const p = teamRoster(tidP).find(x => String(x.espnId)===String(espnId));
   if (!p) return;
+  // A player already on the IL isn't in the lineup at all, so the slot picker has
+  // nothing to offer him — the only move is back off the IL.
+  if (isOnIR(espnId, tidP)) {
+    openModal(`<div class="h2">${esc(p.name)}</div>
+      <p class="sub mt mb">On the injured list${irDiscountRate()<1?`, counting ${Math.round(irDiscountRate()*100)}% of his salary`:''}.
+        ${p.injured ? 'Still flagged injured.' : '<b class="amber">No longer flagged injured</b> — activate him, or he blocks adds and trades.'}</p>
+      <button class="btn btn-amber btn-block" onclick="activateFromIR('${espnId}')">🩹 Activate from IL</button>
+      <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Cancel</button>`);
+    return;
+  }
   if (playerLockedForWeek(p, week)) {
     toast(`🔒 ${p.name} is locked — their first game this week has started`, 'err'); return;
   }
@@ -4767,6 +4833,23 @@ window.pickPosition = function(espnId) {
     <div class="sub mb">${esc((p.eligible||[]).join('/'))} · locks in <b class="amber">${playerLockCountdown(p, week)}</b> · move to:</div>
     ${slotBtns}
     ${curSlot!=null ? `<button class="btn btn-ghost btn-block mt" onclick="moveToSlot('${espnId}','bench')">Bench (leaves ${esc(slots[curSlot]?.slot||'slot')} empty)</button>` : ''}
+    ${(() => {
+      // THE IL IS A ROSTER MOVE, so it belongs with the other roster moves. It used
+      // to live only on the player's card, which is not where anyone looks when they
+      // are setting a lineup. Only offered when this player is actually eligible.
+      if (!FEAT().ir) return '';
+      const max = SP().irCount || 0;
+      if (!max) return '';
+      const used = irCount(myTeamId());
+      const canCommish = window._masterUnlocked || commishUnlocked();
+      if (!p.injured && !canCommish) {
+        return `<p class="sub mt" style="font-size:.66rem;text-align:center">Not flagged injured, so he can't go on the IL.</p>`;
+      }
+      if (used >= max) {
+        return `<p class="sub mt" style="font-size:.66rem;text-align:center">IL is full (${used}/${max}).</p>`;
+      }
+      return `<button class="btn btn-ghost btn-block mt" onclick="moveToIR('${espnId}')">🩹 Move to IL (${used}/${max} used)${p.injured?'':' — not flagged injured'}</button>`;
+    })()}
     <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Cancel</button>
   `);
 };
@@ -5447,10 +5530,16 @@ function signContractSection(p) {
     const yr = currentSeasonYear();
     const cur = contractSalaryForYear(c, yr);
     const left = (c.signedYear + c.termYears - 1) - yr;
+    const mine = (LG().draft.picks||[]).some(pk =>
+      String(pk.playerId)===String(p.espnId) && String(pk.teamId)===String(myTeamId()));
     return `<div class="card card-tight mt" style="border-color:var(--good)">
       <div class="sub" style="font-size:.72rem"><b class="amber">Signed</b> · ${c.termYears}yr term (${c.signedYear}–${c.signedYear+c.termYears-1})<br>
       This year: <b>${fmtMoney(cur)}</b> · ${left>=0?`${left+1} yr${left!==0?'s':''} left`:'expired'}<br>
       Drop dead-cap: <b class="cell-neg">${fmtMoney(dropDeadCap(p))}</b></div>
+      ${mine && signingOpen() ? `
+        <button class="btn btn-ghost btn-block mt" style="font-size:.72rem" onclick="openSignModal('${p.espnId}')">✍ Change the term</button>
+        <button class="btn btn-ghost btn-block mt" style="font-size:.72rem;color:var(--bad)" onclick="removeContract('${p.espnId}')">✕ Remove this contract</button>`
+      : !signingOpen() ? `<p class="sub mt" style="font-size:.66rem">Signing is closed, so this contract can't be changed until next season.</p>` : ''}
     </div>`;
   }
   if (isArbPlayer(p)) {
@@ -5470,10 +5559,17 @@ function signContractSection(p) {
    Signing deadline = trade deadline. Both are league settings (week numbers). */
 function signingOpen() {
   if (rostersLocked()) return false;
+  if (!LG().draft?.complete) return true;   // a season that hasn't started can't be past its deadline
   const deadlineWk = LSET().tradeDeadlineWeek || 20;   // default wk 20
   return currentWeekNow() <= deadlineWk;
 }
 function rostersLocked() {
+  // You cannot be in the playoffs if you never drafted. Without this, a league
+  // created outside its sport's season window computes a late week and is born
+  // locked — no signing, no trades, no roster moves, with no way out except
+  // editing the schedule. That is how a fresh basketball league (whose configured
+  // season opened in 2024) arrived in "week 26" with everything shut.
+  if (!LG().draft?.complete) return false;
   const playoffWk = LSET().playoffStartWeek || 23;     // default wk 23
   return currentWeekNow() >= playoffWk;
 }
@@ -5512,6 +5608,40 @@ window.setSignTerm = function(espnId, val) {
   const existing = playerContract(p);
   const aav = existing ? existing.baseAAV : importedAAV(p);
   renderSignModal(p, aav, SALCFG().maxTerm, !!existing);
+};
+/* REMOVING A CONTRACT IS NOT DROPPING A PLAYER.
+   There was no way to undo a contract from the player card at all — the only exit
+   was clearing the term box in the contracts table, which nobody finds. Signing a
+   player is data entry and data entry has typos, so while signing is open the owner
+   can simply take the contract off. The player stays on the roster and there is no
+   dead cap; dead cap is the price of DROPPING someone under contract, which is a
+   different act and still costs. */
+window.removeContract = function(espnId) {
+  const p = LG().playerPool.find(x => String(x.espnId)===String(espnId));
+  if (!p) return;
+  const c = playerContract(p);
+  if (!c) { toast('No contract on this player', 'err'); return; }
+  if (!signingOpen()) { toast('Signing is closed — contracts are locked until next season', 'err'); return; }
+  const mine = (LG().draft.picks||[]).some(pk =>
+    String(pk.playerId)===String(espnId) && String(pk.teamId)===String(myTeamId()));
+  if (!mine && !(window._masterUnlocked || commishUnlocked())) {
+    toast('You can only change contracts on your own roster', 'err'); return;
+  }
+  openModal(`<div class="h2">Remove ${esc(p.name)}'s contract?</div>
+    <p class="sub mt mb">He stays on your roster and there is <b>no dead cap</b> — this just clears the
+      ${c.termYears}-year deal you entered. He goes back to counting
+      ${importedAAV(p)!=null?`his ${fmtMoney(importedAAV(p))} AAV`:`the ${fmtMoney(SALCFG().arbSalary)} minimum`}.</p>
+    <button class="btn btn-amber btn-block" onclick="confirmRemoveContract('${espnId}')">Remove the contract</button>
+    <button class="btn btn-ghost btn-block mt" onclick="closeModal();showPlayer('${espnId}')">Cancel</button>`);
+};
+window.confirmRemoveContract = function(espnId) {
+  const p = LG().playerPool.find(x => String(x.espnId)===String(espnId));
+  if (!p || !LG().contracts) return;
+  delete LG().contracts[String(espnId)];
+  logTxn('contract', `${teamName(myTeamId())} removed ${p.name}'s contract`);
+  save();
+  toast(`${p.name}'s contract removed`, 'ok');
+  closeModal(); renderActive();
 };
 window.confirmSign = function(espnId) {
   const p = LG().playerPool.find(x=>String(x.espnId)===String(espnId));
@@ -5747,6 +5877,8 @@ window.addPlayerFromPool = function(espnId) {
   if (LSET().useSalaryCap && rostersLocked()) { toast('Rosters are locked (playoffs) — no adds', 'err'); return; }
   if (!myTeamId()) { toast('Claim your team first', 'err'); return; }
   if (rosterActiveCount(myTeamId()) >= rosterCap()) { toast('Roster full — drop someone first', 'err'); return; }
+  const ilWhy = ilBlockReason(myTeamId());
+  if (ilWhy) { toast(ilWhy, 'err'); return; }
   const blocked = addBlockedReason(myTeamId());
   if (blocked) { toast(blocked, 'err'); return; }
   // if the player is on waivers, this becomes a CLAIM, not an instant add
@@ -6456,6 +6588,17 @@ window.saveApproval = function() {
   window._apPin = '';
   // switch to the chosen sport so the league is created under it
   STATE.sport = sport;
+  // START THE NEW LEAGUE EMPTY.
+  // STATE.leagues[sport] is a single per-sport object that the previous league was
+  // using. Creating a league without resetting it meant the new league opened with
+  // the old league's teams, draft, contracts and settings — and the saveLeague()
+  // below then PUSHED all of that into the new league's Firestore doc. The player
+  // pool is the one thing that carries over: it is reference data for the sport,
+  // costly to re-pull, and identical for every league in it.
+  const keepPool = (STATE.leagues[sport]?.playerPool) || [];
+  STATE.leagues[sport] = blankLeague(leagueName || ('League ' + id));
+  STATE.leagues[sport].playerPool = keepPool;
+  STATE.memberId = null;                 // a new league needs a fresh claim
   save({master:true});
   // CRITICAL: the commissioner must JOIN the league they just created, so that all
   // their setup (teams, draft, settings) syncs to the league doc in Firebase. Without
@@ -6467,11 +6610,10 @@ window.saveApproval = function() {
   if (salaryAllowed) { ensureSettings(); LG().settings.useSalaryCap = true; }
   saveLocal();
   subscribeLeague('league_' + id);
-  // If the commissioner already set up teams/draft locally before creating the ID,
-  // push that data up NOW so members who join immediately see it.
-  if ((LG().teams && LG().teams.length) || (LG().draft?.picks?.length)) {
-    saveLeague({ silent:true });
-  }
+  // Seed the empty league doc so members who join immediately get a real document
+  // rather than nothing. (It used to push whatever the previous league had left in
+  // memory, which is how a brand-new league arrived pre-populated.)
+  saveLeague({ silent:true, allowEmpty:true });   // the wipe guard exists for accidents, not for a deliberate new league
   const shownName = leagueName || ('League ' + id);
   openModal(`<div class="h2">League created 🎉</div>
     <p class="sub mb">Your league now has its own link. Share it with members — or open it yourself.</p>
@@ -6516,12 +6658,63 @@ window.toggleApproval = function(key) {
   toast(STATE.approvals[key].approved?'Approved':'Access turned off', 'ok');
   openCommishLog();
 };
+/* DELETING A LEAGUE HAS TO DELETE THE LEAGUE.
+   Removing the approval only hid it: the Firestore doc stayed, the local
+   STATE.leagues[sport] object stayed, and the next league created in that sport
+   inherited all of it. This removes the approval, deletes the cloud document, and
+   clears the local data if we are standing in it. */
 window.removeApproval = function(key) {
-  if (!STATE.approvals) return;
+  const a = (STATE.approvals || {})[key];
+  if (!a) return;
+  const docId = a.leagueDocId || ('league_' + key);
+  const sport = sportForApproval(key);
+  const others = Object.entries(STATE.approvals).filter(([k, v]) =>
+    k !== key && (v.leagueDocId || ('league_' + k)) === docId);
+  openModal(`<div class="h2">Delete ${esc(a.leagueName || 'this league')}?</div>
+    <p class="sub mt mb">Its teams, draft, rosters and contracts are deleted for
+      <b>everyone</b>, not just this device. Members who open the link will find nothing.
+      ${others.length ? `<br><br>Another ID (${others.map(([k]) => esc(k)).join(', ')}) points at the same data, so the
+        cloud copy is kept and only this ID is removed.` : ''}</p>
+    <button class="btn btn-block" style="background:var(--bad);color:#fff"
+      onclick="confirmRemoveApproval('${key}')">Delete the league</button>
+    <button class="btn btn-ghost btn-block mt" onclick="openCommishLog()">Cancel</button>`);
+};
+window.confirmRemoveApproval = async function(key) {
+  const a = (STATE.approvals || {})[key];
+  if (!a) return;
+  const docId = a.leagueDocId || ('league_' + key);
+  const sport = sportForApproval(key);
+  // another approval aliasing the same doc means the data is still in use
+  const aliased = Object.entries(STATE.approvals).some(([k, v]) =>
+    k !== key && (v.leagueDocId || ('league_' + k)) === docId);
   delete STATE.approvals[key];
-  save({master:true});
-  toast('Removed', 'ok');
-  openCommishLog();
+
+  // stop listening before anything else, or the snapshot handler will happily
+  // re-apply the league we are deleting
+  const wasActive = STATE.activeLeagueDoc === docId;
+  if (wasActive && _leagueUnsub) { try { _leagueUnsub(); } catch (e) {} _leagueUnsub = null; }
+
+  if (!aliased && fbReady && deleteDoc) {
+    try { await deleteDoc(doc(db, 'leagues', docId)); }
+    catch (e) { toast('Removed here, but the cloud copy could not be deleted: ' + (e?.message || ''), 'err'); }
+  }
+  // forget it locally too — bindings, identity, and the learned sport
+  Object.keys(STATE.leaguesBySport || {}).forEach(sk => {
+    if (STATE.leaguesBySport[sk]?.activeLeagueDoc === docId) delete STATE.leaguesBySport[sk];
+  });
+  if (STATE.memberByLeague) delete STATE.memberByLeague[docId];
+  if (STATE.sportByDoc) delete STATE.sportByDoc[docId];
+  if (!aliased && STATE.leagues[sport]) {
+    // keep the sport's player pool; it is reference data, not this league's
+    const keepPool = STATE.leagues[sport].playerPool || [];
+    STATE.leagues[sport] = blankLeague('');
+    STATE.leagues[sport].playerPool = keepPool;
+  }
+  if (wasActive) { STATE.activeLeagueDoc = null; STATE.memberId = null; }
+  saveLocal();
+  save({ master: true });
+  toast('League deleted', 'ok');
+  if (wasActive) { closeModal(); goToHub(); } else { openCommishLog(); }
 };
 
 /* ---- LAUNCH: league-name gate ----
@@ -9048,12 +9241,18 @@ window.confirmAddPick = function(side) {
 };
 /* trades close at the trade deadline (same week that closes contract signing) */
 function tradesOpen() {
+  // Same reasoning as signingOpen(): before a draft there is no season to be late in.
+  // A league created outside its sport's season window computes a late week, and
+  // would otherwise be born with its trade deadline already passed.
+  if (!LG().draft?.complete) return true;
   const deadlineWk = LSET().tradeDeadlineWeek || 20;
   return currentWeekNow() <= deadlineWk;
 }
 window.sendTradeProposal = function() {
   const tr = window._trade;
   if (!tradesOpen()) { toast(`Trades are closed (deadline was week ${LSET().tradeDeadlineWeek||20})`, 'err'); return; }
+  const ilWhy = ilBlockReason(myTeamId());
+  if (ilWhy) { toast(ilWhy, 'err'); return; }
   if (!tr.to) { toast('Pick a trade partner', 'err'); return; }
   const nAssets = tr.fromPlayers.length + tr.toPlayers.length + tr.fromPicks.length + tr.toPicks.length + (tr.money?.length||0);
   if (nAssets === 0) { toast('Add at least one asset', 'err'); return; }
@@ -9161,6 +9360,8 @@ window.acceptTrade = function(id) {
   if (!t || t.status!=='pending') { toast('Trade no longer available', 'err'); return; }
   if (!tradesOpen()) { toast(`Trades are closed (deadline was week ${LSET().tradeDeadlineWeek||20})`, 'err'); return; }
   if (String(t.to)!==String(myTeamId())) { toast('Only the receiving team can accept', 'err'); return; }
+  const ilWhy = ilBlockReason(myTeamId()) || ilBlockReason(t.from);
+  if (ilWhy) { toast(ilWhy.replace('your IL', 'an IL'), 'err'); return; }
   t.acceptedAt = Date.now();
   t.vetoes = {};
   if (tradeReviewHours() > 0 && vetoesNeeded() > 0) {
