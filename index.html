@@ -612,15 +612,19 @@ const SPORTS = {
       { slot: 'UTIL',eligible: ['PG','SG','SF','PF','C'] },
     ],
     benchCount: 10,
-    irCount: 0,
-    // NBA has none of MLB's pitcher/arb/probable-starter concepts.
+    irCount: 3,                 // ESPN basketball leagues carry IR slots too
+    // NBA has none of MLB's pitcher/arbitration/probable-starter concepts, but it
+    // does get everything that isn't specific to baseball: an IL (with the same cap
+    // relief), and recent-form stat windows — applyPointFields() already computes
+    // 7/14/30-day and best-average from the gamelog for every sport, they were just
+    // hidden here.
     features: {
       arb: false,
       pitchers: false,
       probableStarters: false, // basketball has no probable-starter concept
       schedule: true,          // ESPN scoreboard → real tip-off times, per-player locks
-      statWindows: false,      // NBA shows per-game fantasy points instead
-      ir: false,
+      statWindows: true,       // plus FP/G, which is the basketball default
+      ir: true,
       gameLogs: true,          // ESPN gamelog, keyed by the espnId we already store
       perGameScoring: true,   // show FP/G
       mapping: false,         // ESPN ID is the stats key; no separate mapping
@@ -741,6 +745,8 @@ function blankLeague(name) {
     seasonYear: null,           // explicit current season year (set by rollover)
     rollbackSnapshot: null,     // pre-rollover state, so advancing a season is undoable
     rulesDoc: null,             // {text, faq:[{q,a}], updated} commissioner rulebook
+    tradeBlock: {},             // teamId -> [playerId] players their manager will move
+    watchLists: {},             // memberId -> [playerId] personal follow list
     rookieDraft: { enabled:false, started:false, complete:false, live:false, order:[], picks:[],
                    currentPick:0, draftDate:null, secPerPick:90, snake:true, rounds:4,
                    pickStartedAt:null, paused:false },
@@ -1072,6 +1078,8 @@ function leaguePayload() {
     // field, so a dropped key would leave a consumed snapshot undoable forever
     rollbackSnapshot: lg.rollbackSnapshot || null,
     rulesDoc: lg.rulesDoc || null,
+    tradeBlock: lg.tradeBlock || {},
+    watchLists: lg.watchLists || {},
     rookieDraft: lg.rookieDraft || {},
     trades: lg.trades || [],
     lineups: lg.lineups || {},
@@ -1167,6 +1175,8 @@ function applyLeague(league) {
   if (league.seasonYear !== undefined) lg.seasonYear = league.seasonYear;
   if (league.rollbackSnapshot !== undefined) lg.rollbackSnapshot = league.rollbackSnapshot;
   if (league.rulesDoc !== undefined) lg.rulesDoc = league.rulesDoc;
+  if (league.tradeBlock) lg.tradeBlock = league.tradeBlock;
+  if (league.watchLists) lg.watchLists = league.watchLists;
   if (league.rookieDraft) lg.rookieDraft = { ...lg.rookieDraft, ...league.rookieDraft };
   if (league.trades) lg.trades = league.trades;
   if (league.lineups) lg.lineups = league.lineups;
@@ -1538,7 +1548,30 @@ function capBasis(shape) {
   const spots = Math.max(1, sh.spots || rosterCap());
   const need  = teams * spots;
   const arb   = SALCFG().arbSalary;
-  const priced = (LG().playerPool || [])
+
+  // ONCE THE DRAFT IS DONE, USE WHAT TEAMS ACTUALLY BOUGHT.
+  // Before a draft all we can do is guess which players will be rostered, so we
+  // price the top `need` salaries in the pool. After it, guessing is silly — the
+  // rosters exist. Real rosters are cheaper than the theoretical top N (drafters
+  // take needs and sleepers, not a pure salary list), so this also stops the cap
+  // being set off a roster nobody actually built.
+  const drafted = !shape && LG().draft?.complete && (LG().teams || []).length >= 2;
+  let priced, fromRosters = false;
+  if (drafted) {
+    const payrolls = LG().teams.map(t =>
+      teamRoster(t.id).reduce((sum, p) => sum + (playerCapHit(p) || 0), 0));
+    const live = payrolls.filter(v => v > 0);
+    if (live.length >= 2) {
+      const perTeamActual = live.reduce((a, b) => a + b, 0) / live.length;
+      const headroomA = capHeadroom(sh.leagueType);
+      const capA = Math.max(arb * spots, Math.round((perTeamActual * headroomA) / 5000000) * 5000000);
+      return { teams, spots, need, perTeam: Math.round(perTeamActual), headroom: headroomA, cap: capA,
+               minSalary: arb, minDerived: !!SALCFG().arbSalaryDerived,
+               fromRosters: true, priced: live.length, fromDb: live.length,
+               usingRealSalaries: Object.keys(salaryDB()).length > 0 };
+    }
+  }
+  priced = (LG().playerPool || [])
     .map(p => { const a = importedAAV(p); return a == null ? arb : a; })
     .sort((a, b) => b - a)
     .slice(0, need);
@@ -1550,6 +1583,7 @@ function capBasis(shape) {
   const cap = Math.max(arb * spots, Math.round((perTeam * headroom) / 5000000) * 5000000);
   return { teams, spots, need, perTeam: Math.round(perTeam), headroom, cap,
            minSalary: arb, minDerived: !!SALCFG().arbSalaryDerived,
+           fromRosters: false,
            fromDb: priced.filter(v => v !== arb).length,
            priced: priced.length, usingRealSalaries: Object.keys(salaryDB()).length > 0 };
 }
@@ -2295,6 +2329,14 @@ function houseRules() {
     ['Format', `${ls.leagueType || 'redraft'} · ${LG().teams.length} teams · ${rosterCap()} roster spots`],
     ['Scoring', ls.scoringFormat === 'regular' ? 'every starter game counts' : 'best single game of the week'],
     ['Trade deadline', `week ${ls.tradeDeadlineWeek || 20} — trades and signings both close`],
+    ['Trade review', (Number(ls.tradeReviewDays) || 0) > 0
+      ? `${ls.tradeReviewDays} day${ls.tradeReviewDays==1?'':'s'} — ${vetoesNeeded()} objection${vetoesNeeded()===1?'':'s'} from the other teams stops a trade`
+      : 'none — accepted trades process immediately'],
+    ['Acquisition limit', (() => {
+      const wk = Number(ls.maxAddsPerWeek) || 0, sn = Number(ls.maxAddsPerSeason) || 0;
+      if (!wk && !sn) return 'unlimited adds';
+      return [wk ? `${wk} per week` : null, sn ? `${sn} per season` : null].filter(Boolean).join(', ');
+    })()],
     ['Waivers', ls.waiverMode === 'faab' ? `FAAB, $${ls.faabBudget || 100} budget` : 'rolling priority'],
     ['Playoffs', `${ls.playoffTeams || 4} teams, starting week ${ls.playoffStartWeek || 21}`],
   ];
@@ -3034,6 +3076,8 @@ function renderPage(page) {
   if (chip) {
     chip.textContent = STATE.activeLeagueDoc ? `${SP().icon} ${LG().leagueName}` : '';
   }
+  // a review window that has run out settles itself — no one has to press a button
+  if (STATE.activeLeagueDoc && (LG().trades || []).some(t => t.status === 'review')) settleTradeReviews();
   // a trade offer sitting unanswered is easy to miss — badge it everywhere, not
   // just on the My Team page where the trade button lives
   const bell = $('trade-bell');
@@ -3109,52 +3153,9 @@ function manageRookieTimer(page) {
 /* ============================================================
    VIEWS (Phase 1 — shells; filled in later phases)
    ============================================================ */
-function viewHome() {
-  const haveTeams = LG().teams.length > 0;
-  const haveDraft = LG().draft.complete;
-  const havePool  = LG().playerPool.length > 0;
-
-  return `
-    <div class="eyebrow">${SP().icon} ${esc(LG().leagueName)}</div>
-    ${LSET().scoringFormat === 'regular'
-      ? `<div class="h1">Every game<br>counts.</div>
-         <p class="sub mt">All of your starters' games add up each week. Highest weekly total wins.</p>`
-      : `<div class="h1">Best game<br>of the week.</div>
-         <p class="sub mt">Each week, only your starters count — and only their single
-           best game${LSET().bestGameScope==='pitchersOnly'?' (pitchers only — hitters add all games)':LSET().bestGameScope==='hittersOnly'?' (hitters only — pitchers add all games)':''}. Highest weekly total wins.</p>`}
-
-    ${haveDraft ? `
-      <div class="tilegrid">
-        <div class="tile amber" onclick="go('matchups')"><span class="tic">⚔</span><span class="tlb">Set My Lineup</span><span class="tsb">this week's matchup</span></div>
-        <div class="tile" onclick="go('standings')"><span class="tic">▦</span><span class="tlb">Standings</span><span class="tsb">records &amp; playoffs</span></div>
-        <div class="tile" onclick="go('players')"><span class="tic">◎</span><span class="tlb">Players</span><span class="tsb">add, drop &amp; claim</span></div>
-        <div class="tile" onclick="go('teams')"><span class="tic">★</span><span class="tlb">My Team</span><span class="tsb">roster &amp; trades</span></div>
-      </div>` : ''}
-
-    ${!haveDraft ? `<div class="card mt">
-      <div class="h2">Setup checklist</div>
-      ${checkRow('League connected', havePool, 'Pull player pool & rules in Settings')}
-      ${checkRow('Teams created', haveTeams, 'Add teams in Settings')}
-      ${checkRow('Draft complete', haveDraft, haveTeams ? 'Run the draft' : 'Create teams first')}
-    </div>` : ''}
-
-    ${!havePool ? `
-      <div class="card">
-        <div class="h2">Get started</div>
-        <p class="sub mb">First, pull the player pool and scoring rules from ESPN.
-          This is the only thing we use ESPN for — all game stats come from MLB.</p>
-        <button class="btn btn-block" onclick="go('settings')">Open Settings →</button>
-      </div>` : ''}
-
-    ${havePool && !haveDraft ? `
-      <div class="card">
-        <div class="h2">Ready to draft</div>
-        <p class="sub mb">${LG().playerPool.length} players available.</p>
-        <button class="btn btn-amber btn-block" onclick="go('draft')">Go to Draft →</button>
-      </div>` : ''}
-  `;
-}
-
+/* (viewHome() lived here. Nothing called it — page-home renders viewMyTeam() —
+   so it was 40 lines of markup that could never appear on screen, and twice now I
+   have added a feature to it by mistake. Removed.) */
 function checkRow(label, done, hint) {
   return `<div class="row-between" style="padding:.5rem 0;border-bottom:1px solid rgba(42,61,48,.4)">
     <div>
@@ -3486,10 +3487,13 @@ function viewStandings() {
     return { team, ...r, gp, pct };
   }).sort((a,b) => b.pct - a.pct || b.pf - a.pf);
 
+  // A standings table that doesn't show who's in is only half a standings table.
+  const berths = Math.max(0, Math.min(rows.length, Number(LSET().playoffTeams) || 0));
   const body = rows.map((r,i) => {
     const isMine = String(r.team.id)===String(mine);
-    return `<tr style="${isMine?'background:var(--amber-bg)':''}">
-      <td class="r num" style="${i===0?'color:var(--amber);font-weight:800':''}">${i+1}</td>
+    const cut = berths > 0 && i === berths - 1 && i < rows.length - 1;
+    return `<tr style="${isMine?'background:var(--amber-bg)':''}${cut?';border-bottom:2px solid var(--amber)':''}">
+      <td class="r num" style="${i===0?'color:var(--amber);font-weight:800':''}">${i+1}${berths>0&&i<berths?'<span class="sub" style="font-size:.5rem"> ✦</span>':''}</td>
       <td><span class="plink" onclick="setViewingTeam('${r.team.id}');go('home')">${esc(r.team.name)}</span>
         ${isMine?'<span class="sub" style="font-size:.6rem"> · you</span>':''}
         ${r.team.owner?`<span class="sub" style="font-size:.6rem;display:block">${esc(r.team.owner)}</span>`:''}</td>
@@ -3535,7 +3539,8 @@ function viewStandings() {
         <tbody>${body}</tbody>
       </table>
     </div>
-    <p class="sub mt" style="font-size:.66rem;text-align:center">PF = points for, PA = points against. Tap a team to view their roster.</p>
+    <p class="sub mt" style="font-size:.66rem;text-align:center">${berths>0?`<span class="amber">✦</span> = in the playoffs as it stands (top ${berths}, starting week ${LSET().playoffStartWeek||23}). `:''}PF = points for, PA = points against. Tap a team to view their roster.</p>
+    <button class="btn btn-ghost btn-block mt" onclick="openSeasonSchedule()">🗓 Full season schedule</button>
     ${(() => {
       const tx = (LG().transactions||[]).slice(0,12);
       if (!tx.length) return '';
@@ -3612,6 +3617,7 @@ function viewTeams() {
       <div class="msg">No teams yet. Create them in Settings, or use Quick Test.</div>
       <button class="btn" onclick="go('settings')">Open Settings</button></div>`;
   }
+  const rec = LG().draft.complete ? computeRecords() : {};
   const rosters = {};
   LG().teams.forEach(t => rosters[t.id] = []);
   LG().draft.picks.forEach(pk => {
@@ -3635,11 +3641,28 @@ function viewTeams() {
     return `<div class="card" onclick="showTeam('${t.id}')" style="cursor:pointer">
       <div class="row-between">
         <div><div class="h2" style="margin:0">${esc(t.name)}</div>
-          <div class="sub">${esc(t.owner||'')} · ${roster.length} players</div></div>
+          <div class="sub">${esc(t.owner||'')} · ${roster.length} players${(() => {
+            const r = rec[t.id];
+            return r ? ` · ${r.w}-${r.l}${r.t?'-'+r.t:''}` : '';
+          })()}</div></div>
         <div style="text-align:right">
           <div class="num amber display" style="font-size:1.4rem">${metricVal}</div>
           <div class="sub" style="font-size:.6rem">${metricLbl}</div></div>
       </div>
+      ${LSET().useSalaryCap ? (() => {
+        // In a cap league a team's payroll says as much about it as its points do.
+        const spent = teamSalaryTotal(t.id), cap = leagueCap(), space = cap - spent;
+        const pct = cap > 0 ? Math.min(100, spent / cap * 100) : 0;
+        return `<div style="margin-top:.4rem">
+          <div class="row-between" style="font-size:.66rem">
+            <span class="sub">${fmtMoney(spent)} of ${fmtMoney(cap)}</span>
+            <span class="${space<0?'cell-neg':''}" style="${space>=0?'color:var(--good)':''}">${space<0?`${fmtMoney(-space)} over`:`${fmtMoney(space)} free`}</span>
+          </div>
+          <div style="background:var(--field-2);border-radius:6px;height:5px;overflow:hidden;margin-top:.2rem">
+            <div style="height:100%;width:${pct}%;background:${space<0?'var(--bad)':'var(--amber)'}"></div>
+          </div>
+        </div>`;
+      })() : ''}
       <div class="mt">${preview || '<span class="sub">No players drafted</span>'}</div>
       ${roster.length>5?`<div class="divlabel">+${roster.length-5} more — tap to view</div>`:''}
     </div>`;
@@ -3783,6 +3806,24 @@ function viewMyTeam() {
       : `<span class="starter-badge b" style="cursor:${pLocked?'default':'pointer'}"
           ${pLocked?'':`onclick="pickPosition('${p.espnId}')"`}>BENCH ${pLocked?'🔒':'▾'}</span>`;
 
+    // COMPACT MODE: one line per player instead of a card with a seven-day grid.
+    // A 21-man roster is nearly nine thousand pixels tall in card view, which is
+    // fine for setting a lineup and hopeless for "who do I have again".
+    if (rosterDense()) {
+      return `<div class="row-between" style="padding:.3rem .1rem;border-bottom:1px solid rgba(42,61,48,.35)">
+        <span class="row" style="gap:.4rem;align-items:center;min-width:0">
+          ${badge}
+          <span class="plink" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+            onclick="showPlayer('${p.espnId}')">${esc(p.name)}</span>
+          ${p.injured?'<span class="il-badge">IL</span>':''}
+        </span>
+        <span class="row" style="gap:.5rem;align-items:center;flex-shrink:0">
+          <span class="sub" style="font-size:.62rem">${esc((p.eligible||[]).join('/'))}</span>
+          ${LSET().useSalaryCap?`<span class="sub" style="font-size:.64rem">${fmtMoney(teamPlayerCapHit(viewingId, p, currentSeasonYear()))}</span>`:''}
+          <span class="num amber" style="font-weight:700;min-width:2ch;text-align:right">${best?best.pts:'—'}</span>
+        </span>
+      </div>`;
+    }
     return `<div class="pcard ${isStarter?'':'bench'}">
       <div class="row-between" style="margin-bottom:.4rem">
         <div class="row" style="gap:.5rem;align-items:center">
@@ -3809,7 +3850,16 @@ function viewMyTeam() {
 
   // STARTERS RENDER BY SLOT, not by player: every lineup slot always appears, in order.
   // An unfilled slot shows as an empty placeholder rather than vanishing from the page.
-  const emptySlotCard = (s, idx) => `
+  const emptySlotCard = (s, idx) => rosterDense() ? `
+    <div class="row-between" style="padding:.3rem .1rem;border-bottom:1px solid rgba(42,61,48,.35);opacity:.7">
+      <span class="row" style="gap:.4rem;align-items:center">
+        <span class="starter-badge s" style="opacity:.55">${esc(s.slot)}</span>
+        <span class="sub" style="font-size:.76rem">Empty</span>
+      </span>
+      ${isMine && !locked
+        ? `<button class="btn btn-sm btn-ghost" onclick="fillSlot(${idx})">+ Fill</button>`
+        : `<span class="sub" style="font-size:.65rem">—</span>`}
+    </div>` : `
     <div class="pcard empty-slot">
       <div class="row-between">
         <div>
@@ -3937,7 +3987,10 @@ function viewMyTeam() {
             or re-pull stats.</p>
             <button class="btn btn-sm btn-ghost btn-block mt" onclick="pullAllStats()">Re-pull MLB stats</button></div>` : '')}
 
-        <div class="divlabel">Starters · ${filledCount}/${(activeLineupSlots()||[]).length}</div>
+        <div class="row-between" style="align-items:center">
+          <div class="divlabel" style="margin:0">Starters · ${filledCount}/${(activeLineupSlots()||[]).length}</div>
+          <button class="btn btn-sm btn-ghost" onclick="toggleRosterDense()">${rosterDense()?'▦ Cards':'≡ Compact'}</button>
+        </div>
         ${isMine && filledCount < (activeLineupSlots()||[]).length ? `<div class="card card-tight mb" style="border-color:var(--bad)">
           <p class="sub" style="font-size:.72rem;color:var(--bad)">⚠ ${(activeLineupSlots()||[]).length - filledCount}
           empty starting slot${(activeLineupSlots()||[]).length - filledCount!==1?'s':''} — empty slots score 0 this week.</p></div>` : ''}
@@ -3947,8 +4000,10 @@ function viewMyTeam() {
         ${irCards ? `<div class="divlabel mt">Injured list</div>${irCards}` : ''}
 
         <p class="sub mt" style="font-size:.7rem;text-align:center">
-          Tap a player's <b>position badge</b> to move or bench them; tap <b>+ Fill</b> on an empty slot.
-          Tap any daily score for a breakdown. Amber = kept (best) game.
+          ${rosterDense()
+            ? `Compact view — one line a player. Switch to <b>Cards</b> for the day-by-day grid.`
+            : `Tap a player's <b>position badge</b> to move or bench them; tap <b>+ Fill</b> on an empty slot.
+               Tap any daily score for a breakdown. Amber = kept (best) game.`}
           Each player locks when their own first game of the week starts.</p>`}
   `;
 }
@@ -4012,6 +4067,16 @@ function renderTeamStats(roster, slotOf) {
       Best Avg = average of each week's best single game (your kept score). Tap a name for the weekly breakdown.</p>`;
 }
 window.setTeamView = function(m) { teamViewMode = m; renderActive(); };
+/* card view (the seven-day grid, for setting a lineup) vs list view (one line a
+   player, for reading a roster). Remembered on the device, not in the league. */
+let _rosterDense = false;
+try { _rosterDense = localStorage.getItem('tl_roster_dense') === '1'; } catch (e) {}
+function rosterDense() { return _rosterDense; }
+window.toggleRosterDense = function() {
+  _rosterDense = !_rosterDense;
+  try { localStorage.setItem('tl_roster_dense', _rosterDense ? '1' : '0'); } catch (e) {}
+  renderActive();
+};
 
 /* CONTRACTS view: a multi-year TABLE. Rows = players; columns = next N seasons.
    Each player has an inline text box to set their fantasy contract length. A signed
@@ -4307,19 +4372,28 @@ window.openAddDrop = function() {
   const freeAgents = LG().playerPool.filter(p => !allRostered.has(String(p.espnId)))
     .sort((a,b)=>a.adp-b.adp).slice(0, 100);
 
+  const blocked = addBlockedReason(tid);
   const faRows = freeAgents.map(p => `
     <div class="row-between" style="padding:.35rem 0;border-bottom:1px solid rgba(42,61,48,.4)">
       <span><b>${esc(p.name)}</b> <span class="sub" style="font-size:.7rem">${esc((p.eligible||[]).join('/'))} · ${esc(p.proTeam||'')} · ADP ${p.adp<9999?p.adp:'—'}</span></span>
-      <button class="btn btn-sm ${count>=cap?'btn-ghost':''}" ${count>=cap?'disabled':''}
+      <button class="btn btn-sm ${(count>=cap||blocked)?'btn-ghost':''}" ${(count>=cap||blocked)?'disabled':''}
         onclick="addPlayer('${p.espnId}')">Add</button>
     </div>`).join('');
+  // a limit you only discover by being refused is a bad limit — show what's left
+  const wkMax = Number(LSET().maxAddsPerWeek) || 0, snMax = Number(LSET().maxAddsPerSeason) || 0;
+  const limitLine = (wkMax || snMax) ? `<span class="sub">Adds left: ${[
+      wkMax ? `<b>${Math.max(0, wkMax - addsUsed(tid,'week'))}</b> this week` : null,
+      snMax ? `<b>${Math.max(0, snMax - addsUsed(tid,'season'))}</b> this season` : null,
+    ].filter(Boolean).join(' · ')}</span>` : '';
 
   openModal(`
     <div class="h2">Add / Drop</div>
     <div class="row-between mb">
       <span class="sub">Roster: <b class="${count>=cap?'cell-neg':'amber'}">${count}/${cap}</b> (IL doesn't count)</span>
+      ${limitLine}
     </div>
     ${count>=cap ? `<p class="sub mb" style="font-size:.72rem;color:var(--bad)">Roster full — drop a player before adding.</p>` : ''}
+    ${blocked ? `<p class="sub mb" style="font-size:.72rem;color:var(--bad)">${esc(blocked)}. You can still drop players and set your lineup.</p>` : ''}
     <div class="divlabel">My roster — tap to drop</div>
     <div style="max-height:25vh;overflow-y:auto">
       ${roster.map(p => `<div class="row-between" style="padding:.3rem 0;border-bottom:1px solid rgba(42,61,48,.4)">
@@ -4333,14 +4407,47 @@ window.openAddDrop = function() {
   `);
 };
 
+/* ACQUISITION LIMITS.
+   Real leagues cap how often you can churn the waiver wire, otherwise the manager
+   with the most free time simply streams the most games. Counted from the
+   transaction log we already keep, so nothing new has to be tracked and an
+   undone/reversed move is not counted twice.
+   Both limits default to 0 = unlimited, which is what every existing league gets. */
+function addsUsed(teamId, scope) {
+  const name = teamName(teamId);
+  const since = scope === 'week' ? weekStartMs(currentWeekNow()) : 0;
+  return (LG().transactions || []).filter(t =>
+    (t.type === 'add' || t.type === 'waiver') && t.ts >= since && t.text.startsWith(name + ' ')).length;
+}
+function weekStartMs(wk) {
+  const days = weekDays(wk);
+  return days && days.length ? new Date(ymd(days[0]) + 'T00:00:00').getTime() : 0;
+}
+/* null = allowed; a string = the reason it isn't */
+function addBlockedReason(teamId) {
+  const wkMax = Number(LSET().maxAddsPerWeek) || 0;
+  const snMax = Number(LSET().maxAddsPerSeason) || 0;
+  if (wkMax > 0) {
+    const used = addsUsed(teamId, 'week');
+    if (used >= wkMax) return `You've used all ${wkMax} adds for week ${currentWeekNow()}`;
+  }
+  if (snMax > 0) {
+    const used = addsUsed(teamId, 'season');
+    if (used >= snMax) return `You've used all ${snMax} adds for the season`;
+  }
+  return null;
+}
 window.addPlayer = function(espnId) {
   const tid = myTeamId();
   if (rosterActiveCount(tid) >= rosterCap()) { toast('Roster full — drop someone first', 'err'); return; }
+  const blocked = addBlockedReason(tid);
+  if (blocked) { toast(blocked, 'err'); return; }
   // add as a "pick" so it shows on the roster (pick number after current max)
   const maxPick = LG().draft.picks.reduce((m,pk)=>Math.max(m,pk.pick||0), 0);
   LG().draft.picks.push({ teamId: tid, playerId: espnId, pick: maxPick+1, addedFA: true });
-  save();
   const p = LG().playerPool.find(x=>String(x.espnId)===String(espnId));
+  logTxn('add', `${teamName(tid)} added ${p?.name||'a player'}`);
+  save();
   toast(`Added ${p?.name||'player'}`, 'ok');
   openAddDrop(); // refresh
 };
@@ -4699,6 +4806,23 @@ function placeholderView(title, msg) {
 
 /* Players view works in Phase 1 once pool is loaded — proves the data layer */
 const playerView = { sort: 'adp', dir: 1, posFilter: 'ALL', search: '', avail: 'all', ptsWindow: 'season', grpFilter: 'all', minGames: 0, minWeeks: 0, salFilter: 'all' };
+/* STAT WINDOWS ARE PER SPORT, NOT MLB-ONLY.
+   applyPointFields() computes 7/14/30-day totals and a best-week average from any
+   sport's gamelog — basketball's included. Basketball was simply pinned to FP/G
+   with the window buttons hidden, so there was no way to ask who is hot right now.
+   Its default is still FP/G, because that is how basketball managers think. */
+const PTS_FIELDS = { season:'ptsSeason', '7':'pts7', '14':'pts14', '30':'pts30',
+                     bestavg:'bestAvg', fpg:'ptsPerGame' };
+function statWindowOptions() {
+  const base = [['season','PTS'], ['bestavg','AVG'], ['30','30d'], ['14','14d'], ['7','7d']];
+  return FEAT().perGameScoring ? [['fpg','FP/G'], ...base] : base;
+}
+/* the selected window, snapped to one this sport actually offers — playerView is
+   shared across sports, so switching sports must not leave a dangling selection */
+function activeStatWindow() {
+  const opts = statWindowOptions().map(o => o[0]);
+  return opts.includes(playerView.ptsWindow) ? playerView.ptsWindow : opts[0];
+}
 let teamViewMode = 'lineup';  // 'lineup' (day grid) | 'stats' (all-stats table)
 
 /* THE FILTERS FOLD AWAY.
@@ -4758,12 +4882,10 @@ function viewPlayersReal() {
   });
 
   // which points field is active based on the window toggle
-  const isNBA = FEAT().perGameScoring;   // per-game fantasy points (basketball-style)
-  // NBA: show per-game fantasy points (more meaningful than season totals in hoops).
-  const ptsField = isNBA ? 'ptsPerGame' : { season:'ptsSeason', '7':'pts7', '14':'pts14', '30':'pts30', bestavg:'bestAvg' }[playerView.ptsWindow];
+  const ptsField = PTS_FIELDS[activeStatWindow()];
   // short header labels: on a phone every character of header width is stolen from
   // the player-name column, which is the only column anyone reads
-  const ptsLabel = isNBA ? 'FP/G' : { season:'PTS', '7':'7d', '14':'14d', '30':'30d', bestavg:'AVG' }[playerView.ptsWindow];
+  const ptsLabel = (statWindowOptions().find(o => o[0] === activeStatWindow()) || ['','PTS'])[1];
 
   const useSal = LSET().useSalaryCap;
   const s = playerView.sort, dir = playerView.dir;
@@ -4834,7 +4956,7 @@ function viewPlayersReal() {
   const posBtn = (pos) =>
     `<button class="btn btn-sm ${playerView.posFilter===pos?'btn-amber':'btn-ghost'}" onclick="setPosFilter('${pos}')">${pos}</button>`;
   const winBtn = (w,label) =>
-    `<button class="btn btn-sm ${playerView.ptsWindow===w?'btn-amber':'btn-ghost'}" onclick="setPtsWindow('${w}')">${label}</button>`;
+    `<button class="btn btn-sm ${activeStatWindow()===w?'btn-amber':'btn-ghost'}" onclick="setPtsWindow('${w}')">${label}</button>`;
 
   return `
     <div class="eyebrow">${SP().label} pool · ${LG().playerPool.length} players${statsLive?` · ${mappedCount} linked`:''} · ${SP().statSeason} season</div>
@@ -4878,7 +5000,7 @@ function viewPlayersReal() {
     </div>`:''}
     ${!FEAT().statWindows ? '' : `<div class="row" style="gap:.35rem;margin-top:.4rem;flex-wrap:wrap">
       <span class="sub" style="align-self:center;font-size:.68rem">Show stat:</span>
-      ${winBtn('season','Season')} ${winBtn('bestavg','Best Avg')} ${winBtn('30','30d')} ${winBtn('14','14d')} ${winBtn('7','7d')}
+      ${statWindowOptions().map(([w, label]) => winBtn(w, label)).join(' ')}
     </div>`}
     <div class="row" style="gap:.35rem;margin-top:.4rem">
       <span class="sub" style="align-self:center;font-size:.68rem">Show:</span>
@@ -5191,6 +5313,7 @@ function renderPlayerModal(p, loading) {
         ? `<button class="btn btn-amber btn-block" onclick="addWithSwap('${p.espnId}')">+ Add (roster full — pick who to drop)</button>`
         : `<button class="btn btn-amber btn-block" onclick="addPlayerFromPool('${p.espnId}')">+ Add to my team (${count}/${cap})</button>`
     ) : ''}
+    ${myTeamId() && !onMyTeam ? `<button class="btn btn-ghost btn-block mt" onclick="toggleWatch('${p.espnId}')">${watchList().includes(String(p.espnId))?'★ On your watch list — remove':'☆ Add to watch list'}</button>` : ''}
     ${onMyTeam ? `
       <button class="btn btn-ghost btn-block" onclick="closeModal();go('home')">View on my team →</button>
       ${FEAT().ir ? (
@@ -5198,6 +5321,7 @@ function renderPlayerModal(p, loading) {
           ? `<button class="btn btn-ghost btn-block mt" onclick="activateFromIR('${p.espnId}')">🩹 Activate from IL (${irCount(myTeamId())}/${SP().irCount||0} IL used)</button>`
           : `<button class="btn btn-ghost btn-block mt" onclick="moveToIR('${p.espnId}')">🩹 Place on IL${p.injured?'':' (not flagged injured)'}</button>`
       ) : ''}
+      <button class="btn btn-ghost btn-block mt" onclick="toggleTradeBlock('${p.espnId}')">${onBlock(myTeamId()).includes(String(p.espnId))?'⇄ On the trade block — take off':'⇄ Put on the trade block'}</button>
       ${LSET().useSalaryCap ? signContractSection(p) : ''}
       <button class="btn btn-block mt" style="background:var(--bad);color:#fff" onclick="dropFromCard('${p.espnId}')">Drop ${esc(p.name)}${LSET().useSalaryCap&&playerContract(p)?` (dead cap ${fmtMoney(dropDeadCap(p))})`:''}</button>
     ` : ''}
@@ -5514,6 +5638,8 @@ window.addPlayerFromPool = function(espnId) {
   if (LSET().useSalaryCap && rostersLocked()) { toast('Rosters are locked (playoffs) — no adds', 'err'); return; }
   if (!myTeamId()) { toast('Claim your team first', 'err'); return; }
   if (rosterActiveCount(myTeamId()) >= rosterCap()) { toast('Roster full — drop someone first', 'err'); return; }
+  const blocked = addBlockedReason(myTeamId());
+  if (blocked) { toast(blocked, 'err'); return; }
   // if the player is on waivers, this becomes a CLAIM, not an instant add
   const wv = (LG().waivers||{})[espnId];
   if (wv && wv.until > Date.now()) { openClaimModal(espnId); return; }
@@ -5693,7 +5819,7 @@ function viewSettings() {
       ${LSET().useSalaryCap ? `
       <button class="btn btn-block mt" onclick="openSalaryPaste()">📋 Paste ${SP().label} salary data</button>
       <button class="btn btn-ghost btn-block mt" onclick="openSalaryConfig()">⚙ Default cap rules & penalties</button>
-      ${FEAT().arb ? `<button class="btn btn-ghost btn-block mt" onclick="showArbPlayers()">🚩 Players with no contract (arb)</button>` : ''}
+      <button class="btn btn-ghost btn-block mt" onclick="showArbPlayers()">🚩 ${FEAT().arb?'Players with no contract (arb)':'Players with no salary on file'}</button>
       <button class="btn btn-block mt" style="background:var(--bad);color:#fff" onclick="openSeasonRollover()">⏭ End season & apply penalties</button>
       ${LG().rollbackSnapshot ? `<button class="btn btn-ghost btn-block mt" onclick="undoSeasonRollover()">↩ Undo the advance to ${currentSeasonYear()} (back to ${LG().rollbackSnapshot.fromYear})</button>` : ''}` : ''}
     </div>
@@ -5840,6 +5966,18 @@ function viewSettings() {
       <div class="row-between" style="padding:.4rem 0;border-top:1px solid rgba(42,61,48,.4)">
         <span class="sub">Trade${LSET().useSalaryCap?'/signing':''} deadline (week)</span>
         <input class="input" type="number" min="1" max="26" value="${LSET().tradeDeadlineWeek||20}" style="width:80px;text-align:right" onchange="setLeagueSetting('tradeDeadlineWeek',this.value)">
+      </div>
+      <div class="row-between" style="padding:.4rem 0">
+        <span class="sub">Trade review (days)<br><span style="font-size:.62rem;color:var(--sage-dim)">0 = process instantly${(Number(LSET().tradeReviewDays)||0)>0?` · ${vetoesNeeded()} objections stop a trade`:''}</span></span>
+        <input class="input" type="number" min="0" max="7" value="${Number(LSET().tradeReviewDays)||0}" style="width:80px;text-align:right" onchange="setLeagueSetting('tradeReviewDays',this.value)">
+      </div>
+      <div class="row-between" style="padding:.4rem 0">
+        <span class="sub">Adds per week<br><span style="font-size:.62rem;color:var(--sage-dim)">0 = unlimited</span></span>
+        <input class="input" type="number" min="0" max="99" value="${Number(LSET().maxAddsPerWeek)||0}" style="width:80px;text-align:right" onchange="setLeagueSetting('maxAddsPerWeek',this.value)">
+      </div>
+      <div class="row-between" style="padding:.4rem 0">
+        <span class="sub">Adds per season<br><span style="font-size:.62rem;color:var(--sage-dim)">0 = unlimited</span></span>
+        <input class="input" type="number" min="0" max="999" value="${Number(LSET().maxAddsPerSeason)||0}" style="width:80px;text-align:right" onchange="setLeagueSetting('maxAddsPerSeason',this.value)">
       </div>
       ${LSET().useSalaryCap ? `
       <div class="row-between" style="padding:.4rem 0">
@@ -6901,13 +7039,13 @@ window.openSalaryConfig = function() {
         : `${esc(LG().leagueName || 'This league')}`}</div>
       <div class="row-between" style="font-size:.74rem"><span class="sub">Teams × roster spots</span>
         <b>${basis.teams} × ${basis.spots}</b></div>
-      <div class="row-between" style="font-size:.74rem"><span class="sub">Salary slots sampled</span>
-        <b>${basis.need}</b></div>
-      <div class="row-between" style="font-size:.74rem"><span class="sub">…priced from imported data</span>
-        <b>${basis.fromDb}</b></div>
+      <div class="row-between" style="font-size:.74rem"><span class="sub">${basis.fromRosters?'Rosters averaged':'Salary slots sampled'}</span>
+        <b>${basis.fromRosters?basis.priced:basis.need}</b></div>
+      ${basis.fromRosters?'':`<div class="row-between" style="font-size:.74rem"><span class="sub">…priced from imported data</span>
+        <b>${basis.fromDb}</b></div>`}
       <div class="row-between" style="font-size:.74rem"><span class="sub">Rest at the minimum</span>
         <b>${fmtMoney(basis.minSalary)}</b></div>
-      <div class="row-between" style="font-size:.74rem"><span class="sub">Even payroll per team</span>
+      <div class="row-between" style="font-size:.74rem"><span class="sub">${basis.fromRosters?'Average team payroll':'Even payroll per team'}</span>
         <b>${fmtMoney(basis.perTeam)}</b></div>
       <div class="row-between" style="font-size:.74rem"><span class="sub">× ${esc(forType)} multiplier</span>
         <b>×${basis.headroom}</b></div>
@@ -6915,10 +7053,11 @@ window.openSalaryConfig = function() {
         <span class="sub">Suggested cap</span><b class="amber">${fmtMoney(basis.cap)}</b></div>
     </div>
     <p class="sub" style="font-size:.66rem;margin-top:.3rem">
-      ${inMaster ? 'These rules apply to every league; the numbers above are only a worked example, since each league is priced from its own shape. ' : ''}The
-      top ${basis.need} salaries in the database are what ${inMaster?'such a league':'this league'} would actually roster
-      (${basis.teams} teams × ${basis.spots} spots), so the suggestion tracks whatever salary data is
-      loaded${basis.minDerived?' — including the minimum, read off the bottom of that data rather than a fixed number':''}.</p>
+      ${inMaster ? 'These rules apply to every league; the numbers above are only a worked example, since each league is priced from its own shape. ' : ''}${basis.fromRosters
+        ? `This league has drafted, so the multiplier is applied to the average of its ${basis.priced} real payrolls rather than to a guess about who would be rostered.`
+        : `The top ${basis.need} salaries in the database are what ${inMaster?'such a league':'this league'} would actually roster
+           (${basis.teams} teams × ${basis.spots} spots), so the suggestion tracks whatever salary data is
+           loaded${basis.minDerived?' — including the minimum, read off the bottom of that data rather than a fixed number':''}.`}</p>
 
     <div class="divlabel mt">Cap & contract rules</div>
     <div class="row-between mt" style="padding:.3rem 0">
@@ -7021,14 +7160,16 @@ window.openLeagueCap = function() {
     <div class="card card-tight mb">
       <div class="row-between" style="font-size:.76rem"><span class="sub">Teams</span><b>${b.teams}</b></div>
       <div class="row-between" style="font-size:.76rem"><span class="sub">Roster spots each</span><b>${b.spots}</b></div>
-      <div class="row-between" style="font-size:.76rem"><span class="sub">Even payroll per team</span><b>${fmtMoney(b.perTeam)}</b></div>
+      <div class="row-between" style="font-size:.76rem"><span class="sub">${b.fromRosters?'Average team payroll':'Even payroll per team'}</span><b>${fmtMoney(b.perTeam)}</b></div>
       <div class="row-between" style="font-size:.76rem"><span class="sub">${esc(LSET().leagueType||'redraft')} headroom</span><b>×${b.headroom}</b></div>
       <div class="row-between" style="font-size:.8rem;border-top:1px solid var(--line);padding-top:.35rem;margin-top:.35rem">
         <span class="sub">Suggested cap</span><b class="amber">${fmtMoney(b.cap)}</b></div>
     </div>
-    <p class="sub mb" style="font-size:.66rem">${b.usingRealSalaries
-      ? 'Based on the imported salaries of the players this league will roster.'
-      : 'No salary database imported for this sport yet, so every player is priced at the minimum. Import salaries for a sharper number.'}</p>
+    <p class="sub mb" style="font-size:.66rem">${b.fromRosters
+      ? 'Averaged across what the teams in this league actually drafted — not a guess about who would be rostered.'
+      : b.usingRealSalaries
+        ? 'Based on the imported salaries of the players this league is likely to roster. It re-derives from real payrolls once the draft is done.'
+        : 'No salary database imported for this sport yet, so every player is priced at the minimum. Import salaries for a sharper number.'}</p>
     <div class="field"><label>Cap for this league ($M)</label>
       <input class="input" id="lg-cap" type="number" step="1" min="1"
         value="${Math.round(leagueCap()/1000000)}" style="text-align:right"></div>
@@ -7131,8 +7272,11 @@ window.showArbPlayers = function() {
       <span class="sub" style="font-size:.7rem">${fmtMoney(SALCFG().arbSalary)}</span>
     </div>`;
   }).join('') : '<p class="sub">All rostered players have contract info. 🎉</p>';
-  openModal(`<div class="h2">🚩 Arb / no-contract players</div>
-    <p class="sub mb">${arb.length} rostered player${arb.length!==1?'s':''} have no imported contract. Each counts the flat arb salary (${fmtMoney(SALCFG().arbSalary)}, no escalation) and can't be signed to a term until they have a real MLB contract in your import.</p>
+  // Arbitration is a baseball rule, but "rostered with no salary on file" is a
+  // problem in any salary league — basketball just calls it something else.
+  const title = FEAT().arb ? 'Arb / no-contract players' : 'Players with no salary on file';
+  openModal(`<div class="h2">🚩 ${title}</div>
+    <p class="sub mb">${arb.length} rostered player${arb.length!==1?'s':''} have no imported salary. Each counts the flat minimum (${fmtMoney(SALCFG().arbSalary)}, no escalation)${FEAT().arb?" and can't be signed to a term until a real contract shows up in your import":' — import salary data to price them properly'}.</p>
     ${rows}
     <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Close</button>`);
 };
@@ -8202,9 +8346,11 @@ window.openPickAssets = function() {
 window.openTradeCenter = function() {
   if (!myTeamId()) { toast('Claim your team first', 'err'); return; }
   if (LG().teams.length < 2) { toast('Need at least 2 teams', 'err'); return; }
+  settleTradeReviews();
   const incoming = pendingForMe();
   const outgoing = myPendingOut();
-  const history = (LG().trades||[]).filter(t => t.status === 'accepted').slice(-8).reverse();
+  const review = tradesInReview();
+  const history = (LG().trades||[]).filter(t => t.status === 'accepted' || t.status === 'vetoed').slice(-8).reverse();
 
   const incHtml = incoming.length ? incoming.map(t => tradeCard(t, 'incoming')).join('') :
     '<p class="sub" style="font-size:.75rem">No incoming offers.</p>';
@@ -8216,7 +8362,15 @@ window.openTradeCenter = function() {
   openModal(`
     <div class="h2">Trade center</div>
     <button class="btn btn-amber btn-block mb" onclick="newTradeProposal()">+ Propose a trade</button>
-    <div class="divlabel">Incoming offers ${incoming.length?`(${incoming.length})`:''}</div>
+    <div class="row mb" style="gap:.4rem">
+      <button class="btn btn-sm btn-ghost" onclick="openTradeBlock()">⇄ Trade block</button>
+      <button class="btn btn-sm btn-ghost" onclick="openWatchList()">★ Watch list (${watchList().length})</button>
+    </div>
+    ${review.length ? `<div class="divlabel">Under league review (${review.length})</div>
+      <p class="sub" style="font-size:.66rem">Accepted trades wait ${LSET().tradeReviewDays ?? 1} day${(LSET().tradeReviewDays ?? 1)===1?'':'s'} before they process.
+        It takes ${vetoesNeeded()} objection${vetoesNeeded()===1?'':'s'} from the other ${Math.max(0,LG().teams.length-2)} teams to stop one.</p>
+      ${review.map(t => tradeCard(t, 'review')).join('')}` : ''}
+    <div class="divlabel${review.length?' mt':''}">Incoming offers ${incoming.length?`(${incoming.length})`:''}</div>
     ${incHtml}
     <div class="divlabel mt">Your pending offers</div>
     ${outHtml}
@@ -8242,8 +8396,26 @@ function tradeCard(t, mode) {
     </div>`;
   } else if (mode === 'outgoing') {
     actions = `<button class="btn btn-sm btn-ghost mt" onclick="cancelTrade('${t.id}')">Cancel offer</button>`;
+  } else if (mode === 'review') {
+    const me = myTeamId();
+    const inIt = String(t.from)===String(me) || String(t.to)===String(me);
+    const n = Object.keys(t.vetoes || {}).length;
+    const mine = !!(t.vetoes || {})[me];
+    const commish = window._masterUnlocked || commishUnlocked();
+    actions = `
+      <div class="sub" style="font-size:.66rem;margin-top:.4rem">
+        ${n}/${vetoesNeeded()} objections · processes ${new Date(reviewEndsAt(t)).toLocaleString([], {month:'short', day:'numeric', hour:'numeric', minute:'2-digit'})}
+      </div>
+      <div class="row" style="gap:.4rem;margin-top:.4rem;flex-wrap:wrap">
+        ${inIt ? '<span class="sub" style="font-size:.66rem">You are in this trade.</span>'
+               : `<button class="btn btn-sm ${mine?'btn-amber':'btn-ghost'}" onclick="vetoTrade('${t.id}')">${mine?'✓ Objected':'Object'}</button>`}
+        ${commish ? `<button class="btn btn-sm btn-ghost" onclick="forceTradeNow('${t.id}')">Approve now</button>
+                     <button class="btn btn-sm btn-ghost" onclick="killTradeNow('${t.id}')">Veto now</button>` : ''}
+      </div>`;
   }
-  const statusTag = mode==='history' ? `<span class="sub" style="font-size:.6rem">✓ completed</span>`
+  const statusTag = mode==='history'
+      ? `<span class="sub" style="font-size:.6rem">${t.status==='vetoed'?'✕ vetoed':'✓ completed'}</span>`
+    : mode==='review' ? `<span class="sub amber" style="font-size:.6rem">under review</span>`
     : t.counterOf ? `<span class="sub amber" style="font-size:.6rem">counter</span>` : '';
   return `<div class="card card-tight" style="margin-bottom:.5rem">
     <div class="row-between"><b style="font-size:.82rem">${esc(fromT.name)} ⇄ ${esc(toT.name)}</b>${statusTag}</div>
@@ -8288,6 +8460,139 @@ window.counterTrade = function(id) {
   };
   window._moneyDraft = { dir:'fromTo', years:1, split:[0] };
   renderTradeBuilder();
+};
+/* TRADE BLOCK + WATCH LIST.
+   Two small things every real platform has and we didn't. The block is how trades
+   start in a league where nobody wants to make the first phone call: mark who
+   you'd move and let people come to you. The watch list is for free agents you
+   want to keep an eye on without adding them yet.
+   Both are stored per league so they travel with the league doc, and the watch
+   list is per member because it is personal. */
+function tradeBlock() { return (LG().tradeBlock ||= {}); }
+function onBlock(teamId) { return (tradeBlock()[teamId] || []).map(String); }
+window.toggleTradeBlock = function(espnId) {
+  const tid = myTeamId();
+  if (!tid) { toast('Claim your team first', 'err'); return; }
+  const list = onBlock(tid);
+  const i = list.indexOf(String(espnId));
+  if (i >= 0) list.splice(i, 1); else list.push(String(espnId));
+  tradeBlock()[tid] = list;
+  const p = LG().playerPool.find(x => String(x.espnId)===String(espnId));
+  save();
+  toast(i >= 0 ? `${p?.name||'Player'} off the block` : `${p?.name||'Player'} on the trade block`, 'ok');
+  renderActive();
+};
+function watchList() {
+  const w = (LG().watchLists ||= {});
+  return (w[STATE.memberId || '_'] ||= []).map(String);
+}
+window.toggleWatch = function(espnId) {
+  const w = (LG().watchLists ||= {});
+  const key = STATE.memberId || '_';
+  const list = (w[key] || []).map(String);
+  const i = list.indexOf(String(espnId));
+  if (i >= 0) list.splice(i, 1); else list.push(String(espnId));
+  w[key] = list;
+  const p = LG().playerPool.find(x => String(x.espnId)===String(espnId));
+  save();
+  toast(i >= 0 ? `Stopped watching ${p?.name||'player'}` : `Watching ${p?.name||'player'}`, 'ok');
+  renderActive();
+};
+/* THE WHOLE SEASON, NOT JUST THIS WEEK.
+   You could step through matchups one week at a time, which is useless for the
+   question people actually ask: who do I still have to play, and when is my bye?
+   This lays out every week for one team at a glance. */
+window.openSeasonSchedule = function(teamId) {
+  const tid = teamId || STATE.viewingTeamId || myTeamId() || (LG().teams[0]||{}).id;
+  if (!tid) { toast('No teams yet', 'err'); return; }
+  const sched = matchupSchedule();
+  const rounds = Object.keys(sched).length;
+  if (!rounds) { toast('No schedule yet', 'err'); return; }
+  const lastWk = Math.max(rounds, (LSET().playoffStartWeek || 23) - 1);
+  const now = currentWeekNow();
+  let w = 0, l = 0, t = 0;
+  const rows = [];
+  for (let wk = 1; wk <= lastWk; wk++) {
+    const pairs = sched[((wk - 1) % rounds) + 1] || [];
+    const pair = pairs.find(([a, b]) => String(a)===String(tid) || String(b)===String(tid));
+    if (!pair) continue;
+    const oppId = String(pair[0])===String(tid) ? pair[1] : pair[0];
+    const bye = oppId === '__BYE__';
+    const played = wk < now;
+    const mine = teamWeekTotal(tid, wk), theirs = bye ? 0 : teamWeekTotal(oppId, wk);
+    let result = '';
+    if (played && !bye) {
+      if (mine > theirs) { w++; result = '<span style="color:var(--good)">W</span>'; }
+      else if (mine < theirs) { l++; result = '<span class="cell-neg">L</span>'; }
+      else { t++; result = '<span class="sub">T</span>'; }
+    }
+    rows.push(`<tr style="${wk===now?'background:var(--amber-bg)':''}">
+      <td class="r num" style="font-size:.7rem">${wk}${wk===now?' <span class="sub" style="font-size:.55rem">now</span>':''}</td>
+      <td style="font-size:.76rem">${bye ? '<span class="sub">bye week</span>' : esc(teamById(oppId).name)}</td>
+      <td class="r num" style="font-size:.72rem">${played && !bye ? `${mine.toFixed(0)}–${theirs.toFixed(0)}` : '<span class="sub">—</span>'}</td>
+      <td class="r" style="font-size:.72rem;font-weight:700">${result}</td>
+    </tr>`);
+  }
+  const playoffWk = LSET().playoffStartWeek || 23;
+  openModal(`<div class="h2">${esc(teamById(tid).name)} · full schedule</div>
+    <p class="sub mb" style="font-size:.7rem">Regular season through week ${playoffWk - 1}. Record so far: <b>${w}-${l}${t?'-'+t:''}</b>.</p>
+    <div class="card card-tight" style="max-height:55vh;overflow-y:auto">
+      <table class="tbl"><thead><tr><th class="r">Wk</th><th>Opponent</th><th class="r">Score</th><th class="r"></th></tr></thead>
+      <tbody>${rows.join('')}</tbody></table>
+    </div>
+    ${LG().teams.length > 1 ? `<div class="field mt"><label>Another team</label>
+      <select class="select" style="width:100%" onchange="openSeasonSchedule(this.value)">
+        ${LG().teams.map(x => `<option value="${x.id}" ${String(x.id)===String(tid)?'selected':''}>${esc(x.name)}</option>`).join('')}
+      </select></div>` : ''}
+    <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Close</button>`);
+};
+window.openTradeBlock = function() {
+  const mine = myTeamId();
+  const rows = LG().teams.map(t => {
+    const ids = onBlock(t.id);
+    if (!ids.length) return '';
+    const players = ids.map(id => LG().playerPool.find(p => String(p.espnId)===String(id))).filter(Boolean);
+    if (!players.length) return '';
+    return `<div class="card card-tight mb">
+      <div class="row-between"><b style="font-size:.82rem">${esc(t.name)}</b>
+        ${String(t.id)!==String(mine)?`<button class="btn btn-sm btn-ghost" onclick="closeModal();setTradePartnerAndOpen('${t.id}')">Offer</button>`:'<span class="sub" style="font-size:.62rem">you</span>'}</div>
+      ${players.map(p => `<div class="row-between" style="padding:.25rem 0;font-size:.78rem">
+        <span class="plink" onclick="showPlayer('${p.espnId}')">${esc(p.name)}
+          <span class="sub" style="font-size:.62rem">${esc((p.eligible||[]).join('/'))}</span></span>
+        ${LSET().useSalaryCap?`<span class="sub" style="font-size:.68rem">${fmtMoney(playerCapHit(p))}</span>`:''}
+      </div>`).join('')}
+    </div>`;
+  }).filter(Boolean).join('');
+  openModal(`<div class="h2">Trade block</div>
+    <p class="sub mb" style="font-size:.7rem">Players their managers have said they'd move. Add your own from your roster —
+      tap a player on My Team, then <b>Trade block</b>.</p>
+    ${rows || '<p class="sub" style="font-size:.75rem">Nobody has listed a player yet.</p>'}
+    <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Close</button>`);
+};
+window.setTradePartnerAndOpen = function(teamId) {
+  newTradeProposal();
+  window._trade.to = teamId;
+  renderTradeBuilder();
+};
+window.openWatchList = function() {
+  const ids = watchList();
+  const allRostered = new Set(LG().draft.picks.map(pk => String(pk.playerId)));
+  const rows = ids.map(id => LG().playerPool.find(p => String(p.espnId)===String(id))).filter(Boolean)
+    .map(p => {
+      const takenBy = LG().draft.picks.find(pk => String(pk.playerId)===String(p.espnId));
+      return `<div class="row-between" style="padding:.35rem 0;border-bottom:1px solid rgba(42,61,48,.4)">
+        <span class="plink" onclick="showPlayer('${p.espnId}')">${esc(p.name)}
+          <span class="sub" style="font-size:.64rem">${esc((p.eligible||[]).join('/'))} · ${takenBy?esc(teamById(takenBy.teamId).abbrev||'rostered'):'free agent'}</span></span>
+        <div class="row" style="gap:.3rem">
+          ${!takenBy?`<button class="btn btn-sm" onclick="addPlayerFromPool('${p.espnId}')">Add</button>`:''}
+          <button class="btn btn-sm btn-ghost" onclick="toggleWatch('${p.espnId}');openWatchList()">★</button>
+        </div>
+      </div>`;
+    }).join('');
+  openModal(`<div class="h2">Watch list</div>
+    <p class="sub mb" style="font-size:.7rem">Yours alone — nobody else sees it. Star a player from their card to add them.</p>
+    ${rows || '<p class="sub" style="font-size:.75rem">Nothing on your watch list yet.</p>'}
+    <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Close</button>`);
 };
 /* ---- build a new proposal ---- */
 window.newTradeProposal = function() {
@@ -8486,11 +8791,97 @@ window.sendTradeProposal = function() {
 };
 
 /* ---- respond to a trade ---- */
+/* TRADE REVIEW.
+   We used to move the players the instant the other manager tapped Accept, which
+   is how you end up with a lopsided deal that the league only finds out about
+   after it's done. ESPN holds an accepted trade for a review window first: anyone
+   can object, and enough objections kill it. Set the window to 0 days for a league
+   that trusts each other and behaviour goes back to instant.
+   Vetoes are counted, never guessed at — a trade needs a real majority of the
+   OTHER teams to object, so two annoyed rivals can't undo a fair deal. */
+function tradeReviewHours() {
+  // Default OFF. ESPN ships a review period on, but turning it on by default here
+  // would mean a league already mid-season suddenly finds its trades sitting for a
+  // day with no warning. Commissioners switch it on deliberately, and the rulebook
+  // states whichever way it is set.
+  const d = LSET().tradeReviewDays;
+  return Math.max(0, Number(d) || 0) * 24;
+}
+function vetoesNeeded() {
+  const others = Math.max(0, (LG().teams || []).length - 2);   // both traders excluded
+  return others > 0 ? Math.floor(others / 2) + 1 : 0;
+}
+function reviewEndsAt(t) { return (t.acceptedAt || 0) + tradeReviewHours() * 3600 * 1000; }
+function reviewOver(t) { return Date.now() >= reviewEndsAt(t); }
+function tradesInReview() { return (LG().trades || []).filter(t => t.status === 'review'); }
+/* Run any review that has timed out. Called on render, so the queue drains itself
+   without anyone having to press a button. */
+function settleTradeReviews() {
+  let changed = false;
+  tradesInReview().forEach(t => {
+    if (!reviewOver(t)) return;
+    const vetoes = Object.keys(t.vetoes || {}).length;
+    if (vetoes >= vetoesNeeded() && vetoesNeeded() > 0) {
+      t.status = 'vetoed'; t.resolved = Date.now();
+      logTxn('trade', `Trade vetoed by the league: ${teamName(t.from)} ⇄ ${teamName(t.to)} (${vetoes} objections)`);
+    } else if (executeTrade(t)) {
+      t.status = 'accepted'; t.resolved = Date.now();
+      logTxn('trade', `Trade: ${teamName(t.from)} ⇄ ${teamName(t.to)}`);
+    } else {
+      t.status = 'failed'; t.resolved = Date.now();
+      logTxn('trade', `Trade could not be applied: ${teamName(t.from)} ⇄ ${teamName(t.to)}`);
+    }
+    changed = true;
+  });
+  if (changed) save();
+  return changed;
+}
+window.vetoTrade = function(id) {
+  const t = (LG().trades||[]).find(x => x.id===id);
+  const me = myTeamId();
+  if (!t || t.status !== 'review') { toast('Not under review', 'err'); return; }
+  if (String(t.from)===String(me) || String(t.to)===String(me)) {
+    toast('You are in this trade — you cannot object to it', 'err'); return;
+  }
+  t.vetoes = t.vetoes || {};
+  if (t.vetoes[me]) delete t.vetoes[me]; else t.vetoes[me] = Date.now();
+  save();
+  toast(t.vetoes[me] ? `Objection recorded (${Object.keys(t.vetoes).length}/${vetoesNeeded()})` : 'Objection withdrawn', 'ok');
+  openTradeCenter();
+};
+/* commissioner overrides: push it through now, or kill it now */
+window.forceTradeNow = function(id) {
+  if (!(window._masterUnlocked || commishUnlocked())) { toast('Commissioner only', 'err'); return; }
+  const t = (LG().trades||[]).find(x => x.id===id);
+  if (!t || t.status !== 'review') return;
+  if (!executeTrade(t)) { toast('Trade could not be applied — nothing changed', 'err'); return; }
+  t.status = 'accepted'; t.resolved = Date.now(); t.forced = true;
+  logTxn('trade', `Commissioner approved early: ${teamName(t.from)} ⇄ ${teamName(t.to)}`);
+  save(); toast('Trade processed', 'ok'); openTradeCenter(); renderActive();
+};
+window.killTradeNow = function(id) {
+  if (!(window._masterUnlocked || commishUnlocked())) { toast('Commissioner only', 'err'); return; }
+  const t = (LG().trades||[]).find(x => x.id===id);
+  if (!t || t.status !== 'review') return;
+  t.status = 'vetoed'; t.resolved = Date.now(); t.forced = true;
+  logTxn('trade', `Commissioner vetoed: ${teamName(t.from)} ⇄ ${teamName(t.to)}`);
+  save(); toast('Trade vetoed', 'ok'); openTradeCenter(); renderActive();
+};
 window.acceptTrade = function(id) {
   const t = (LG().trades||[]).find(x => x.id===id);
   if (!t || t.status!=='pending') { toast('Trade no longer available', 'err'); return; }
   if (!tradesOpen()) { toast(`Trades are closed (deadline was week ${LSET().tradeDeadlineWeek||20})`, 'err'); return; }
   if (String(t.to)!==String(myTeamId())) { toast('Only the receiving team can accept', 'err'); return; }
+  t.acceptedAt = Date.now();
+  t.vetoes = {};
+  if (tradeReviewHours() > 0 && vetoesNeeded() > 0) {
+    t.status = 'review';
+    logTxn('trade', `Trade accepted, under league review: ${teamName(t.from)} ⇄ ${teamName(t.to)}`);
+    save();
+    toast(`Accepted — under review until ${new Date(reviewEndsAt(t)).toLocaleString([], {month:'short', day:'numeric', hour:'numeric', minute:'2-digit'})}`, 'ok');
+    openTradeCenter(); renderActive();
+    return;
+  }
   const ok = executeTrade(t);
   if (!ok) { toast('Trade could not be applied — nothing changed', 'err'); return; }
   t.status = 'accepted'; t.resolved = Date.now();
@@ -8630,6 +9021,9 @@ window.switchSport = function(key) {
     };
   }
   STATE.sport = key;
+  // each sport has its own idea of the default stat to show — FP/G in basketball,
+  // season points in baseball — so don't carry the last sport's choice across
+  playerView.ptsWindow = statWindowOptions()[0][0];
   // restore the new sport's league binding (separate league/ID per sport)
   const entry = STATE.leaguesBySport[key];
   if (entry) {

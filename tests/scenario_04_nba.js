@@ -5,7 +5,17 @@
     settings: { leagueType: 'redraft', snake: true, scoringFormat: 'regular',
                 waiverMode: 'priority', playoffStartWeek: 20, playoffTeams: 4, tradeDeadlineWeek: 26 } });
 
-  C(T + 'NBA feature flags applied', !FEAT().pitchers && !FEAT().ir && FEAT().perGameScoring);
+  // basketball skips baseball's pitcher/arbitration concepts but gets everything
+  // else — an IL with the same cap relief, and recent-form stat windows
+  C(T + 'NBA skips the baseball-only concepts', !FEAT().pitchers && !FEAT().arb
+    && !FEAT().probableStarters && FEAT().perGameScoring);
+  C(T + 'NBA has an IL like ESPN basketball leagues do', FEAT().ir && SP().irCount > 0,
+    SP().irCount);
+  C(T + 'NBA gets recent-form stat windows too', FEAT().statWindows);
+  C(T + 'and FP/G is its default, not season totals', statWindowOptions()[0][0] === 'fpg',
+    JSON.stringify(statWindowOptions()[0]));
+  C(T + 'every offered window maps to a real field',
+    statWindowOptions().every(([w]) => !!PTS_FIELDS[w]));
   const rounds = draftRounds();
   C(T + 'roster = 6 starters + 10 bench', rounds === 16, rounds);
   const d = S.runDraft();
