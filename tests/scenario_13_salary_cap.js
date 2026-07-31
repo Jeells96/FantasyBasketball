@@ -29,15 +29,12 @@
     SALCFG('fba').headroom.dynasty === 1.4 && SALCFG('flb').headroom.dynasty === mlb.headroom.dynasty,
     `nba ${SALCFG('fba').headroom.dynasty} / mlb ${SALCFG('flb').headroom.dynasty}`);
 
-  // The multiplier has to be tight enough that a careless drafter can actually bust
-  // it. At 1.25 a snake draft's natural spread kept everyone under and the cap was
-  // decorative; mock drafts put the break-even around 1.10.
-  C(T + 'default multiplier is tight enough for the cap to bind',
-    ['dynasty','keeper','redraft'].every(t => mlb.headroom[t] <= 1.10 && mlb.headroom[t] >= 1.0)
-    && ['dynasty','keeper','redraft'].every(t => nba.headroom[t] <= 1.10 && nba.headroom[t] >= 1.0),
+  // The multiplier defaults to 1: the cap IS the average team payroll, so about half
+  // the league starts over it. Anything higher and a snake draft's natural spread
+  // keeps everyone under, which makes the cap decorative.
+  C(T + 'the multiplier defaults to 1 for every league type',
+    ['dynasty','keeper','redraft'].every(t => mlb.headroom[t] === 1 && nba.headroom[t] === 1),
     JSON.stringify(mlb.headroom));
-  C(T + 'dynasty still gets the most slack of the three',
-    mlb.headroom.dynasty > mlb.headroom.keeper && mlb.headroom.keeper > mlb.headroom.redraft);
 
   // ---- legacy migration: one flat config becomes the baseball config ----
   STATE.salaryConfig = { defaultCap: 300000000, arbSalary: 7000000, maxTerm: 12 };
@@ -74,12 +71,15 @@
     `${baseSpots} spots => ${baseCap}, ${rosterCap()} spots => ${bigRosterCap}`);
   LG().rosterOverride = null;
 
-  // league type changes the headroom
+  // the multiplier is still PER league type, so a commissioner can differentiate
+  STATE.sport = 'flb';
+  setCapHeadroom('dynasty', 1.2);
   const dyn = capFor('flb', 10, 'dynasty');
   const red = capFor('flb', 10, 'redraft');
-  C(T + 'dynasty gets more headroom than redraft', dyn.headroom > red.headroom,
+  C(T + 'raising one type raises only that type', dyn.headroom === 1.2 && red.headroom === 1,
     `${dyn.headroom} vs ${red.headroom}`);
-  C(T + 'and therefore a higher suggested cap', dyn.cap > red.cap, `${dyn.cap} vs ${red.cap}`);
+  C(T + 'and it moves that type\'s cap', dyn.cap > red.cap, `${dyn.cap} vs ${red.cap}`);
+  STATE.salaryConfig = {};
 
   // ---- suggestion uses real salaries when a database exists ----
   const lg2 = S.setupLeague('flb', { teams: 10, week: 2, name: 'WithSalaries', settings: { leagueType: 'dynasty' } });

@@ -22,18 +22,85 @@
     `${beforeDraft.need} vs ${beforeDraft.teams}×${beforeDraft.spots}`);
   S.runDraft();
   const afterDraft = capBasis();
-  C(K + 'after the draft it uses the real rosters', afterDraft.fromRosters === true);
-  const payrolls = LG().teams.map(t => teamSalaryTotal(t.id));
-  const avg = payrolls.reduce((a, b) => a + b, 0) / payrolls.length;
-  C(K + 'the basis IS the average team payroll',
-    Math.abs(afterDraft.perTeam - avg) < 2, `${afterDraft.perTeam} vs ${avg}`);
-  C(K + 'and the cap is that average times the multiplier',
-    afterDraft.cap === Math.round(avg * afterDraft.headroom / 5000000) * 5000000,
+  C(K + 'after the draft it uses the real draft', afterDraft.fromRosters === true);
+  // the formula, stated plainly: every drafted salary added up, over the team count
+  const total = draftedSalaryTotal();
+  C(K + 'the total is every drafted player, counted once',
+    total > 0 && afterDraft.draftedTotal === total, total);
+  C(K + 'divided by the number of teams',
+    afterDraft.perTeam === Math.round(total / LG().teams.length),
+    `${afterDraft.perTeam} vs ${total / LG().teams.length}`);
+  C(K + 'times the multiplier is the cap',
+    afterDraft.cap === Math.round((total / LG().teams.length) * afterDraft.headroom),
     `${afterDraft.cap}`);
+  C(K + 'and the multiplier is 1, so the cap is the average payroll',
+    afterDraft.headroom === 1 && afterDraft.cap === afterDraft.perTeam,
+    `${afterDraft.cap} vs ${afterDraft.perTeam}`);
   C(K + 'real rosters cost less than the theoretical top N, so the cap drops',
     afterDraft.cap < beforeDraft.cap, `${beforeDraft.cap} -> ${afterDraft.cap}`);
-  C(K + 'a hypothetical shape still projects, never using this league\'s rosters',
+  C(K + 'a hypothetical shape still projects, never using this league\'s draft',
     capBasis({ teams: 12, spots: 20 }).fromRosters === false);
+  // AT x1 THE CAP MUST ACTUALLY BIND — that is the whole reason for the number
+  const over = LG().teams.filter(t => teamSalaryTotal(t.id) > afterDraft.cap).length;
+  C(K + 'about half the league lands over a cap set at the average',
+    over >= 1 && over < LG().teams.length, `${over}/${LG().teams.length} over`);
+
+  // ============================================================
+  // THE CAP IS FIXED AT THE DRAFT, not a live figure
+  // ============================================================
+  const X = 'CapFixed: ';
+  STATE.salaryDB = { flb: {} };
+  lg = S.setupLeague('flb', { teams: 8, week: 2, name: 'FixedCap',
+    settings: { leagueType: 'dynasty', useSalaryCap: true } });
+  LG().playerPool.forEach((p, i) => {
+    STATE.salaryDB.flb[normName(p.name)] = { aav: Math.max(1000000, 30000000 - i * 120000) };
+  });
+  C(X + 'no cap is fixed before the draft', !LSET().capSetFrom);
+  S.runDraft();
+  C(X + 'finishing the draft fixes a cap', !!LSET().capSetFrom);
+  const fixed = leagueCap();
+  C(X + 'and it equals the formula',
+    fixed === Math.round(draftedSalaryTotal() / LG().teams.length * capHeadroom()), fixed);
+  C(X + 'the league records how it got there',
+    LSET().capSetFrom.teams === 8 && LSET().capSetFrom.total === draftedSalaryTotal());
+
+  // now move the rosters around and prove the cap does NOT follow
+  const t1 = LG().teams[0].id, t2 = LG().teams[1].id;
+  const moved = teamRoster(t1).slice(0, 5);
+  moved.forEach(p => {
+    const pk = LG().draft.picks.find(x => String(x.playerId) === String(p.espnId));
+    if (pk) pk.teamId = t2;
+  });
+  C(X + 'a lopsided trade does not move the cap', leagueCap() === fixed, leagueCap());
+  // drop players outright — the pool of drafted salary shrinks
+  LG().draft.picks = LG().draft.picks.slice(0, Math.floor(LG().draft.picks.length / 2));
+  C(X + 'dropping half the league does not move the cap', leagueCap() === fixed, leagueCap());
+  C(X + 'even though the formula would now say something else',
+    capFromDraft().cap !== fixed, `${capFromDraft().cap} vs ${fixed}`);
+  C(X + 'and a second draft completion will not silently re-fix it',
+    (setCapFromDraft(), leagueCap() === fixed), leagueCap());
+
+  // only a commissioner moves it
+  window._masterUnlocked = false; window._commishUnlocked = null;
+  recomputeCapFromDraft();
+  C(X + 'a manager cannot re-set the cap', leagueCap() === fixed);
+  window._masterUnlocked = true;
+  recomputeCapFromDraft();
+  C(X + 'the commissioner can, deliberately', leagueCap() === capFromDraft().cap,
+    `${leagueCap()} vs ${capFromDraft().cap}`);
+  C(X + 'and that is written down', /Salary cap set to/.test(
+    (LG().transactions || []).map(t => t.text).join(' ')));
+  LG().settings.salaryCapDollars = 999000000;
+  C(X + 'a hand-set cap is simply the cap', leagueCap() === 999000000);
+  C(X + 'and nothing recomputes it behind your back',
+    (setCapFromDraft(), leagueCap() === 999000000));
+  window._masterUnlocked = false;
+
+  // a league without salaries never gets a cap fixed
+  lg = S.setupLeague('flb', { teams: 6, week: 2, name: 'NoSalaries', settings: { useSalaryCap: false } });
+  S.runDraft();
+  C(X + 'a league with salaries off is left alone', !LSET().capSetFrom);
+  STATE.salaryDB = {};
 
   // ============================================================
   // trade review + vetoes
@@ -228,8 +295,7 @@
   C(F + 'nothing has changed until it is confirmed', LSET().leagueType === 'dynasty');
   const warn = document.getElementById('modal-body')?.innerHTML || '';
   C(F + 'it warns about traded picks going quiet', /Traded draft picks/.test(warn));
-  C(F + 'and about the multiplier moving', /multiplier changes/.test(warn));
-  C(F + 'while saying the league cap itself is untouched', /is not touched/.test(warn));
+  C(F + 'and says salaries carry over untouched', /stay on and unchanged/.test(warn));
   confirmLeagueType('redraft');
   C(F + 'confirming switches the format', LSET().leagueType === 'redraft');
 

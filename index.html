@@ -1429,8 +1429,9 @@ const SALARY_DEFAULTS = {
     penaltyTiers: PENALTY_TIERS_DEFAULT,
     dropPenalty: 2,               // dropping a signed player costs this x his current salary
     irDiscount: 0.5,              // a player parked on the IL counts this share of his salary
-    // cap headroom by league type — how much slack over an evenly-split payroll
-    headroom: { dynasty: 1.08, keeper: 1.05, redraft: 1.03 },
+    // the multiplier in the cap formula, by league type. 1 = the cap IS the average
+    // team payroll, so about half the league starts over it.
+    headroom: { dynasty: 1, keeper: 1, redraft: 1 },
   },
   fba: {                          // NBA: hard-ish cap, shorter deals, lower minimums
     // Anchored to the real NBA cap, but note a FANTASY team is not a real team: a
@@ -1445,7 +1446,7 @@ const SALARY_DEFAULTS = {
     penaltyTiers: PENALTY_TIERS_DEFAULT,
     dropPenalty: 2,
     irDiscount: 0.5,
-    headroom: { dynasty: 1.08, keeper: 1.05, redraft: 1.03 },
+    headroom: { dynasty: 1, keeper: 1, redraft: 1 },
   },
 };
 /* Older saves stored ONE flat salaryConfig shared by both sports (baseball was the
@@ -1528,7 +1529,7 @@ function SALCFG(sportKey) {
 function capHeadroom(leagueType) {
   const h = SALCFG().headroom || {};
   const t = leagueType || LSET().leagueType || 'redraft';
-  return Number(h[t]) > 0 ? Number(h[t]) : 1.10;
+  return Number(h[t]) > 0 ? Number(h[t]) : 1;
 }
 /* A neutral league to quote site-wide numbers against. Master settings configures
    every league, so it must not describe whichever one this device happens to be
@@ -1542,6 +1543,57 @@ function referenceShape() {
 /* the pieces behind the suggestion, so the UI can show its work.
    Pass a shape ({teams, spots, leagueType}) to price a hypothetical league instead
    of the active one. */
+/* THE DEFAULT CAP FORMULA.
+
+     cap = (sum of every drafted player's salary) / (number of teams) x multiplier
+
+   Sum over the WHOLE draft, divided by the team count — so the cap starts at what
+   an average team spent. With the multiplier at 1 that means roughly half the
+   league is over the moment the draft ends, which is the point: the cap has to be
+   somewhere you can fall the wrong side of.
+
+   The multiplier is the only tunable, and it lives in master settings per league
+   type. Anything else here is a floor for safety, not part of the formula. */
+function draftedSalaryTotal() {
+  const seen = new Set();
+  let total = 0;
+  (LG().draft?.picks || []).forEach(pk => {
+    const id = String(pk.playerId);
+    if (seen.has(id)) return;                     // a player counts once
+    seen.add(id);
+    const p = (LG().playerPool || []).find(x => String(x.espnId) === id);
+    if (p) total += playerCapHit(p) || 0;
+  });
+  return total;
+}
+function capFromDraft(leagueType) {
+  const teams = Math.max(1, (LG().teams || []).length);
+  const mult = capHeadroom(leagueType);
+  const perTeam = draftedSalaryTotal() / teams;
+  return { perTeam: Math.round(perTeam), teams, mult,
+           cap: Math.max(SALCFG().arbSalary * Math.max(1, rosterCap()), Math.round(perTeam * mult)) };
+}
+/* Set the league's cap once, when the draft finishes. After this it is a stored
+   number that only a commissioner changes — it does NOT drift as rosters move. */
+function setCapFromDraft(opts = {}) {
+  if (!LSET().useSalaryCap) return null;
+  ensureSettings();
+  if (LG().settings.capSetFrom && !opts.force) return null;   // already fixed
+  const r = capFromDraft();
+  LG().settings.salaryCapDollars = r.cap;
+  LG().settings.capSetFrom = { at: Date.now(), perTeam: r.perTeam, mult: r.mult,
+                               total: draftedSalaryTotal(), teams: r.teams };
+  logTxn('season', `Salary cap set to ${fmtMoney(r.cap)} from the draft (${fmtMoney(r.perTeam)} average payroll × ${r.mult})`);
+  return r.cap;
+}
+window.recomputeCapFromDraft = function() {
+  if (!(window._masterUnlocked || commishUnlocked())) { toast('Commissioner only', 'err'); return; }
+  if (!LG().draft?.complete) { toast('The draft has to finish first', 'err'); return; }
+  const cap = setCapFromDraft({ force: true });
+  save();
+  toast(cap ? `Cap re-set to ${fmtMoney(cap)}` : 'Salaries are off for this league', cap ? 'ok' : 'err');
+  closeModal(); renderActive();
+};
 function capBasis(shape) {
   const sh = shape || {};
   const teams = Math.max(2, sh.teams || (LG().teams || []).length || 10);
@@ -1555,21 +1607,16 @@ function capBasis(shape) {
   // rosters exist. Real rosters are cheaper than the theoretical top N (drafters
   // take needs and sleepers, not a pure salary list), so this also stops the cap
   // being set off a roster nobody actually built.
-  const drafted = !shape && LG().draft?.complete && (LG().teams || []).length >= 2;
+  const drafted = !shape && LG().draft?.complete && (LG().teams || []).length >= 1;
   let priced, fromRosters = false;
-  if (drafted) {
-    const payrolls = LG().teams.map(t =>
-      teamRoster(t.id).reduce((sum, p) => sum + (playerCapHit(p) || 0), 0));
-    const live = payrolls.filter(v => v > 0);
-    if (live.length >= 2) {
-      const perTeamActual = live.reduce((a, b) => a + b, 0) / live.length;
-      const headroomA = capHeadroom(sh.leagueType);
-      const capA = Math.max(arb * spots, Math.round((perTeamActual * headroomA) / 5000000) * 5000000);
-      return { teams, spots, need, perTeam: Math.round(perTeamActual), headroom: headroomA, cap: capA,
-               minSalary: arb, minDerived: !!SALCFG().arbSalaryDerived,
-               fromRosters: true, priced: live.length, fromDb: live.length,
-               usingRealSalaries: Object.keys(salaryDB()).length > 0 };
-    }
+  if (drafted && draftedSalaryTotal() > 0) {
+    const r = capFromDraft(sh.leagueType);
+    return { teams, spots, need, perTeam: r.perTeam, headroom: r.mult, cap: r.cap,
+             minSalary: arb, minDerived: !!SALCFG().arbSalaryDerived,
+             fromRosters: true, drafted: (LG().draft.picks || []).length,
+             draftedTotal: draftedSalaryTotal(),
+             priced: (LG().draft.picks || []).length, fromDb: (LG().draft.picks || []).length,
+             usingRealSalaries: Object.keys(salaryDB()).length > 0 };
   }
   priced = (LG().playerPool || [])
     .map(p => { const a = importedAAV(p); return a == null ? arb : a; })
@@ -2341,7 +2388,7 @@ function houseRules() {
     ['Playoffs', `${ls.playoffTeams || 4} teams, starting week ${ls.playoffStartWeek || 21}`],
   ];
   if (ls.useSalaryCap) {
-    rows.push(['Salary cap', `${fmtMoney(leagueCap())} this season, ${c.capGrowthPct}%/yr after`]);
+    rows.push(['Salary cap', `${fmtMoney(leagueCap())} this season, ${c.capGrowthPct}%/yr after${ls.capSetFrom?' — fixed at the draft, changed only by the commissioner':''}`]);
     rows.push(['Contracts', `up to ${c.maxTerm} years · year 1 costs ${c.signingDiscount}× AAV, then +${Math.round(c.escalatorGrowth*100)}%/yr`]);
     rows.push(['Minimum salary', `${fmtMoney(c.arbSalary)}${c.arbSalaryDerived ? ' (tracks the imported salary data)' : ''}`]);
     const dp = (c.dropPenalty == null || isNaN(c.dropPenalty)) ? 2 : Number(c.dropPenalty);
@@ -7024,10 +7071,12 @@ window.openSalaryConfig = function() {
     <p class="sub mb" style="font-size:.72rem">${SP().icon} These rules apply to <b>${esc(SP().label)}</b> only —
       each sport keeps its own cap, minimum salary and contract limits.</p>
 
-    <div class="divlabel">Suggested cap multiplier</div>
-    <p class="sub" style="font-size:.68rem">A league's suggested cap = an evenly-split payroll × this
-      multiplier. Higher means more room to build an unbalanced roster. Long-term commitments need more
-      slack, so dynasty defaults highest.</p>
+    <div class="divlabel">Cap formula multiplier</div>
+    <p class="sub" style="font-size:.68rem">When a draft finishes, a league's cap is set once to
+      <b>(every drafted player's salary added up) ÷ (number of teams) × this multiplier</b>, and then left
+      alone until a commissioner changes it.<br>
+      At <b>1</b> the cap is exactly what an average team spent, so about half the league starts over it.
+      Raise it to give everyone room; lower it to make the draft hurt.</p>
     ${['dynasty','keeper','redraft'].map(t => `
       <div class="row-between" style="padding:.3rem 0">
         <span class="sub" style="text-transform:capitalize">${t}${forType===t?` <span class="amber">· ${inMaster?'shown below':'this league'}</span>`:''}</span>
@@ -7040,13 +7089,15 @@ window.openSalaryConfig = function() {
         : `${esc(LG().leagueName || 'This league')}`}</div>
       <div class="row-between" style="font-size:.74rem"><span class="sub">Teams × roster spots</span>
         <b>${basis.teams} × ${basis.spots}</b></div>
-      <div class="row-between" style="font-size:.74rem"><span class="sub">${basis.fromRosters?'Rosters averaged':'Salary slots sampled'}</span>
-        <b>${basis.fromRosters?basis.priced:basis.need}</b></div>
+      <div class="row-between" style="font-size:.74rem"><span class="sub">${basis.fromRosters?'Players drafted':'Salary slots sampled'}</span>
+        <b>${basis.fromRosters?basis.drafted:basis.need}</b></div>
+      ${basis.fromRosters?`<div class="row-between" style="font-size:.74rem"><span class="sub">Their salaries added up</span>
+        <b>${fmtMoney(basis.draftedTotal||0)}</b></div>`:''}
       ${basis.fromRosters?'':`<div class="row-between" style="font-size:.74rem"><span class="sub">…priced from imported data</span>
         <b>${basis.fromDb}</b></div>`}
       <div class="row-between" style="font-size:.74rem"><span class="sub">Rest at the minimum</span>
         <b>${fmtMoney(basis.minSalary)}</b></div>
-      <div class="row-between" style="font-size:.74rem"><span class="sub">${basis.fromRosters?'Average team payroll':'Even payroll per team'}</span>
+      <div class="row-between" style="font-size:.74rem"><span class="sub">${basis.fromRosters?'÷ teams = average payroll':'Even payroll per team'}</span>
         <b>${fmtMoney(basis.perTeam)}</b></div>
       <div class="row-between" style="font-size:.74rem"><span class="sub">× ${esc(forType)} multiplier</span>
         <b>×${basis.headroom}</b></div>
@@ -7055,7 +7106,7 @@ window.openSalaryConfig = function() {
     </div>
     <p class="sub" style="font-size:.66rem;margin-top:.3rem">
       ${inMaster ? 'These rules apply to every league; the numbers above are only a worked example, since each league is priced from its own shape. ' : ''}${basis.fromRosters
-        ? `This league has drafted, so the multiplier is applied to the average of its ${basis.priced} real payrolls rather than to a guess about who would be rostered.`
+        ? `This league has drafted: ${basis.drafted} players costing ${fmtMoney(basis.draftedTotal||0)}, ÷ ${basis.teams} teams × ${basis.headroom}. Its cap is already fixed at that number and will not move on its own.`
         : `The top ${basis.need} salaries in the database are what ${inMaster?'such a league':'this league'} would actually roster
            (${basis.teams} teams × ${basis.spots} spots), so the suggestion tracks whatever salary data is
            loaded${basis.minDerived?' — including the minimum, read off the bottom of that data rather than a fixed number':''}.`}</p>
@@ -7161,15 +7212,21 @@ window.openLeagueCap = function() {
     <div class="card card-tight mb">
       <div class="row-between" style="font-size:.76rem"><span class="sub">Teams</span><b>${b.teams}</b></div>
       <div class="row-between" style="font-size:.76rem"><span class="sub">Roster spots each</span><b>${b.spots}</b></div>
-      <div class="row-between" style="font-size:.76rem"><span class="sub">${b.fromRosters?'Average team payroll':'Even payroll per team'}</span><b>${fmtMoney(b.perTeam)}</b></div>
-      <div class="row-between" style="font-size:.76rem"><span class="sub">${esc(LSET().leagueType||'redraft')} headroom</span><b>×${b.headroom}</b></div>
+      ${b.fromRosters?`<div class="row-between" style="font-size:.76rem"><span class="sub">Total drafted salary</span><b>${fmtMoney(b.draftedTotal||0)}</b></div>`:''}
+      <div class="row-between" style="font-size:.76rem"><span class="sub">${b.fromRosters?'÷ teams = average payroll':'Even payroll per team'}</span><b>${fmtMoney(b.perTeam)}</b></div>
+      <div class="row-between" style="font-size:.76rem"><span class="sub">× ${esc(LSET().leagueType||'redraft')} multiplier</span><b>×${b.headroom}</b></div>
       <div class="row-between" style="font-size:.8rem;border-top:1px solid var(--line);padding-top:.35rem;margin-top:.35rem">
         <span class="sub">Suggested cap</span><b class="amber">${fmtMoney(b.cap)}</b></div>
     </div>
+    ${LSET().capSetFrom ? `<div class="card card-tight mb" style="border-color:var(--good)">
+      <p class="sub" style="font-size:.7rem">🔒 This league's cap was fixed at <b class="amber">${fmtMoney(leagueCap())}</b> when the
+        draft finished, from ${fmtMoney(LSET().capSetFrom.total)} of drafted salary ÷ ${LSET().capSetFrom.teams} teams
+        × ${LSET().capSetFrom.mult}. It does not move on its own — only you change it.</p>
+    </div>` : ''}
     <p class="sub mb" style="font-size:.66rem">${b.fromRosters
-      ? 'Averaged across what the teams in this league actually drafted — not a guess about who would be rostered.'
+      ? `Formula: every drafted player's salary added up (${fmtMoney(b.draftedTotal||0)}) ÷ ${b.teams} teams × ${b.headroom}.`
       : b.usingRealSalaries
-        ? 'Based on the imported salaries of the players this league is likely to roster. It re-derives from real payrolls once the draft is done.'
+        ? 'The draft has not finished, so this prices the players this league is likely to roster. The real cap is set from the actual draft.'
         : 'No salary database imported for this sport yet, so every player is priced at the minimum. Import salaries for a sharper number.'}</p>
     <div class="field"><label>Cap for this league ($M)</label>
       <input class="input" id="lg-cap" type="number" step="1" min="1"
@@ -7192,7 +7249,9 @@ window.openLeagueCap = function() {
         </div>`;
       }).join('');
     })()}
-    <button class="btn btn-ghost btn-block mt" onclick="applySuggestedCap();closeModal()">Use suggested ${fmtMoney(b.cap)}</button>
+    ${LG().draft?.complete
+      ? `<button class="btn btn-ghost btn-block mt" onclick="recomputeCapFromDraft()">↻ Re-set from the draft (${fmtMoney(b.cap)})</button>`
+      : `<button class="btn btn-ghost btn-block mt" onclick="applySuggestedCap();closeModal()">Use suggested ${fmtMoney(b.cap)}</button>`}
     <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Cancel</button>`);
 };
 window.saveLeagueCap = function() {
@@ -8329,8 +8388,12 @@ function finishDraft() {
   LG().draft.live = false;
   LG().draft.complete = true;
   LG().draft.currentPick = LG().draft.picks.length;
+  // THE CAP IS FIXED HERE, once, and then left alone. It is not a live figure that
+  // follows rosters around — a cap that moves when you sign someone isn't a cap.
+  const setCap = setCapFromDraft();
   save();
   toast('Draft complete!', 'ok');
+  if (setCap) toast(`Salary cap set to ${fmtMoney(setCap)}`, 'ok');
   go('teams');
 }
 window.pauseDraft = function() {
