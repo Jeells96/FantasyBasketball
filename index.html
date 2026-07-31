@@ -701,6 +701,7 @@ const STATE = {
   activeLeagueDoc: null,        // which league doc this device synced to
   memberId: null,               // this device's locked identity (key into members)
   leaguesBySport: {},           // {sport: {activeLeagueDoc, memberId, leagueName}} per-sport leagues
+  sportByDoc: {},               // {leagueDocId: sport} learned, so untagged approvals resolve once
   seasonOverride: {},           // {sport: {season, statSeason}} year picked for ADP/points
   approvals: {},                // commissioner approval list (from master)
   _loaded: false,
@@ -818,8 +819,8 @@ function applyMaster(master) {
   if (STATE.activeLeagueDoc && STATE.approvals) {
     const ap = Object.entries(STATE.approvals).find(([k,a]) => (a.leagueDocId||('league_'+k))===STATE.activeLeagueDoc);
     if (ap) {
-      // approvals created before sport-tagging have no sport → they're MLB (flb).
-      const apSport = ap[1].sport || 'flb';
+      // one resolver for both routes — see sportForApproval()
+      const apSport = sportForApproval(ap[0]);
       if (SPORTS[apSport] && STATE.sport !== apSport) {
         STATE.sport = apSport;
         saveLocal();
@@ -919,6 +920,7 @@ function saveLocal() {
     memberId: STATE.memberId || null,
     leaguesBySport: STATE.leaguesBySport,
     memberByLeague: STATE.memberByLeague,
+    sportByDoc: STATE.sportByDoc || {},
     seasonOverride: STATE.seasonOverride || {},
     // cached league directory: lets a name-based #slug resolve on boot (and offline)
     // before the master doc arrives. Firebase overwrites this whenever it syncs.
@@ -952,6 +954,7 @@ function loadLocal() {
   if (!id) return;
   STATE.leaguesBySport = id.leaguesBySport || {};
   STATE.memberByLeague = id.memberByLeague || {};
+  STATE.sportByDoc = id.sportByDoc || {};
   STATE.seasonOverride = id.seasonOverride || {};
   // restore the cached league directory (master overwrites it on sync)
   if (id.approvals && !Object.keys(STATE.approvals || {}).length) STATE.approvals = id.approvals;
@@ -6494,8 +6497,10 @@ function joinedLeaguesList() {
     if (!mbl[docId]) return;                          // only leagues we've actually joined
     const cur = byDoc[docId];
     if (!cur || (!/^\d{5}$/.test(cur.id) && /^\d{5}$/.test(id))) {
+      // resolve through the same path Enter uses, so the label on the row can never
+      // disagree with the league you actually land in
       byDoc[docId] = { id, leagueDocId: docId, leagueName: a.leagueName || ('League ' + id),
-        sport: (a.sport && SPORTS[a.sport]) ? a.sport : 'flb', approved: a.approved !== false };
+        sport: sportForApproval(id), approved: a.approved !== false };
     }
   });
   return Object.values(byDoc).sort((a,b) => (a.leagueName||'').localeCompare(b.leagueName||''));
@@ -6567,6 +6572,37 @@ window.gateJoinLeague = function() {
 
 /* Core join logic, shared by the manual gate, the URL deep-link, and the switcher.
    Returns true if joined, false if not (with a toast/UI explaining why). */
+/* WHICH SPORT DOES THIS LEAGUE BELONG TO?
+   The Enter button used to read appr.sport and, if that field was missing, simply
+   leave the active sport alone — so opening a baseball league while basketball was
+   active bound the baseball DOC to the basketball league object. LG() then returned
+   basketball, and the app looked like it had just reopened the league you were
+   trying to leave. It also renamed the basketball league to the baseball one.
+
+   The master-load self-heal already assumed "no sport tag = baseball" (those
+   approvals predate sport tagging); this is the same rule in one shared place, plus
+   what the device has actually learned, so the two can never disagree again. */
+function sportForApproval(id) {
+  const a = (STATE.approvals || {})[id];
+  if (a && SPORTS[a.sport]) return a.sport;
+  const docId = (a && a.leagueDocId) || ('league_' + id);
+  // what this device learned the last time it opened this doc for real
+  const learned = (STATE.sportByDoc || {})[docId];
+  if (SPORTS[learned]) return learned;
+  // or whichever sport is currently bound to it
+  for (const [sk, e] of Object.entries(STATE.leaguesBySport || {})) {
+    if (e && e.activeLeagueDoc === docId && SPORTS[sk]) return sk;
+  }
+  return 'flb';   // untagged approvals predate basketball, so they are baseball
+}
+/* remember it, so an untagged approval only has to be resolved once */
+function rememberSportForDoc(docId, sport) {
+  if (!docId || !SPORTS[sport]) return;
+  STATE.sportByDoc = STATE.sportByDoc || {};
+  if (STATE.sportByDoc[docId] === sport) return;
+  STATE.sportByDoc[docId] = sport;
+  saveLocal();
+}
 function joinLeagueById(id, opts = {}) {
   // Accept a 5-digit ID, or ANY key that actually exists in approvals — a name-based
   // league URL can resolve to a legacy text key, which is still a real league.
@@ -6589,10 +6625,10 @@ function joinLeagueById(id, opts = {}) {
     $('gate').style.display = 'flex';   // show as-is — do NOT re-render another gate step over it
     return false;
   }
-  // approved → adopt the league's sport, bind device, sync, drop the gate
-  if (appr.sport && SPORTS[appr.sport] && appr.sport !== STATE.sport) {
-    STATE.sport = appr.sport;   // this league belongs to a specific sport
-  }
+  // approved → adopt the league's sport FIRST. Everything below writes into
+  // STATE.leagues[STATE.sport], so getting this wrong edits the wrong sport.
+  const wantSport = sportForApproval(id);
+  if (wantSport !== STATE.sport) STATE.sport = wantSport;
   LG().leagueName = appr.leagueName;
   // leagueDocFor(): a migrated/legacy approval may not carry an explicit leagueDocId
   const docId = leagueDocFor(id);
@@ -6600,6 +6636,10 @@ function joinLeagueById(id, opts = {}) {
   // restore this device's identity in THIS league if it was here before (so switching
   // between league URLs doesn't lose which team you claimed); otherwise start fresh.
   STATE.memberId = (STATE.memberByLeague || {})[docId] || null;
+  // AFTER memberId is restored, never before: saveLocal() writes memberByLeague for
+  // the active doc, so saving here while memberId still belonged to the league we
+  // just left would overwrite this league's stored identity with the old one.
+  rememberSportForDoc(docId, wantSport);
   window._settingsScope = 'league';   // Settings now configures THIS league
   saveLocal();
   // make this league's URL its own address: #league=<id> (bookmarkable, survives refresh)
@@ -9145,6 +9185,10 @@ window.switchSport = function(key) {
     };
   }
   STATE.sport = key;
+  // whatever doc this sport was bound to, that binding IS the answer to "which sport
+  // is that league" — record it so the hub's Enter button gets it right next time
+  const restored = (STATE.leaguesBySport || {})[key];
+  if (restored && restored.activeLeagueDoc) rememberSportForDoc(restored.activeLeagueDoc, key);
   // each sport has its own idea of the default stat to show — FP/G in basketball,
   // season points in baseball — so don't carry the last sport's choice across
   playerView.ptsWindow = statWindowOptions()[0][0];
