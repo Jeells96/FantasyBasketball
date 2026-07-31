@@ -61,16 +61,27 @@
   C(P + 'the search box stays out in the open — it is the one people use',
     /Search players/.test(collapsed) && collapsed.indexOf('Search players') < firstRow);
 
-  C(P + 'nothing is filtered by default', activeFilterCount() === 0);
+  // The page defaults to available-only, so nothing is OFF-default at rest...
+  C(P + 'nothing is off-default to begin with', activeFilterCount() === 0);
+  // ...but the default still hides rostered players, and the summary must say so —
+  // otherwise you search for a rostered player, find nothing, and never learn why.
+  C(P + 'the default availability is still announced',
+    activeFilters().includes('available only'), activeFilterSummary());
+  renderPage('players');
+  C(P + 'on the page itself', /Showing available only/.test(
+    document.getElementById('page-players').innerHTML));
   setPosFilter('SP');
-  setAvail('avail');
-  C(P + 'active filters are counted', activeFilterCount() === 2, activeFilterCount());
+  C(P + 'a real filter change is counted', activeFilterCount() === 1, activeFilterCount());
   C(P + 'and summarised in plain language',
     /SP/.test(activeFilterSummary()) && /available/.test(activeFilterSummary()), activeFilterSummary());
   renderPage('players');
   const filtered = document.getElementById('page-players').innerHTML;
   C(P + 'a folded filter still announces itself, so it cannot hide players silently',
-    /Filters \(2\)/.test(filtered) && /SP/.test(filtered));
+    /Filters \(1\)/.test(filtered) && /SP/.test(filtered));
+  setAvail('all');
+  C(P + 'switching to all players counts as off-default', activeFilterCount() === 2);
+  C(P + 'and stops claiming to hide anything', !activeFilters().includes('available only'));
+  setAvail('avail');
   C(P + 'and offers a one-tap reset', /resetPlayerFilters\(\)/.test(filtered));
   resetPlayerFilters();
   C(P + 'reset clears everything', activeFilterCount() === 0);
