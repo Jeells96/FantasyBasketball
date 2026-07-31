@@ -350,6 +350,94 @@
     window._masterUnlocked = false;
     closeModal();
 
+    // ============================================================
+    // the draft room exists before the draft
+    // ============================================================
+    const D2 = `PreDraft[${sport}]: `;
+    const pre2 = S.setupLeague(sport, { teams: 6, week: 2, name: 'PreDraft' + sport });
+    LG().settings.draftDate = new Date(Date.now() + 86400000 * 5).toISOString();
+    LG().draft.order = LG().teams.map(t => t.id);
+    renderPage('home');
+    C(D2 + 'the draft tab is available before a draft',
+      document.getElementById('nav-draft').style.display !== 'none');
+    renderPage('draft');
+    const dh2 = document.getElementById('page-draft').innerHTML;
+    C(D2 + 'the room lists every team in order',
+      LG().teams.every(t => dh2.includes(t.name)) && /Draft order/.test(dh2));
+    C(D2 + 'numbered by draft slot', /<b class="[^"]*"[^>]*>1\.<\/b>/.test(dh2) || /1\./.test(dh2));
+    C(D2 + 'it says when the draft is', /When/.test(dh2) && !/not scheduled/.test(dh2));
+    C(D2 + 'how many rounds', new RegExp(`>${draftRounds()}<`).test(dh2));
+    C(D2 + 'and marks your own slot', /· you/.test(dh2));
+    C(D2 + 'it does not claim a draft is live', !/on the clock/i.test(dh2));
+    S.runDraft();
+    renderPage('home');
+    C(D2 + 'and the tab goes away once the draft is done',
+      document.getElementById('nav-draft').style.display === 'none');
+
+    // ============================================================
+    // an over-cap penalty cannot be dodged by trading picks away
+    // ============================================================
+    const K2 = `PickPenalty[${sport}]: `;
+    const pn = S.setupLeague(sport, { teams: 2, week: 2, name: 'Penalty' + sport,
+      settings: { leagueType: 'dynasty', useSalaryCap: true, salaryCapDollars: 100000000 } });
+    LG().teams = [{ id: 'a', name: 'Over Spender', abbrev: 'OVR' },
+                  { id: 'b', name: 'Innocent', abbrev: 'INN' }];
+    LG().members = { m1: { name: 'Me', teamId: 'a' } };
+    STATE.memberId = 'm1';
+    STATE.salaryDB = { [sport]: {} };
+    LG().playerPool.forEach(p => { STATE.salaryDB[sport][normName(p.name)] = { aav: 30000000 }; });
+    LG().draft.complete = true;
+    LG().draft.picks = [1, 2, 3, 4, 5].map((n, i) => ({ teamId: 'a', playerId: LG().playerPool[i].espnId, pick: n }));
+    const yr2 = currentSeasonYear();
+    const pen2 = teamCapPenalty('a', yr2);
+    C(K2 + 'the team is over the cap and owes picks', pen2.picks > 0, `${pen2.overPct}%`);
+
+    // first: a pick they traded away is NOT taken back from the receiver
+    LG().draftPicks = { [yr2 + 1]: { 1: { a: 'b' } } };
+    const logLines = [];
+    removeOnePick('a', 1, yr2 + 1, m => logLines.push(m));
+    C(K2 + 'a traded pick stays with the team that acquired it',
+      String(pickOwner(yr2 + 1, 1, 'a')) === 'b' && !pickRemoved(yr2 + 1, 1, 'b'));
+    C(K2 + 'and the forfeit rolls to a later year they still own',
+      pickRemoved(yr2 + 2, 1, 'a') === true);
+    C(K2 + 'the log explains it', logLines.some(l => /receiver keeps it/.test(l)), logLines.join(' | '));
+
+    // if that round is gone entirely, any round they own is taken instead
+    LG().removedPicks = {};
+    LG().draftPicks = {};
+    for (let y = yr2 + 1; y < yr2 + 16; y++) { LG().draftPicks[y] = { 1: { a: 'b' } }; }
+    removeOnePick('a', 1, yr2 + 1, null);
+    C(K2 + 'with no R1 left, another round is forfeited instead',
+      [2, 3, 4, 5].some(r => pickRemoved(yr2 + 1, r, 'a')));
+
+    // and if they own NOTHING, the penalty becomes money — the actual loophole
+    LG().removedPicks = {};
+    LG().deadCap = {};
+    LG().draftPicks = {};
+    for (let y = yr2 + 1; y < yr2 + 16; y++) {
+      LG().draftPicks[y] = {};
+      for (let r = 1; r <= 5; r++) LG().draftPicks[y][r] = { a: 'b' };
+    }
+    C(K2 + 'a team that traded everything can pay no picks at all',
+      penaltyPayableIn('a', yr2 + 1, pen2.picks) === 0);
+    const overBy = pen2.over;
+    confirmSeasonRollover();
+    const dead2 = (LG().deadCap || {}).a || [];
+    const charged = dead2.filter(d => /over-cap penalty/.test(d.name || ''));
+    C(K2 + 'so the penalty converts to dead cap instead of vanishing', charged.length > 0);
+    C(K2 + 'for exactly what they went over by',
+      charged.reduce((s, d) => s + d.amount, 0) === overBy,
+      `${charged.reduce((s, d) => s + d.amount, 0)} vs ${overBy}`);
+    C(K2 + 'charged to the season after', charged.every(d => d.year === yr2 + 1));
+    C(K2 + 'and the innocent team keeps every pick it acquired',
+      [1, 2, 3, 4, 5].every(r => !pickRemoved(yr2 + 1, r, 'b')));
+    C(K2 + 'the rulebook states all of it', (() => {
+      const h = Object.fromEntries(houseRules());
+      return /keeps it/.test(h['If you traded that pick away'] || '')
+          && /dead cap/.test(h['If you have no picks left'] || '');
+    })(), JSON.stringify(Object.fromEntries(houseRules())['If you have no picks left'] || ''));
+    closeModal();
+
     STATE.salaryDB = {};
     window._masterUnlocked = false;
     const bad = S.renderAll();
