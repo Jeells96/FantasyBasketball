@@ -3040,6 +3040,11 @@ window.setPlayoffStartWeek = function(v) { ensureSettings(); LG().settings.playo
    Stored on each player: ptsSeason, pts7, pts14, pts30.
    ============================================================ */
 let _poolPtsRunning = false;
+// Declared HERE, beside computePoolPoints, not at the bottom of the file: renderPage
+// calls ensurePoolPoints() and boot renders a page before the end of the script is
+// reached, so a declaration down there sits in the temporal dead zone and every
+// render throws.
+let _pooledOnce = false;
 async function computePoolPoints(force, progressFn) {
   if (_poolPtsRunning) return;
   _poolPtsRunning = true;
@@ -3154,13 +3159,19 @@ function renderPage(page) {
   const el = $('page-' + page);
   if (!el) return;
   switch(page) {
-    case 'home':      el.innerHTML = viewMyTeam(); break;
+    case 'home':      el.innerHTML = viewMyTeam();
+                      if (typeof ensurePoolPoints === 'function') ensurePoolPoints();
+                      break;
     case 'draft':     el.innerHTML = viewDraft(); break;
     case 'rookie':    el.innerHTML = viewRookieDraft(); break;
     case 'standings': el.innerHTML = viewStandings(); break;
-    case 'matchups':  el.innerHTML = viewMatchups(); break;
+    case 'matchups':  el.innerHTML = viewMatchups();
+                      if (typeof ensurePoolPoints === 'function') ensurePoolPoints();
+                      break;
     case 'teams':     el.innerHTML = viewTeams(); break;
-    case 'myteam':    el.innerHTML = viewMyTeam(); break;
+    case 'myteam':    el.innerHTML = viewMyTeam();
+                      if (typeof ensurePoolPoints === 'function') ensurePoolPoints();
+                      break;
     case 'players':   el.innerHTML = viewPlayers();
                       if (typeof ensurePoolPoints === 'function') ensurePoolPoints();
                       break;
@@ -4096,6 +4107,7 @@ function viewMyTeam() {
       <button class="btn btn-sm btn-ghost" onclick="openAddDrop()">+/− Players</button>
       <button class="btn btn-sm btn-ghost" onclick="openLeagueRules()" title="League rules & FAQ">§ Rules</button>
       <button class="btn btn-sm btn-ghost" onclick="openActivityLog()" title="League activity log">≡ Log</button>
+      <button class="btn btn-sm btn-ghost" onclick="openRenameTeam()" title="Rename your team">✎ Name</button>
     </div>` : ''}
 
     <div class="card" style="padding:.5rem .75rem;margin-top:.5rem">
@@ -4154,8 +4166,8 @@ function viewMyTeam() {
       ? renderTeamContracts(viewingId, isMine)
       : teamViewMode === 'stats'
       ? renderTeamStats(roster, slotOf)
-      : `${!haveLogs ? `<div class="card"><p class="sub">No game data cached yet. Pull stats to see daily scoring.
-          <button class="btn btn-sm btn-block mt" onclick="pullAllStats()">Pull ${SP().label} stats for my roster</button></p></div>`
+      : `${!haveLogs ? `<div class="card card-tight"><p class="sub" style="font-size:.74rem;text-align:center">
+          <span class="spinner-inline"></span> Loading ${esc(SP().label)} game data…</p></div>`
           : (teamTotal===0 ? `<div class="card"><p class="sub" style="font-size:.78rem">
             No games found for your starters in week ${week} (${dayLabel(start)}–${dayLabel(end)}).
             ${currentWeekNow()!==week
@@ -4784,6 +4796,48 @@ window.pickMyTeam = function(teamId) {
 /* Backing out of naming a brand-new team must take the empty slot with it.
    Otherwise every abandoned join leaves an unnamed "Team 7" in the league, and the
    next person to join is choosing from a list of those. */
+/* RENAME YOUR TEAM.
+   The team name was fixed at the moment you claimed the team, which is the one
+   thing about a fantasy team people reliably want to change. Your own name is
+   different: it is how the rest of the league knows who they are trading with, and
+   it appears in the activity log next to things you already did, so it stays put.
+   A commissioner can rename any team; a manager only their own. */
+window.openRenameTeam = function(teamId) {
+  const tid = teamId || myTeamId();
+  const t = teamById(tid);
+  if (!t) return;
+  const commish = window._masterUnlocked || commishUnlocked();
+  if (String(tid) !== String(myTeamId()) && !commish) {
+    toast('You can only rename your own team', 'err'); return;
+  }
+  openModal(`<div class="h2">Rename team</div>
+    <p class="sub mb" style="font-size:.72rem">Everyone in the league sees this name.
+      ${t.owner ? `Your own name (<b>${esc(t.owner)}</b>) doesn't change — it's how people know who they're dealing with, and it's already attached to everything you've done.` : ''}</p>
+    <div class="field"><label>Team name</label>
+      <input class="input" id="rn-team" value="${esc(t.name || '')}" placeholder="e.g. The Sandlot"></div>
+    <button class="btn btn-amber btn-block" onclick="saveTeamName('${tid}')">Save</button>
+    <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Cancel</button>`);
+};
+window.saveTeamName = function(teamId) {
+  const t = teamById(teamId);
+  if (!t) return;
+  const commish = window._masterUnlocked || commishUnlocked();
+  if (String(teamId) !== String(myTeamId()) && !commish) {
+    toast('You can only rename your own team', 'err'); return;
+  }
+  const name = ($('rn-team')?.value || '').trim();
+  // same rules as claiming: a generic name makes the join list unreadable
+  if (!name) { toast('Give your team a name', 'err'); return; }
+  if (/^team\s*\d+$/i.test(name)) { toast('Pick a real team name', 'err'); return; }
+  if (name === t.name) { closeModal(); return; }
+  const was = t.name;
+  t.name = name;
+  t.abbrev = name.slice(0, 3).toUpperCase();
+  logTxn('season', `${was} is now ${name}`);
+  save();
+  toast('Team renamed', 'ok');
+  closeModal(); renderActive();
+};
 window.cancelNewTeam = function(teamId) {
   const t = teamById(teamId);
   if (t && t._new) {
@@ -5039,31 +5093,8 @@ window.showGameBreakdown = function(mlbId, week, dayIdx) {
 };
 
 /* ---- pull MLB stats for the user's roster ---- */
-window.pullAllStats = async function() {
-  const roster = teamRoster(myTeamId()).filter(p => p.mlbId);
-  if (!roster.length) { toast('No mapped players on your roster', 'err'); return; }
-  toast(`Pulling stats for ${roster.length} players…`);
-  LG().gameLogs = LG().gameLogs || {};
-  let ok = 0, fail = 0;
-  for (const p of roster) {
-    try {
-      const isPitcher = /SP|RP|P/.test((p.eligible||[]).join('')) && !/1B|2B|3B|SS|OF|C|DH/.test((p.eligible||[]).join(''));
-      const groups = isPitcher ? ['pitching'] : ['hitting'];
-      const all = [];
-      for (const grp of groups) {
-        const log = await mlbGameLog(p.mlbId, grp);
-        log.forEach(g => all.push({ ...g, group: grp }));
-      }
-      LG().gameLogs[p.mlbId] = all;
-      ok++;
-    } catch(e) { fail++; }
-    await new Promise(r=>setTimeout(r,60));
-  }
-  await save();
-  toast(`Stats loaded: ${ok} ok${fail?`, ${fail} failed`:''}`, fail?'err':'ok');
-  renderActive();
-};
-
+/* (pullAllStats() lived here — a manual, baseball-only, my-roster-only fetch.
+   ensurePoolPoints() does it automatically for both sports and the whole pool.) */
 function placeholderView(title, msg) {
   return `<div class="eyebrow">Coming together</div>
     <div class="h1">${esc(title)}</div>
@@ -6033,20 +6064,16 @@ function viewSettings() {
         const boundDoc = STATE.activeLeagueDoc;
         const matchEntry = Object.entries(STATE.approvals||{}).find(([k,a]) => (a.leagueDocId||('league_'+k)) === boundDoc);
         const myId = matchEntry ? matchEntry[0] : null;
-        // any 5-digit approvals whose doc DOESN'T match where we're writing = mismatch
-        const numericIds = Object.keys(STATE.approvals||{}).filter(k => /^\d{5}$/.test(k));
-        const mismatch = myId == null && numericIds.length > 0;
+        // The manual "push my data to an ID" and "re-sync" buttons are gone. Syncing
+        // is automatic on every save, and both buttons existed to repair a
+        // mis-binding that creating a league properly no longer produces — while
+        // being easy to press by mistake and overwrite a league with local state.
         return `
           <p class="sub mb">You're in <b class="amber">${esc(LG().leagueName)}</b> — shared data syncs live.</p>
           ${myId ? `<div style="text-align:center;padding:.6rem;background:var(--field-2);border-radius:8px;margin-bottom:.6rem">
             <div class="sub" style="font-size:.62rem;letter-spacing:2px">SHARE THIS LEAGUE ID</div>
             <div class="display amber" style="font-size:2rem;letter-spacing:6px">${myId}</div>
           </div>` : ''}
-          ${mismatch ? `<div class="card card-tight mb" style="border-color:var(--bad)">
-            <p class="sub" style="font-size:.7rem;color:var(--bad)">⚠ Your data is syncing to <b>${esc(boundDoc)}</b>, but your League ID(s) point to a different doc — that's why members joining by ID see nothing. Push your data to the correct 5-digit ID below.</p>
-          </div>` : ''}
-          <button class="btn ${mismatch?'btn-amber':'btn-ghost'} btn-block mt" onclick="bindToLeaguePrompt()">⬆ Push my data to a 5-digit League ID</button>
-          <button class="btn btn-ghost btn-block mt" onclick="forcePushLeague()">Re-sync to current doc</button>
           <button class="btn btn-ghost btn-block mt" onclick="leaveLeague()">Leave / switch league</button>`;
       })()}
     </div>`}
@@ -7150,40 +7177,10 @@ window.confirmBindLeague = function() {
   // force the push (allowEmpty:false still guards a truly-blank league)
   saveLeague({}).then(() => { toast('Synced to Firebase', 'ok'); renderActive(); });
 };
-/* Force-push current local league data to Firebase (manual re-sync). */
-window.forcePushLeague = async function() {
-  if (!STATE.activeLeagueDoc) { toast('Not bound to a league yet', 'err'); return; }
-  const p = leaguePayload();
-  const teamN = (p.teams||[]).length;
-  const pickN = (p.draft?.picks||[]).length;
-  if (teamN === 0 && pickN === 0) {
-    toast('Nothing to sync — no teams or draft on this device', 'err'); return;
-  }
-  const docId = STATE.activeLeagueDoc;
-  try {
-    await setDoc(doc(db, 'leagues', docId), { league: stripUndefined(p) }, { merge: true });
-    // READ BACK to confirm the write actually persisted to Firebase
-    const check = await getDoc(doc(db, 'leagues', docId));
-    const back = check.exists() ? check.data()?.league : null;
-    const backTeams = back?.teams?.length || 0;
-    openModal(`<div class="h2">${backTeams>0?'✓ Sync confirmed':'⚠ Sync problem'}</div>
-      <p class="sub mb">Wrote to doc: <b>${esc(docId)}</b></p>
-      <div class="card card-tight"><div class="sub" style="font-size:.74rem">
-        Sent: ${teamN} teams, ${pickN} picks<br>
-        Read back from Firebase: <b class="${backTeams>0?'amber':'cell-neg'}">${backTeams} teams</b><br>
-        Sport: ${esc(p.sport)}
-      </div></div>
-      ${backTeams>0
-        ? `<p class="sub mt" style="font-size:.72rem">Data is on Firebase. On the other device, make sure it selected the <b>same sport (${esc(p.sport)})</b> and the same League ID, then rejoin.</p>`
-        : `<p class="sub mt" style="font-size:.72rem;color:var(--bad)">The write didn't persist — likely the Firestore rule is blocking writes. Publish the open rule and try again.</p>`}
-      <button class="btn btn-block mt" onclick="closeModal()">Done</button>`);
-  } catch(e) {
-    toast('Sync failed: ' + (e?.code || e?.message || 'unknown'), 'err');
-    console.error('forcePush error:', e);
-  }
-};
-
-/* ---- FAILED MAPPINGS — see & fix unmapped players ---- */
+/* (forcePushLeague() lived here — a manual "overwrite the league doc with what
+   this device has" button, with a read-back diagnostic. Every save already syncs,
+   and its one real use was repairing a mis-binding that creating a league properly
+   no longer produces.) */
 window.showFailedMappings = function() {
   const unmapped = LG().playerPool.filter(p => !p.mlbId);
   if (!unmapped.length) {
@@ -8165,7 +8162,10 @@ window.manageTeams = function() {
     <div style="padding:.5rem 0;border-bottom:1px solid rgba(42,61,48,.4)">
       <div class="row-between">
         <span style="font-size:.85rem"><b>${esc(t.name)}</b></span>
-        <button class="btn btn-ghost btn-sm" onclick="removeTeam('${t.id}')" style="font-size:.62rem">Remove team</button>
+        <div class="row" style="gap:.3rem">
+          <button class="btn btn-ghost btn-sm" onclick="openRenameTeam('${t.id}')" style="font-size:.62rem">Rename</button>
+          <button class="btn btn-ghost btn-sm" onclick="removeTeam('${t.id}')" style="font-size:.62rem">Remove team</button>
+        </div>
       </div>
       <div class="row-between mt" style="align-items:center">
         <span class="sub" style="font-size:.72rem">${ownerName ? `Owner: <b>${esc(ownerName)}</b>` : '<i>unclaimed</i>'}</span>
@@ -9968,13 +9968,25 @@ setTimeout(() => {
   }
 }, 1500);
 // re-run when the league doc first syncs in (pool may arrive after boot)
-let _pooledOnce = false;
+/* GAME DATA LOADS ITSELF.
+   There used to be a "Pull stats for my roster" button behind an empty-state card,
+   which is a chore the app can do on its own — computePoolPoints() is already
+   sport-aware and fills the same cache for the whole pool.
+
+   The guard checks for GAME LOGS rather than computed points on purpose: basketball
+   sets ptsSeason at pool-pull time, so a points-based guard was always satisfied and
+   basketball never fetched a single log — no daily scoring, ever. */
 function ensurePoolPoints() {
   if (_pooledOnce) return;
-  if (LG().playerPool.some(p => p.mlbId) && !LG().playerPool.some(p => p.ptsSeason != null)) {
-    _pooledOnce = true;
-    computePoolPoints(false).then(() => renderActive()).catch(()=>{ _pooledOnce = false; });
-  }
+  if (!FEAT().gameLogs) return;                       // sport has no per-game source
+  const pool = LG().playerPool || [];
+  if (!pool.some(p => p.mlbId)) return;               // nothing mapped to fetch for
+  const logs = LG().gameLogs || {};
+  const haveAny = Object.keys(logs).length > 0;
+  const havePts = pool.some(p => p.ptsSeason != null);
+  if (haveAny && havePts) return;                     // already loaded
+  _pooledOnce = true;
+  computePoolPoints(false).then(() => renderActive()).catch(() => { _pooledOnce = false; });
 }
 </script>
 </body>

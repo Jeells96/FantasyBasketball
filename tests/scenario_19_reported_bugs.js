@@ -279,6 +279,77 @@
     C(Y + 'nothing is roster-locked just because a season rolled',
       rostersLocked() === false && signingOpen() === true);
 
+    // ============================================================
+    // manual chores that should not exist
+    // ============================================================
+    const M2 = `NoChores[${sport}]: `;
+    const lg3 = S.setupLeague(sport, { teams: 4, week: 2, name: 'Chores' + sport });
+    S.runDraft();
+    renderPage('home');
+    const hh2 = document.getElementById('page-home').innerHTML;
+    C(M2 + 'no "pull stats" prompt — game data loads itself',
+      !/No game data cached yet/.test(hh2) && !/stats for my roster/.test(hh2));
+    C(M2 + 'it says it is loading instead', /Loading .* game data/.test(hh2));
+    C(M2 + 'and the manual puller is gone entirely', typeof window.pullAllStats === 'undefined');
+    C(M2 + 'the automatic path exists and is sport-aware',
+      typeof ensurePoolPoints === 'function' && typeof computePoolPoints === 'function');
+    window._settingsScope = 'league'; window._masterUnlocked = false;
+    renderPage('settings');
+    const sh3 = document.getElementById('page-settings').innerHTML;
+    C(M2 + 'no manual "push my data to an ID" button', !/Push my data to a 5-digit/.test(sh3));
+    C(M2 + 'no manual re-sync button', !/Re-sync to current doc/.test(sh3));
+    C(M2 + 'and no force-push function left behind', typeof window.forcePushLeague === 'undefined');
+    C(M2 + 'but leaving a league is still possible', /leaveLeague\(\)/.test(sh3));
+
+    // ============================================================
+    // rename the team, never the person
+    // ============================================================
+    const R2 = `Rename[${sport}]: `;
+    const lg4 = S.setupLeague(sport, { teams: 4, week: 2, name: 'Rename' + sport });
+    LG().teams[0].name = 'My Squad'; LG().teams[0].owner = 'Al Pine';
+    LG().teams[1].name = 'Rivals';   LG().teams[1].owner = 'Bo Ken';
+    LG().members = { m1: { name: 'Al Pine', teamId: LG().teams[0].id },
+                     m2: { name: 'Bo Ken', teamId: LG().teams[1].id } };
+    STATE.memberId = 'm1';
+    const myTid = myTeamId(), theirTid = LG().teams[1].id;
+    STATE.viewingTeamId = null;
+    renderPage('home');
+    C(R2 + 'the rename control is on my team page',
+      /openRenameTeam\(\)/.test(document.getElementById('page-home').innerHTML));
+    const typeName = v => {
+      const el = document.getElementById('rn-team');
+      if (el) { el.value = v; return; }
+      document.body.insertAdjacentHTML('beforeend', `<div id="tmp-rn"><input id="rn-team" value="${v}"></div>`);
+    };
+    openRenameTeam();
+    C(R2 + 'it says your own name will not change',
+      /doesn't change/.test(grab()) && grab().includes('Al Pine'));
+    typeName(''); saveTeamName(myTid);
+    C(R2 + 'a blank name is refused', teamById(myTid).name === 'My Squad');
+    typeName('Team 3'); saveTeamName(myTid);
+    C(R2 + 'so is a generic one', teamById(myTid).name === 'My Squad');
+    typeName('Sandlot Kings'); saveTeamName(myTid);
+    C(R2 + 'a real name sticks', teamById(myTid).name === 'Sandlot Kings');
+    C(R2 + 'the abbreviation follows', teamById(myTid).abbrev === 'SAN');
+    C(R2 + 'MY OWN NAME IS UNTOUCHED', teamById(myTid).owner === 'Al Pine');
+    C(R2 + 'and so is the member record the league identifies me by',
+      LG().members.m1.name === 'Al Pine');
+    C(R2 + 'the change is logged', /My Squad is now Sandlot Kings/.test(
+      (LG().transactions || []).map(t => t.text).join(' ')));
+
+    document.getElementById('tmp-rn')?.remove();
+    typeName('Hijacked'); saveTeamName(theirTid);
+    C(R2 + 'a manager cannot rename someone else\'s team',
+      teamById(theirTid).name === 'Rivals', teamById(theirTid).name);
+    window._masterUnlocked = true;
+    document.getElementById('tmp-rn')?.remove();
+    typeName('New Rivals'); saveTeamName(theirTid);
+    C(R2 + 'but a commissioner can', teamById(theirTid).name === 'New Rivals');
+    C(R2 + 'without touching that owner either', teamById(theirTid).owner === 'Bo Ken');
+    document.getElementById('tmp-rn')?.remove();
+    window._masterUnlocked = false;
+    closeModal();
+
     STATE.salaryDB = {};
     window._masterUnlocked = false;
     const bad = S.renderAll();
