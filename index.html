@@ -5898,7 +5898,8 @@ function viewSettings() {
     <div class="card">
       <div class="h2">League rules</div>
       <p class="sub mb">League type, format, and rules. Format locks once the draft starts.</p>
-      ${fmtLocked() ? `<p class="sub mb" style="color:var(--amber);font-size:.68rem">🔒 Format is locked — the draft has started. Waivers &amp; playoffs stay editable.</p>` : ''}
+      ${fmtLocked() ? `<p class="sub mb" style="color:var(--amber);font-size:.68rem">🔒 Format is locked — the draft has started. Waivers &amp; playoffs stay editable.
+        ${(window._masterUnlocked||commishUnlocked())?'League type can still be changed, with a confirmation.':''}</p>` : ''}
       <div class="row-between" style="padding:.4rem 0">
         <span class="sub">League type</span>
         <div class="row" style="gap:.3rem">
@@ -7881,10 +7882,70 @@ window.doGenerateTeams = function() {
    COMMISSIONER SETTINGS HANDLERS (league rules + draft setup)
    ============================================================ */
 function ensureSettings() { if (!LG().settings) LG().settings = {}; }
+/* CHANGING LEAGUE TYPE AFTER THE DRAFT.
+   Normally the format locks when the draft starts, because switching mid-season
+   changes what a roster even means. But a commissioner testing the app needs to
+   flip between formats without rebuilding a league, so the lock is a confirmation
+   rather than a wall.
+
+   Nothing is deleted on the way through. Contracts, traded picks, keeper choices
+   and dead cap all stay exactly where they are — they just stop being SHOWN by
+   formats that have no use for them, and come straight back if you switch back.
+   That is deliberate: a destructive switch would make the test one-way. */
+function leagueTypeSideEffects(t) {
+  const cur = LSET().leagueType || 'redraft';
+  const out = [];
+  if (t === cur) return out;
+  if (cur === 'dynasty' && t !== 'dynasty') {
+    const picks = Object.keys(LG().draftPicks || {}).length;
+    if (picks) out.push(`Traded draft picks stop showing (${picks} year${picks!==1?'s':''} tracked). They are kept, not deleted.`);
+    if (RD().enabled) out.push('The rookie draft is a dynasty feature and will be hidden.');
+  }
+  if (t === 'dynasty' && cur !== 'dynasty') out.push('Draft-pick trading and the rookie draft become available.');
+  if (t === 'keeper') out.push(`Keeper selection turns on (${LSET().keeperCount || 3} per team).`);
+  if (cur === 'keeper' && t !== 'keeper' && Object.keys(LG().keeperCosts || {}).length) {
+    out.push('Keeper selections are kept but stop applying.');
+  }
+  if (LSET().useSalaryCap) {
+    const from = capHeadroom(cur), to = capHeadroom(t);
+    if (from !== to) out.push(`The suggested cap multiplier changes from ×${from} to ×${to}. Your league's own cap (${fmtMoney(leagueCap())}) is not touched.`);
+    out.push('Salaries, contracts and dead cap all stay on and unchanged.');
+  }
+  return out;
+}
+function applyLeagueType(t) {
+  ensureSettings();
+  const from = LSET().leagueType || 'redraft';
+  LG().settings.leagueType = t;
+  logTxn('season', `League type changed from ${from} to ${t}`);
+  save(); renderActive();
+}
 window.setLeagueType = function(t) {
-  if (LG().draft.started || LG().draft.live || LG().draft.complete) { toast('League format is locked once the draft starts', 'err'); return; }
-  if (t !== 'dynasty' && LSET().useSalaryCap) { toast('Turn salaries off first — salaries require Dynasty', 'err'); return; }
-  ensureSettings(); LG().settings.leagueType = t; save(); renderActive();
+  const drafted = LG().draft.started || LG().draft.live || LG().draft.complete;
+  if (LG().draft.live) { toast('Not while the draft is live', 'err'); return; }
+  if ((LSET().leagueType || 'redraft') === t) return;
+  if (!drafted) {
+    // pre-draft this is a plain setting, and the salaries-need-dynasty rule holds
+    if (t !== 'dynasty' && LSET().useSalaryCap) { toast('Turn salaries off first — salaries require Dynasty', 'err'); return; }
+    applyLeagueType(t);
+    return;
+  }
+  if (!(window._masterUnlocked || commishUnlocked())) {
+    toast('Format is locked after the draft — commissioners can still change it', 'err'); return;
+  }
+  const effects = leagueTypeSideEffects(t);
+  openModal(`<div class="h2">Change format mid-season?</div>
+    <p class="sub mb">This league has already drafted, so <b>${esc(LSET().leagueType||'redraft')} → ${esc(t)}</b> is not a normal
+      move. Nothing is deleted either way — switch back and everything returns.</p>
+    ${effects.length ? `<div class="card card-tight mb">${effects.map(e =>
+      `<p class="sub" style="font-size:.72rem;margin:.2rem 0">• ${esc(e)}</p>`).join('')}</div>` : ''}
+    <button class="btn btn-amber btn-block" onclick="confirmLeagueType('${t}')">Change to ${esc(t)}</button>
+    <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Cancel</button>`);
+};
+window.confirmLeagueType = function(t) {
+  applyLeagueType(t);
+  closeModal();
+  toast(`League is now ${t}`, 'ok');
 };
 window.toggleSnake = function() {
   if (LG().draft.live) { toast('Cannot change during live draft', 'err'); return; }
