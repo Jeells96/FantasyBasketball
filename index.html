@@ -409,6 +409,10 @@ input.input, select, textarea {
 .botnav { padding: .65rem .25rem calc(.65rem + env(safe-area-inset-bottom)); }
 /* settings toggle rows: comfortable height, never cramped */
 .row-between { min-height: 44px; align-items: center; gap: .6rem; }
+/* ...but a row that is only a label and a number is not a tap target, and forcing
+   44px on those turns a three-line info card into 150px of mostly empty space.
+   Opt out explicitly so touch targets stay honest and read-only rows stay compact. */
+.row-between.info { min-height: 0; }
 /* cards breathe a little more */
 .card { padding: 1rem .95rem; }
 /* home-page task tiles: the big obvious buttons */
@@ -521,6 +525,7 @@ const SPORTS = {
     statSeason: 2026,            // real-stat season (MLB) — current year; see CURRENT_YEAR
     rosterSize: 23,
     statsApi: 'mlb',
+    proLeague: 'MLB',               // the real-world league, for contract labels
     injuriesPath: 'baseball/mlb',   // ESPN league-wide injury report
     // ESPN defaultPositionId -> position
     posMap: {1:'SP',2:'C',3:'1B',4:'2B',5:'3B',6:'SS',7:'OF',8:'OF',9:'OF',10:'DH',11:'RP'},
@@ -593,6 +598,7 @@ const SPORTS = {
     statSeason: 2025,           // real-stat season (NBA) — matches the pull season
     rosterSize: 13,
     statsApi: 'nba',
+    proLeague: 'NBA',
     injuriesPath: 'basketball/nba',
     posMap: {1:'PG',2:'SG',3:'SF',4:'PF',5:'C',6:'G',7:'F'},
     slotMap: {0:'PG',1:'SG',2:'SF',3:'PF',4:'C',5:'G',6:'F',7:'F/C',8:'G/F',9:'UTIL',10:'BE'},
@@ -4581,7 +4587,7 @@ window.setContractTerm = function(espnId, val) {
     toast(`${p.name} unsigned`, 'ok');
   } else {
     const aav = existing ? existing.baseAAV : importedAAV(p);   // freeze AAV at first signing
-    if (aav == null) { toast('No AAV on record — add MLB contract info first', 'err'); renderActive(); return; }
+    if (aav == null) { toast(`No AAV on record — add ${SP().proLeague} contract info first`, 'err'); renderActive(); return; }
     LG().contracts[String(espnId)] = {
       baseAAV: aav,
       signedYear: existing ? existing.signedYear : currentSeasonYear(),
@@ -5285,9 +5291,32 @@ const playerView = { sort: 'adp', dir: 1, posFilter: 'ALL', search: '', avail: '
    Its default is still FP/G, because that is how basketball managers think. */
 const PTS_FIELDS = { season:'ptsSeason', '7':'pts7', '14':'pts14', '30':'pts30',
                      bestavg:'bestAvg', fpg:'ptsPerGame' };
+/* In a best-of-week league every window shows the AVERAGE BEST GAME over that
+   window instead of a running total — the same units the league actually scores in.
+   A player's own mode is used, not the league's, because MLB leagues can score
+   pitchers and hitters differently. */
+const PTS_FIELDS_BEST = { season:'bestAvg', '7':'bestAvg7', '14':'bestAvg14',
+                          '30':'bestAvg30', bestavg:'bestAvg', fpg:'ptsPerGame' };
+/* which of those fields are averages rather than totals — they get a decimal */
+const AVG_PTS_FIELDS = new Set(['bestAvg', 'bestAvg7', 'bestAvg14', 'bestAvg30', 'ptsPerGame']);
+function ptsFieldFor(win, p) {
+  const best = p ? playerScoreMode(p) === 'best' : (LSET().scoringFormat !== 'regular');
+  return (best ? PTS_FIELDS_BEST[win] : null) || PTS_FIELDS[win];
+}
+/* does this league keep only the best game for anybody? */
+function leagueUsesBestGame() { return (LSET().scoringFormat || 'bestGame') !== 'regular'; }
 function statWindowOptions() {
-  const base = [['season','PTS'], ['bestavg','AVG'], ['30','30d'], ['14','14d'], ['7','7d']];
-  return FEAT().perGameScoring ? [['fpg','FP/G'], ...base] : base;
+  // 'bestavg' is a separate lens only in a total-points league. In a best-of-week
+  // league it IS the season number, so offering both would be the same column twice.
+  const base = leagueUsesBestGame()
+    ? [['season','BEST'], ['30','30d'], ['14','14d'], ['7','7d']]
+    : [['season','PTS'], ['bestavg','AVG'], ['30','30d'], ['14','14d'], ['7','7d']];
+  if (!FEAT().perGameScoring) return base;
+  // FP/G leads in basketball — except in a best-of-week league, where only one game
+  // a week is ever scored. There the week's best leads and FP/G sits beside it.
+  return leagueUsesBestGame()
+    ? [base[0], ['fpg','FP/G'], ...base.slice(1)]
+    : [['fpg','FP/G'], ...base];
 }
 /* the selected window, snapped to one this sport actually offers — playerView is
    shared across sports, so switching sports must not leave a dangling selection */
@@ -5366,17 +5395,30 @@ function viewPlayersReal() {
     return true;
   });
 
-  // which points field is active based on the window toggle
-  const ptsField = PTS_FIELDS[activeStatWindow()];
+  // which points field is active based on the window toggle. Resolved PER PLAYER,
+  // since a best-of-week league shows an average best game while a total-points
+  // league shows a running total — and an MLB league can do both at once.
+  const win = activeStatWindow();
+  const ptsOf = (p) => p[ptsFieldFor(win, p)];
   // short header labels: on a phone every character of header width is stolen from
   // the player-name column, which is the only column anyone reads
-  const ptsLabel = (statWindowOptions().find(o => o[0] === activeStatWindow()) || ['','PTS'])[1];
+  const ptsLabel = (statWindowOptions().find(o => o[0] === win) || ['','PTS'])[1];
+  // Say plainly what the points column is, because "30d" means two different things
+  // depending on how the league scores.
+  const ptsMeaning = !FEAT().gameLogs ? ''
+    : win === 'fpg' ? 'fantasy points per game'
+    : leagueUsesBestGame()
+      ? (win === 'season' ? 'average of each week\'s best game'
+         : `average of each week's best game, last ${win} days`)
+      : (win === 'season' ? 'total points this season'
+         : win === 'bestavg' ? 'average of each week\'s best game'
+         : `total points, last ${win} days`);
 
   const useSal = LSET().useSalaryCap;
   const s = playerView.sort, dir = playerView.dir;
   list.sort((a,b) => {
     if (s === 'name') return dir * a.name.localeCompare(b.name);
-    if (s === 'pts')  return dir * ((a[ptsField] ?? -Infinity) - (b[ptsField] ?? -Infinity));
+    if (s === 'pts')  return dir * ((ptsOf(a) ?? -Infinity) - (ptsOf(b) ?? -Infinity));
     if (s === 'salary') return dir * ((playerCapHit(a) ?? 0) - (playerCapHit(b) ?? 0));
     return dir * ((a[s] ?? 0) - (b[s] ?? 0));
   });
@@ -5409,8 +5451,10 @@ function viewPlayersReal() {
     const pk = LG().draft.picks.find(x => String(x.playerId) === String(p.espnId));
     const ownerTeam = pk ? teamById(pk.teamId).abbrev : '';
     const adpTxt = p.adp < 9999 ? p.adp.toFixed(0) : '—';
-    const ptsVal = p[ptsField];
-    const ptsTxt = (ptsVal != null) ? ptsVal.toFixed(0) : '—';
+    const ptsVal = ptsOf(p);
+    // An average needs a decimal — 6.6 and 6.4 are a real gap between two players
+    // and both round to "6". A running total does not.
+    const ptsTxt = (ptsVal != null) ? ptsVal.toFixed(AVG_PTS_FIELDS.has(ptsFieldFor(win, p)) ? 1 : 0) : '—';
     return `<tr style="${drafted?'opacity:.45':''}">
       <td style="max-width:0"><span class="row" style="gap:.4rem;align-items:center;flex-wrap:nowrap">
         ${headshotImg(p, 26)}
@@ -5464,6 +5508,8 @@ function viewPlayersReal() {
       ${activeFilterCount()?`<button class="btn btn-sm btn-ghost" onclick="resetPlayerFilters()">Reset</button>`:`<span class="sub" style="font-size:.66rem">${list.length} shown</span>`}
     </div>
     ${activeFilters().length && !playerFiltersOpen() ? `<p class="sub" style="font-size:.66rem;margin-top:.25rem">Showing ${esc(activeFilterSummary())}</p>` : ''}
+    ${ptsMeaning ? `<p class="sub" style="font-size:.62rem;margin-top:.15rem">
+      <b>${esc(ptsLabel)}</b> = ${esc(ptsMeaning)}</p>` : ''}
     <div style="${playerFiltersOpen()?'':'display:none'}">
     ${SP().key==='flb' ? `<div class="row" style="gap:.35rem;margin-top:.5rem">
       <button class="btn btn-sm ${playerView.grpFilter==='all'?'btn-amber':'btn-ghost'}" onclick="setGrpFilter('all')">All</button>
@@ -5644,18 +5690,33 @@ function applyPointFields(p, log) {
   const c7 = cut(7), c14 = cut(14), c30 = cut(30);
   let season=0,w7=0,w14=0,w30=0;
   const weekBest = {}; // fantasy week -> best single game pts
+  // BEST-OF-WEEK LEAGUES SCORE ONE GAME A WEEK, so a sum of every game is the wrong
+  // number to judge a player by — it rewards whoever played most. What matters is
+  // the average of the games that would actually have counted. Kept per window, so
+  // "last 30 days" answers "what has he been worth lately" in the league's own units.
+  const winBest = { 7: {}, 14: {}, 30: {} };
   log.forEach(g => {
     const pts = gamePoints(g.stat, g.group);
     season+=pts;
     if(g.date>=c7)w7+=pts; if(g.date>=c14)w14+=pts; if(g.date>=c30)w30+=pts;
     const wk = weekOfDate(g.date);
-    if (wk != null) weekBest[wk] = Math.max(weekBest[wk] ?? -Infinity, pts);
+    if (wk != null) {
+      weekBest[wk] = Math.max(weekBest[wk] ?? -Infinity, pts);
+      if (g.date>=c30) winBest[30][wk] = Math.max(winBest[30][wk] ?? -Infinity, pts);
+      if (g.date>=c14) winBest[14][wk] = Math.max(winBest[14][wk] ?? -Infinity, pts);
+      if (g.date>=c7)  winBest[7][wk]  = Math.max(winBest[7][wk]  ?? -Infinity, pts);
+    }
   });
-  const bests = Object.values(weekBest).filter(v => v > -Infinity);
-  const bestAvg = bests.length ? bests.reduce((a,b)=>a+b,0)/bests.length : 0;
+  const avgOf = (obj) => {
+    const v = Object.values(obj).filter(x => x > -Infinity);
+    return v.length ? Math.round((v.reduce((a,b)=>a+b,0)/v.length)*10)/10 : 0;
+  };
   p.ptsSeason=Math.round(season*10)/10; p.pts7=Math.round(w7*10)/10;
   p.pts14=Math.round(w14*10)/10; p.pts30=Math.round(w30*10)/10;
-  p.bestAvg=Math.round(bestAvg*10)/10; p.seasonPts=p.ptsSeason;
+  p.bestAvg = avgOf(weekBest); p.seasonPts=p.ptsSeason;
+  p.bestAvg30 = avgOf(winBest[30]);
+  p.bestAvg14 = avgOf(winBest[14]);
+  p.bestAvg7  = avgOf(winBest[7]);
   p.gamesPlayed = log.length;                  // total games in the log
   p.weeksPlayed = Object.keys(weekBest).length; // distinct fantasy weeks played
 }
@@ -5723,6 +5784,9 @@ window.showPlayer = function(espnId) {
   if (!window._expandedWeek || String(window._expandedWeek.espnId) !== String(espnId)) {
     window._expandedWeek = null;
   }
+  // and a different player always starts with the weekly table folded, so the card
+  // opens showing everything rather than a scroll box in the middle of it
+  if (String(window._weeksOpen) !== String(espnId)) window._weeksOpen = null;
   // if this player's points aren't computed yet but they're mapped, fetch on demand
   if (p.ptsSeason == null && p.mlbId) {
     renderPlayerModal(p, true);  // show with a loading hint
@@ -5741,7 +5805,15 @@ function renderPlayerModal(p, loading) {
   const cap = rosterCap(), count = myTeamId() ? rosterActiveCount(myTeamId()) : 0;
   const full = count >= cap;
   // what to show in the "points" stat box
-  const ptsBox = isNBA
+  // The headline number should be what this league actually scores. In a
+  // best-of-week league the season TOTAL is a figure nobody is ever paid for.
+  // Best-of-week comes first even in basketball: FP/G is the usual headline there,
+  // but in a best-of-week league a player's other games are never scored, so FP/G
+  // over-states them. It moves to the caption line rather than disappearing.
+  const bestMode = playerScoreMode(p) === 'best';
+  const ptsBox = bestMode
+    ? `<div class="stat"><div class="lbl">Best/wk</div><div class="val">${loading?'<span class="sub">…</span>':(havePts?(p.bestAvg??0).toFixed(1):'—')}</div></div>`
+    : isNBA
     ? `<div class="stat"><div class="lbl">FP/G</div><div class="val">${p.ptsPerGame!=null?p.ptsPerGame.toFixed(1):'—'}</div></div>`
     : `<div class="stat"><div class="lbl">Season</div><div class="val">${loading?'<span class="sub">…</span>':(havePts?p.ptsSeason.toFixed(0):'—')}</div></div>`;
 
@@ -5762,32 +5834,43 @@ function renderPlayerModal(p, loading) {
         ? `<div class="stat"><div class="lbl">Base AAV</div><div class="val" style="font-size:1rem">${fmtMoney(importedAAV(p))}</div></div>`
         : `<div class="stat"><div class="lbl">Status</div><div class="val" style="font-size:1rem">${pk?(onMyTeam?'Yours':'Rostered'):'Free'}</div></div>`}
     </div>
-    ${isNBA && p.gamesPlayed ? `<p class="sub mb" style="font-size:.68rem">${SP().statSeason} season · ${p.seasonPts?.toFixed(0)||0} total fantasy pts over ${p.gamesPlayed} games</p>` : ''}
+    ${isNBA && p.gamesPlayed ? `<p class="sub mb" style="font-size:.68rem">${SP().statSeason} season · ${bestMode&&p.ptsPerGame!=null?`${p.ptsPerGame.toFixed(1)} FP/G · `:''}${p.seasonPts?.toFixed(0)||0} total fantasy pts over ${p.gamesPlayed} games</p>` : ''}
     ${LSET().useSalaryCap ? (()=>{ const r=salaryDB()[normName(p.name)]; const c=playerContract(p);
-      let html = '<div class="card card-tight mb" style="font-size:.72rem">';
-      // age + real MLB contract
+      let html = '<div class="card card-tight mb" style="font-size:.72rem;padding:.4rem .6rem;line-height:1.35">';
+      // age + real pro contract (MLB / NBA — never label it with the wrong league)
+      const PRO = SP().proLeague;
       if (r) {
-        html += `<div class="row-between"><span class="sub">Age</span><b>${r.age||'—'}</b></div>`;
-        html += `<div class="row-between"><span class="sub">MLB contract</span><b>${r.start||'?'}–${r.end||'?'}${r.years?` (${r.years}yr)`:''}</b></div>`;
-        html += `<div class="row-between"><span class="sub">MLB total / AAV</span><b>${fmtMoney(r.total)} · ${fmtMoney(r.aav)}</b></div>`;
+        html += `<div class="row-between info"><span class="sub">Age</span><b>${r.age||'—'}</b></div>`;
+        html += `<div class="row-between info"><span class="sub">${PRO} contract</span><b>${r.start||'?'}–${r.end||'?'}${r.years?` (${r.years}yr)`:''}</b></div>`;
+        html += `<div class="row-between info"><span class="sub">${PRO} total / AAV</span><b>${fmtMoney(r.total)} · ${fmtMoney(r.aav)}</b></div>`;
       } else {
-        html += `<div class="row-between"><span class="sub">MLB contract</span><b class="cell-neg">none on file (arb)</b></div>`;
+        html += `<div class="row-between info"><span class="sub">${PRO} contract</span><b class="cell-neg">none on file (arb)</b></div>`;
       }
       // fantasy contract (signed)
       if (c) {
         const curSal = contractSalaryForYear(c, currentSeasonYear());
-        html += `<div class="row-between" style="border-top:1px solid rgba(42,61,48,.4);padding-top:.3rem;margin-top:.3rem"><span class="sub">Fantasy deal</span><b class="amber">${c.termYears}yr · ${c.signedYear}–${c.signedYear+c.termYears-1}</b></div>`;
-        html += `<div class="row-between"><span class="sub">This year / discount</span><b>${fmtMoney(curSal)} <span class="sub">(${importedAAV(p)?Math.round(curSal/importedAAV(p)*100):'?'}% of AAV)</span></b></div>`;
+        html += `<div class="row-between info" style="border-top:1px solid rgba(42,61,48,.4);padding-top:.3rem;margin-top:.3rem"><span class="sub">Fantasy deal</span><b class="amber">${c.termYears}yr · ${c.signedYear}–${c.signedYear+c.termYears-1}</b></div>`;
+        html += `<div class="row-between info"><span class="sub">This year / discount</span><b>${fmtMoney(curSal)} <span class="sub">(${importedAAV(p)?Math.round(curSal/importedAAV(p)*100):'?'}% of AAV)</span></b></div>`;
       }
       html += '</div>';
       return html;
     })() : ''}
-    ${LSET().useSalaryCap && window._masterUnlocked ? `<button class="btn btn-ghost btn-block mb" style="font-size:.7rem" onclick="openContractInfo('${p.espnId}')">✏ Add/edit MLB contract info</button>` : ''}
-    ${havePts ? `<div class="statrow mb">
-      <div class="stat"><div class="lbl">Last 7d</div><div class="val">${p.pts7?.toFixed(0)??'0'}</div></div>
-      <div class="stat"><div class="lbl">Last 14d</div><div class="val">${p.pts14?.toFixed(0)??'0'}</div></div>
-      <div class="stat"><div class="lbl">Last 30d</div><div class="val">${p.pts30?.toFixed(0)??'0'}</div></div>
-    </div>` : ''}
+    ${LSET().useSalaryCap && window._masterUnlocked ? `<button class="btn btn-ghost btn-block mb" style="font-size:.7rem" onclick="openContractInfo('${p.espnId}')">✏ Add/edit ${SP().proLeague} contract info</button>` : ''}
+    ${havePts ? (() => {
+      // These have to agree with the players page. In a best-of-week league a
+      // 30-day TOTAL is a number the league never scores, and showing it beside a
+      // best-game average on the previous screen just invites a wrong comparison.
+      const best = playerScoreMode(p) === 'best';
+      const v = (w) => (p[ptsFieldFor(w, p)] ?? 0).toFixed(best ? 1 : 0);
+      // the label says what the number is, so the explanatory line under the row
+      // can go — on a phone that line cost more height than it was worth
+      const lbl = best ? 'Best ' : 'Pts ';
+      return `<div class="statrow mb">
+        <div class="stat"><div class="lbl">${lbl}7d</div><div class="val">${v('7')}</div></div>
+        <div class="stat"><div class="lbl">${lbl}14d</div><div class="val">${v('14')}</div></div>
+        <div class="stat"><div class="lbl">${lbl}30d</div><div class="val">${v('30')}</div></div>
+      </div>`;
+    })() : ''}
 
     ${havePts ? renderWeeklyBreakdown(p) : ''}
 
@@ -5800,13 +5883,23 @@ function renderPlayerModal(p, loading) {
     ) : ''}
     ${myTeamId() && !onMyTeam ? `<button class="btn btn-ghost btn-block mt" onclick="toggleWatch('${p.espnId}')">${watchList().includes(String(p.espnId))?'★ On your watch list — remove':'☆ Add to watch list'}</button>` : ''}
     ${onMyTeam ? `
-      <button class="btn btn-ghost btn-block" onclick="closeModal();go('home')">View on my team →</button>
-      ${FEAT().ir ? (
-        isOnIR(p.espnId, myTeamId())
-          ? `<button class="btn btn-ghost btn-block mt" onclick="activateFromIR('${p.espnId}')">🩹 Activate from IL (${irCount(myTeamId())}/${SP().irCount||0} IL used)</button>`
-          : `<button class="btn btn-ghost btn-block mt" onclick="moveToIR('${p.espnId}')">🩹 Place on IL${p.injured?'':' (not flagged injured)'}</button>`
-      ) : ''}
-      <button class="btn btn-ghost btn-block mt" onclick="toggleTradeBlock('${p.espnId}')">${onBlock(myTeamId()).includes(String(p.espnId))?'⇄ On the trade block — take off':'⇄ Put on the trade block'}</button>
+      ${(() => {
+        // Three full-width secondary buttons pushed Sign and Drop off the bottom of
+        // a phone screen — and in a home-screen app there is no browser chrome to
+        // scroll away, so what fits is all you get. These share a row; the two that
+        // change your roster stay full width below.
+        const ir = FEAT().ir ? (isOnIR(p.espnId, myTeamId())
+          ? `<button class="btn btn-sm btn-ghost" style="flex:1" onclick="activateFromIR('${p.espnId}')">🩹 Off IL</button>`
+          : (p.injured
+             ? `<button class="btn btn-sm btn-ghost" style="flex:1" onclick="moveToIR('${p.espnId}')">🩹 To IL</button>`
+             : `<button class="btn btn-sm btn-ghost" style="flex:1;opacity:.5" onclick="moveToIR('${p.espnId}')" title="Not flagged injured">🩹 To IL</button>`)) : '';
+        const blocked = onBlock(myTeamId()).includes(String(p.espnId));
+        return `<div class="row" style="gap:.4rem">
+          <button class="btn btn-sm btn-ghost" style="flex:1" onclick="closeModal();go('home')">My team →</button>
+          ${ir}
+          <button class="btn btn-sm ${blocked?'btn-amber':'btn-ghost'}" style="flex:1" onclick="toggleTradeBlock('${p.espnId}')">⇄ ${blocked?'Listed':'Block'}</button>
+        </div>`;
+      })()}
       ${LSET().useSalaryCap ? signContractSection(p) : ''}
       <button class="btn btn-block mt" style="background:var(--bad);color:#fff" onclick="dropFromCard('${p.espnId}')">Drop ${esc(p.name)}${LSET().useSalaryCap&&playerContract(p)?` (dead cap ${fmtMoney(dropDeadCap(p))})`:''}</button>
     ` : ''}
@@ -5837,7 +5930,7 @@ function signContractSection(p) {
   }
   if (isArbPlayer(p)) {
     return `<div class="card card-tight mt" style="border-color:var(--sage)">
-      <div class="sub" style="font-size:.72rem"><b>Arbitration</b> — no MLB contract.
+      <div class="sub" style="font-size:.72rem"><b>Arbitration</b> — no ${SP().proLeague} contract.
       Counts <b>${fmtMoney(SALCFG().arbSalary)}</b>/yr (no escalation). Can't be signed to a term until they get a real contract.</div>
     </div>`;
   }
@@ -6110,16 +6203,36 @@ function renderWeeklyBreakdown(p) {
     }
     return html;
   }).join('');
+  // FOLDED BY DEFAULT. This table used to sit open in its own 38vh scroll box, and
+  // on a phone — especially as a home-screen app, where there is no browser chrome
+  // to scroll away — it swallowed the middle of the card. People could not tell
+  // there was anything below it, so Sign, Drop and Add went unnoticed. The summary
+  // line carries the numbers that matter; the week-by-week detail is one tap away.
+  const open = !!window._weeksOpen && String(window._weeksOpen) === String(p.espnId);
   return `
-    <div class="divlabel mt">Weekly scoring · avg <b class="amber">${bd.avg.toFixed(1)}</b>/wk · best-avg <b class="amber">${(p.bestAvg??0).toFixed(1)}</b></div>
-    <div class="card card-tight" style="max-height:38vh;overflow-y:auto">
+    <div class="row-between mt" style="align-items:center;gap:.5rem">
+      <div class="divlabel" style="margin:0">Weekly scoring</div>
+      <button class="btn btn-sm btn-ghost" style="flex:none" onclick="toggleWeeks('${p.espnId}')">
+        ${open ? 'Hide' : `${bd.weeks.length} week${bd.weeks.length!==1?'s':''}`} ${open ? '▲' : '▼'}</button>
+    </div>
+    <div class="card card-tight" style="padding:.35rem .6rem;line-height:1.35">
+      ${playerScoreMode(p) === 'best' ? '' : `<div class="row-between info" style="font-size:.72rem">
+        <span class="sub">Best game, per week</span><b class="amber">${(p.bestAvg??0).toFixed(1)}</b></div>
+      <div class="row-between info" style="font-size:.72rem">
+        <span class="sub">All games, per week</span><b>${bd.avg.toFixed(1)}</b></div>`}
+      <div class="row-between info" style="font-size:.72rem">
+        <span class="sub">Best week</span><b>${bd.bestWeek.toFixed(0)}</b></div>
+      ${playerScoreMode(p) === 'best' ? `<div class="row-between info" style="font-size:.72rem">
+        <span class="sub">Season total</span><b>${(p.ptsSeason??0).toFixed(0)}</b></div>` : ''}
+    </div>
+    ${open ? `<div class="card card-tight mt" style="max-height:40vh;overflow-y:auto">
       <table class="tbl">
         <thead><tr><th>Week</th><th class="r">G</th><th class="r">Best</th><th class="r">Total</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
     <p class="sub" style="font-size:.62rem;text-align:center;margin-top:.3rem">
-      Tap a week to see each game. Best = kept score. Highlighted row = best week.</p>`;
+      Tap a week to see each game. Best = kept score. Highlighted row = best week.</p>` : ''}`;
 }
 
 /* detail of each game in a player's given week: date, opp, pts, statline, isBest */
@@ -6156,6 +6269,11 @@ function buildStatline(stat, group) {
   return parts.join(', ');
 }
 
+window.toggleWeeks = function(espnId) {
+  window._weeksOpen = (String(window._weeksOpen) === String(espnId)) ? null : String(espnId);
+  window._expandedWeek = null;      // collapsing the table closes any open week with it
+  showPlayer(espnId);
+};
 window.toggleWeek = function(espnId, week) {
   const e = window._expandedWeek;
   if (e && String(e.espnId)===String(espnId) && e.week===week) window._expandedWeek = null;
@@ -7857,7 +7975,7 @@ window.setPenaltyPicks = function(idx, val) {
   }
 };
 
-/* Add or edit a player's REAL MLB contract info (commissioner only). Writing an AAV
+/* Add or edit a player's REAL pro contract info (commissioner only). Writing an AAV
    moves them out of "arb" status so they can be signed to a fantasy term. */
 window.openContractInfo = function(espnId) {
   if (!window._masterUnlocked) {
@@ -7868,8 +7986,8 @@ window.openContractInfo = function(espnId) {
   const p = LG().playerPool.find(x=>String(x.espnId)===String(espnId));
   if (!p) return;
   const r = salaryDB()[normName(p.name)] || {};
-  openModal(`<div class="h2">MLB contract · ${esc(p.name)}</div>
-    <p class="sub mb">Add the player's real MLB deal. Setting an AAV makes them signable (no longer arb). Leave AAV blank to treat them as an arb player.</p>
+  openModal(`<div class="h2">${SP().proLeague} contract · ${esc(p.name)}</div>
+    <p class="sub mb">Add the player's real ${SP().proLeague} deal. Setting an AAV makes them signable (no longer arb). Leave AAV blank to treat them as an arb player.</p>
     <div class="field"><label>Age</label><input class="input" id="ci-age" type="number" value="${r.age||''}" placeholder="Age"></div>
     <div class="row" style="gap:.4rem">
       <div class="field" style="flex:1"><label>Start year</label><input class="input" id="ci-start" type="number" value="${r.start||''}" placeholder="2025"></div>
