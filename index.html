@@ -76,8 +76,12 @@ body {
   font-family: var(--display); font-weight: 700; font-size: 1.4rem;
   letter-spacing: 1px; color: var(--chalk); cursor: pointer;
   display: flex; align-items: baseline; gap: .4rem;
-  flex: none; white-space: nowrap;
+  flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden;
 }
+/* On a phone the league you're in matters more than the app's own name, which is
+   already on the tab and the home screen icon. Let the wordmark shrink so the
+   league chip can show a real name instead of "The …". */
+@media (max-width: 460px) { .brand { font-size: 1.05rem; letter-spacing: 0; } }
 .brand .ver { font-size: .55rem; color: var(--sage-dim); letter-spacing: 1px; }
 .brand .mark { color: var(--amber); }
 .topbar-right { display: flex; align-items: center; gap: .75rem; min-width: 0; }
@@ -93,7 +97,7 @@ body {
   font-family: var(--body); font-size: .68rem; font-weight: 600; color: var(--chalk);
   background: var(--field-3); border: 1px solid var(--line); border-radius: 999px;
   /* shrinks first when the header is tight, so the wordmark never gets clipped */
-  padding: .25rem .65rem; cursor: pointer; max-width: 140px; min-width: 0; flex: 0 1 auto; overflow: hidden;
+  padding: .25rem .65rem; cursor: pointer; max-width: 46vw; min-width: 0; flex: 1 1 auto; overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap; transition: border-color .15s;
 }
 .league-chip:hover { border-color: var(--amber); }
@@ -1274,12 +1278,31 @@ function esc(s) {
 function $(id) { return document.getElementById(id); }
 function teamById(id) { return LG().teams.find(t => String(t.id) === String(id)) || {name:'?', abbrev:'?'}; }
 
+/* TOASTS COLLAPSE.
+   A draft, a rollover or a batch of saves fires dozens of these — unbounded, they
+   stack into a wall that covers the entire screen and hides the very thing you
+   just changed. So: repeats of the same message collapse into one with a counter,
+   and no more than three are on screen at once. */
+const TOAST_MAX = 3;
 function toast(msg, kind='') {
+  const wrap = $('toasts');
+  if (!wrap) return;
+  const last = wrap.lastElementChild;
+  if (last && last.dataset.msg === msg && last.dataset.kind === kind) {
+    const n = (parseInt(last.dataset.n) || 1) + 1;
+    last.dataset.n = n;
+    last.textContent = `${msg} ×${n}`;
+    clearTimeout(Number(last.dataset.timer));
+    last.dataset.timer = setTimeout(() => last.remove(), 3500);
+    return;
+  }
   const el = document.createElement('div');
   el.className = 'toast ' + kind;
   el.textContent = msg;
-  $('toasts').appendChild(el);
-  setTimeout(() => el.remove(), 3500);
+  el.dataset.msg = msg; el.dataset.kind = kind; el.dataset.n = 1;
+  wrap.appendChild(el);
+  while (wrap.children.length > TOAST_MAX) wrap.firstElementChild.remove();
+  el.dataset.timer = setTimeout(() => el.remove(), 3500);
 }
 
 function openModal(html) { $('modal-body').innerHTML = html; $('modal').classList.add('open'); }
@@ -3452,20 +3475,24 @@ function viewStandings() {
   const cur = currentWeekNow();
   const mine = myTeamId();
   const rec = computeRecords();
-  const rows = LG().teams.map(t => {
-    const r = rec[t.id];
+  // NOTE: computeRecords() calls the tie count `t`, so spreading it into an object
+  // that also held the team as `t` silently overwrote the team with a number — the
+  // whole Team column rendered blank and every row linked to team "undefined".
+  // The team is `team` here for that reason; do not shorten it back to `t`.
+  const rows = LG().teams.map(team => {
+    const r = rec[team.id];
     const gp = r.w + r.l + r.t;
     const pct = gp>0 ? (r.w + r.t*0.5)/gp : 0;
-    return { t, ...r, gp, pct };
+    return { team, ...r, gp, pct };
   }).sort((a,b) => b.pct - a.pct || b.pf - a.pf);
 
   const body = rows.map((r,i) => {
-    const isMine = String(r.t.id)===String(mine);
+    const isMine = String(r.team.id)===String(mine);
     return `<tr style="${isMine?'background:var(--amber-bg)':''}">
       <td class="r num" style="${i===0?'color:var(--amber);font-weight:800':''}">${i+1}</td>
-      <td><span class="plink" onclick="setViewingTeam('${r.t.id}');go('home')">${esc(r.t.name)}</span>
+      <td><span class="plink" onclick="setViewingTeam('${r.team.id}');go('home')">${esc(r.team.name)}</span>
         ${isMine?'<span class="sub" style="font-size:.6rem"> · you</span>':''}
-        ${r.t.owner?`<span class="sub" style="font-size:.6rem;display:block">${esc(r.t.owner)}</span>`:''}</td>
+        ${r.team.owner?`<span class="sub" style="font-size:.6rem;display:block">${esc(r.team.owner)}</span>`:''}</td>
       <td class="r num" style="font-weight:700">${r.w}-${r.l}${r.t?('-'+r.t):''}</td>
       <td class="r num cell-best" style="font-size:.75rem">${r.pf.toFixed(0)}</td>
       <td class="r num" style="font-size:.72rem">${r.pa.toFixed(0)}</td>
@@ -3821,20 +3848,31 @@ function viewMyTeam() {
     <div class="eyebrow">${isMine?'★ Your team':'👁 Viewing'} · ${esc(t.name)}${t.owner?` · ${esc(t.owner)}`:''}</div>
     <div class="row-between">
       <div class="h1">${isMine?'My Team':'League Team'}</div>
-      ${isMine ? `<div class="row" style="gap:.4rem">
-        <button class="btn btn-sm btn-ghost" onclick="openTradeCenter()">⇄ Trades${pendingForMe().length?` (${pendingForMe().length})`:''}</button>
-        ${isDynasty()?`<button class="btn btn-sm btn-ghost" onclick="openPickAssets()">◆ Picks</button>`:''}
-        <button class="btn btn-sm btn-ghost" onclick="openAddDrop()">+/− Players</button>
-        <button class="btn btn-sm btn-ghost" onclick="openLeagueRules()" title="League rules & FAQ">§ Rules</button>
-        <button class="btn btn-sm btn-ghost" onclick="openActivityLog()" title="League activity log">≡ Log</button>
-      </div>` : `<button class="btn btn-sm btn-amber" onclick="viewMyOwnTeam()">← My team</button>`}
+      ${isMine ? '' : `<button class="btn btn-sm btn-amber" onclick="viewMyOwnTeam()">← My team</button>`}
     </div>
 
-    <div class="row" style="gap:.35rem;margin-top:.5rem">
+    ${isMine && LSET().useSalaryCap ? (() => {
+      // In a cap league payroll is the number you want in front of you at all times,
+      // not one buried behind the Contracts tab.
+      const spent = teamSalaryTotal(mine), cap = leagueCap(), space = cap - spent;
+      return `<div class="row-between" style="margin-top:.4rem;font-size:.72rem">
+        <span class="sub">Payroll <b class="${space<0?'cell-neg':'amber'}">${fmtMoney(spent)}</b> of ${fmtMoney(cap)}</span>
+        <span class="${space<0?'cell-neg':''}" style="${space>=0?'color:var(--good)':''}">${space<0?`${fmtMoney(-space)} over`:`${fmtMoney(space)} free`}</span>
+      </div>`;
+    })() : ''}
+
+    <div class="row" style="gap:.35rem;margin-top:.5rem;flex-wrap:wrap">
       <button class="btn btn-sm ${teamViewMode==='lineup'?'btn-amber':'btn-ghost'}" onclick="setTeamView('lineup')">📋 Lineup</button>
       <button class="btn btn-sm ${teamViewMode==='stats'?'btn-amber':'btn-ghost'}" onclick="setTeamView('stats')">📊 Stats</button>
       ${LSET().useSalaryCap?`<button class="btn btn-sm ${teamViewMode==='contracts'?'btn-amber':'btn-ghost'}" onclick="setTeamView('contracts')">📝 Contracts</button>`:''}
     </div>
+    ${isMine ? `<div class="row" style="gap:.35rem;margin-top:.35rem;flex-wrap:wrap">
+      <button class="btn btn-sm btn-ghost" onclick="openTradeCenter()">⇄ Trades${pendingForMe().length?` (${pendingForMe().length})`:''}</button>
+      ${isDynasty()?`<button class="btn btn-sm btn-ghost" onclick="openPickAssets()">◆ Picks</button>`:''}
+      <button class="btn btn-sm btn-ghost" onclick="openAddDrop()">+/− Players</button>
+      <button class="btn btn-sm btn-ghost" onclick="openLeagueRules()" title="League rules & FAQ">§ Rules</button>
+      <button class="btn btn-sm btn-ghost" onclick="openActivityLog()" title="League activity log">≡ Log</button>
+    </div>` : ''}
 
     <div class="card" style="padding:.5rem .75rem;margin-top:.5rem">
       <label class="sub" style="font-size:.65rem">View team</label>
@@ -4663,6 +4701,31 @@ function placeholderView(title, msg) {
 const playerView = { sort: 'adp', dir: 1, posFilter: 'ALL', search: '', avail: 'all', ptsWindow: 'season', grpFilter: 'all', minGames: 0, minWeeks: 0, salFilter: 'all' };
 let teamViewMode = 'lineup';  // 'lineup' (day grid) | 'stats' (all-stats table)
 
+/* THE FILTERS FOLD AWAY.
+   Six rows of chips — group, position, sort, salary, stat window, availability,
+   minimums — filled the entire first screen of a phone, so you scrolled past
+   ~1400px of controls before seeing a single player. They live behind one button
+   now. When any are active the button carries a count and a plain-English summary
+   sits under it, so a folded filter can never quietly hide players from you. */
+const PLAYER_FILTER_DEFAULTS = { posFilter: 'ALL', avail: 'all', grpFilter: 'all',
+                                 minGames: 0, minWeeks: 0, salFilter: 'all' };
+let _playerFiltersOpen = false;
+function playerFiltersOpen() { return _playerFiltersOpen; }
+function activeFilters() {
+  const out = [];
+  if (playerView.grpFilter !== 'all') out.push(playerView.grpFilter === 'batters' ? 'batters' : 'pitchers');
+  if (playerView.posFilter !== 'ALL') out.push(playerView.posFilter);
+  if (playerView.avail !== 'all') out.push('available only');
+  if (playerView.salFilter && playerView.salFilter !== 'all') out.push(playerView.salFilter);
+  if (playerView.minGames > 0) out.push(`${playerView.minGames}+ games`);
+  if (playerView.minWeeks > 0) out.push(`${playerView.minWeeks}+ weeks`);
+  return out;
+}
+function activeFilterCount() { return activeFilters().length; }
+function activeFilterSummary() { return activeFilters().join(' · '); }
+window.togglePlayerFilters = function() { _playerFiltersOpen = !_playerFiltersOpen; renderActive(); };
+window.resetPlayerFilters = function() { Object.assign(playerView, PLAYER_FILTER_DEFAULTS); renderActive(); };
+
 function viewPlayersReal() {
   if (!LG().playerPool.length) {
     return `<div class="h1">Players</div>
@@ -4698,7 +4761,9 @@ function viewPlayersReal() {
   const isNBA = FEAT().perGameScoring;   // per-game fantasy points (basketball-style)
   // NBA: show per-game fantasy points (more meaningful than season totals in hoops).
   const ptsField = isNBA ? 'ptsPerGame' : { season:'ptsSeason', '7':'pts7', '14':'pts14', '30':'pts30', bestavg:'bestAvg' }[playerView.ptsWindow];
-  const ptsLabel = isNBA ? 'FP/G' : { season:'Season', '7':'7d', '14':'14d', '30':'30d', bestavg:'Best Avg' }[playerView.ptsWindow];
+  // short header labels: on a phone every character of header width is stolen from
+  // the player-name column, which is the only column anyone reads
+  const ptsLabel = isNBA ? 'FP/G' : { season:'PTS', '7':'7d', '14':'14d', '30':'30d', bestavg:'AVG' }[playerView.ptsWindow];
 
   const useSal = LSET().useSalaryCap;
   const s = playerView.sort, dir = playerView.dir;
@@ -4740,17 +4805,27 @@ function viewPlayersReal() {
     const ptsVal = p[ptsField];
     const ptsTxt = (ptsVal != null) ? ptsVal.toFixed(0) : '—';
     return `<tr style="${drafted?'opacity:.45':''}">
-      <td><span class="row" style="gap:.4rem;align-items:center">
+      <td style="max-width:0"><span class="row" style="gap:.4rem;align-items:center;flex-wrap:nowrap">
         ${headshotImg(p, 26)}
-        <span><span class="plink" onclick="showPlayer('${p.espnId}')">${esc(p.name)}</span>
-        ${p.injured?'<span class="il-badge">IL</span>':''}
-        ${drafted?`<span class="sub" style="font-size:.6rem"> · ${esc(ownerTeam)}</span>`:''}</span>
+        <span style="min-width:0">
+          <span class="plink" style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+            onclick="showPlayer('${p.espnId}')">${esc(p.name)}</span>
+          ${(p.injured||drafted)?`<span class="sub" style="font-size:.58rem;display:block;white-space:nowrap">${p.injured?'<span class="il-badge">IL</span> ':''}${drafted?esc(ownerTeam):''}</span>`:''}
+        </span>
       </span></td>
-      <td class="pos">${esc((p.eligible||[]).join('/') || p.pos || '?')}</td>
-      <td class="pos">${esc(p.proTeam||'')}</td>
+      <td class="pos" style="white-space:nowrap">${esc((p.eligible||[]).join('/') || p.pos || '?')}
+        <span class="sub" style="font-size:.56rem;display:block">${esc(p.proTeam||'')}</span></td>
       <td class="r num cell-best" style="${p.adp>=9999?'color:var(--sage-dim)':''}">${adpTxt}</td>
       <td class="r num" style="font-size:.72rem;${(ptsVal==null||ptsVal<=0)?'color:var(--sage-dim)':'color:var(--chalk);font-weight:600'}">${ptsTxt}</td>
-      ${useSal?`<td class="r num" style="font-size:.68rem">${fmtMoney(playerCapHit(p))}${playerContract(p)?' 📝':isArbPlayer(p)?' A':''}</td>`:''}
+      ${useSal?(() => {
+        // signed vs arb used to be an emoji and a letter appended to the money, which
+        // wrapped onto a second line and doubled the height of every row. Colour says
+        // the same thing in zero extra width.
+        const signed = !!playerContract(p), arb = isArbPlayer(p);
+        const col = signed ? 'color:var(--good)' : arb ? 'color:var(--sage-dim)' : '';
+        const why = signed ? 'under contract' : arb ? 'arb rate (no contract on file)' : 'unsigned — import AAV';
+        return `<td class="r num" style="font-size:.68rem;white-space:nowrap;${col}" title="${why}">${fmtMoney(playerCapHit(p))}</td>`;
+      })():''}
     </tr>`;
   }).join('');
 
@@ -4776,6 +4851,13 @@ function viewPlayersReal() {
     <div class="field mt">
       <input class="input" placeholder="Search players…" value="${esc(playerView.search)}" oninput="setSearch(this.value)">
     </div>
+    <div class="row-between" style="margin-top:.5rem;gap:.5rem">
+      <button class="btn btn-sm ${playerFiltersOpen()?'btn-amber':'btn-ghost'}" onclick="togglePlayerFilters()">
+        ⚙ Filters${activeFilterCount()?` (${activeFilterCount()})`:''} ${playerFiltersOpen()?'▲':'▼'}</button>
+      ${activeFilterCount()?`<button class="btn btn-sm btn-ghost" onclick="resetPlayerFilters()">Reset</button>`:`<span class="sub" style="font-size:.66rem">${list.length} shown</span>`}
+    </div>
+    ${activeFilterCount() && !playerFiltersOpen() ? `<p class="sub" style="font-size:.66rem;margin-top:.25rem">${esc(activeFilterSummary())}</p>` : ''}
+    <div style="${playerFiltersOpen()?'':'display:none'}">
     ${SP().key==='flb' ? `<div class="row" style="gap:.35rem;margin-top:.5rem">
       <button class="btn btn-sm ${playerView.grpFilter==='all'?'btn-amber':'btn-ghost'}" onclick="setGrpFilter('all')">All</button>
       <button class="btn btn-sm ${playerView.grpFilter==='batters'?'btn-amber':'btn-ghost'}" onclick="setGrpFilter('batters')">⚾ Batters</button>
@@ -4812,11 +4894,14 @@ function viewPlayersReal() {
         onchange="setMinWeeks(this.value)">
       ${(playerView.minGames||playerView.minWeeks)?`<button class="btn btn-sm btn-ghost" onclick="clearMinFilters()">clear</button>`:''}
     </div>
+    </div>
     <div class="card card-tight mt">
       <table class="tbl">
-        <thead><tr><th>Player</th><th>Pos</th><th>Tm</th><th class="r">ADP</th><th class="r">${ptsLabel}</th>${useSal?'<th class="r">$ Now</th>':''}</tr></thead>
+        <thead><tr><th style="width:50%">Player</th><th>Pos</th><th class="r">ADP</th><th class="r">${ptsLabel}</th>${useSal?'<th class="r">$</th>':''}</tr></thead>
         <tbody>${rows}</tbody>
       </table>
+      ${useSal?`<div class="divlabel" style="font-size:.58rem"><span style="color:var(--good)">green</span> = under contract ·
+        <span style="color:var(--sage-dim)">dim</span> = arb rate · plain = unsigned</div>`:''}
       ${list.length > 150 ? `<div class="divlabel">showing 150 of ${list.length} matches</div>` :
         `<div class="divlabel">${list.length} player${list.length!==1?'s':''}</div>`}
     </div>
