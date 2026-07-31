@@ -513,6 +513,120 @@
     C(J + 'a manual refresh is available', typeof window.refreshInjuries === 'function');
     C(J + 'and an automatic one', typeof ensureFreshInjuries === 'function');
 
+    // ============================================================
+    // a best-of-week league is measured in best-of-week units
+    // ============================================================
+    const W = `BestWeek[${sport}]: `;
+    const bw = S.setupLeague(sport, { teams: 2, week: 9, name: 'BestWk' + sport,
+      settings: { scoringFormat: 'bestGame', bestGameScope: 'all' } });
+    S.genLogs(9);
+    LG().playerPool.forEach(p => { if (p.mlbId && LG().gameLogs[p.mlbId]) applyPointFields(p, LG().gameLogs[p.mlbId]); });
+    const anyP = LG().playerPool.find(p => p.bestAvg > 0);
+    C(W + 'a season best-average is computed', anyP && anyP.bestAvg > 0, anyP && anyP.bestAvg);
+    C(W + 'and one for every window', anyP && anyP.bestAvg30 != null
+      && anyP.bestAvg14 != null && anyP.bestAvg7 != null,
+      anyP && `${anyP.bestAvg30}/${anyP.bestAvg14}/${anyP.bestAvg7}`);
+    C(W + 'a windowed best-average is an average, not a running total — so it is not\n' +
+        '      bigger than the season one just because the window is shorter',
+      anyP.bestAvg7 <= anyP.ptsSeason, `${anyP.bestAvg7} vs ${anyP.ptsSeason}`);
+    C(W + 'while the windowed TOTALS still are totals', anyP.pts30 >= anyP.pts7);
+
+    C(W + 'the league is recognised as best-of-week', leagueUsesBestGame() === true);
+    C(W + 'so every window resolves to a best-average field',
+      ['season','30','14','7'].every(w => /^bestAvg/.test(ptsFieldFor(w, anyP))),
+      ['season','30','14','7'].map(w => ptsFieldFor(w, anyP)).join(','));
+    C(W + 'the season column is labelled BEST, not PTS',
+      statWindowOptions().some(o => o[0] === 'season' && o[1] === 'BEST'));
+    C(W + 'and the redundant AVG window is not offered twice',
+      !statWindowOptions().some(o => o[0] === 'bestavg'));
+    // basketball normally leads with FP/G, but in a best-of-week league the other
+    // games are never scored, so the week's best has to be what you land on
+    C(W + 'the unit this league pays out in leads the row, in either sport',
+      statWindowOptions()[0][0] === 'season', statWindowOptions().map(o => o[1]).join(','));
+    C(W + 'and it is what you land on', activeStatWindow() === 'season', activeStatWindow());
+    if (FEAT().perGameScoring) {
+      C(W + 'FP/G is still one tap away, not thrown out',
+        statWindowOptions().some(o => o[0] === 'fpg'));
+    }
+    renderPage('players');
+    let ph = document.getElementById('page-players').innerHTML;
+    C(W + 'the page says what the number means',
+      /average of each week's best game/.test(ph));
+    // and says it ABOVE the list — under a 150-row table nobody ever reads it
+    C(W + 'where you can see it without scrolling past every player',
+      ph.indexOf('average of each week\'s best game') < ph.indexOf('showPlayer('));
+    // search down to the one player, so the assertion is about HIS number and not
+    // whichever 150 rows happened to sort to the top
+    setSearch(anyP.name);
+    ph = document.getElementById('page-players').innerHTML;
+    C(W + 'the player is on the page', ph.includes(esc(anyP.name)));
+    C(W + 'and the value carries a decimal, since 6.6 and 6.4 both round to 6',
+      new RegExp(`>${anyP.bestAvg.toFixed(1)}<`).test(ph), anyP.bestAvg.toFixed(1));
+    setPtsWindow('30');
+    setSearch(anyP.name);
+    ph = document.getElementById('page-players').innerHTML;
+    C(W + 'switching window switches which best-average is shown',
+      /last 30 days/.test(ph));
+    C(W + 'and the number switches with it',
+      new RegExp(`>${anyP.bestAvg30.toFixed(1)}<`).test(ph), anyP.bestAvg30.toFixed(1));
+    setPtsWindow('season');
+    setSearch('');
+
+    // a total-points league is untouched
+    const reg = S.setupLeague(sport, { teams: 2, week: 9, name: 'Reg' + sport,
+      settings: { scoringFormat: 'regular' } });
+    S.genLogs(9);
+    LG().playerPool.forEach(p => { if (p.mlbId && LG().gameLogs[p.mlbId]) applyPointFields(p, LG().gameLogs[p.mlbId]); });
+    const regP = LG().playerPool.find(p => p.ptsSeason > 0);
+    C(W + 'a total-points league still totals', leagueUsesBestGame() === false
+      && ptsFieldFor('season', regP) === 'ptsSeason');
+    C(W + 'and keeps the separate best-average lens',
+      statWindowOptions().some(o => o[0] === 'bestavg'));
+    C(W + 'where basketball still leads with FP/G, as it always has',
+      statWindowOptions()[0][0] === (FEAT().perGameScoring ? 'fpg' : 'season'),
+      statWindowOptions()[0].join('/'));
+
+    // ============================================================
+    // the player card fits on a phone
+    // ============================================================
+    const CD = `PlayerCard[${sport}]: `;
+    S.setupLeague(sport, { teams: 2, week: 9, name: 'Card' + sport,
+      settings: { scoringFormat: 'bestGame', useSalaryCap: true, salaryCapDollars: 200000000 } });
+    S.genLogs(9);
+    LG().playerPool.forEach(p => { if (p.mlbId && LG().gameLogs[p.mlbId]) applyPointFields(p, LG().gameLogs[p.mlbId]); });
+    S.runDraft();
+    const cardP = teamRoster(myTeamId())[0];
+    window._weeksOpen = null;
+    showPlayer(cardP.espnId);
+    const cardHtml = grab();
+    C(CD + 'the weekly table is folded away by default', !/<th>Week<\/th>/.test(cardHtml));
+    C(CD + 'with a summary in its place',
+      /Best week/.test(cardHtml) && /Season total/.test(cardHtml));
+    C(CD + 'and the summary drops the per-week average this league never scores',
+      !/All games, per week/.test(cardHtml));
+    C(CD + 'the window row labels itself instead of needing a caption under it',
+      /Best 7d/.test(cardHtml) && /Best 30d/.test(cardHtml)
+      && !/last 7 \/ 14 \/ 30 days/.test(cardHtml));
+    C(CD + `the contract lines say ${SP().proLeague}, not the other sport's league`,
+      cardHtml.includes(`${SP().proLeague} contract`)
+      && !new RegExp(`${sport === 'flb' ? 'NBA' : 'MLB'} contract`).test(cardHtml),
+      SP().proLeague);
+    C(CD + 'and a control to open it', /toggleWeeks\(/.test(cardHtml));
+    C(CD + 'no part of the card scrolls inside itself',
+      !/max-height:38vh/.test(cardHtml));
+    C(CD + 'the roster actions are all present', /dropFromCard\(/.test(cardHtml));
+    C(CD + 'including the ones that used to be pushed below the fold',
+      /toggleTradeBlock\(/.test(cardHtml) && /go\('home'\)/.test(cardHtml));
+    C(CD + 'the headline stat is the one this league scores', /BEST\/WK|Best\/wk/i.test(cardHtml));
+    toggleWeeks(cardP.espnId);
+    C(CD + 'opening it shows the week-by-week table', /<th>Week<\/th>/.test(grab()));
+    C(CD + 'and it is capped so it cannot run away', /max-height:40vh/.test(grab()));
+    toggleWeeks(cardP.espnId);
+    C(CD + 'closing folds it again', !/<th>Week<\/th>/.test(grab()));
+    showPlayer(teamRoster(myTeamId())[1].espnId);
+    C(CD + 'opening a different player starts folded', !/<th>Week<\/th>/.test(grab()));
+    closeModal();
+
     STATE.salaryDB = {};
     window._masterUnlocked = false;
     const bad = S.renderAll();
