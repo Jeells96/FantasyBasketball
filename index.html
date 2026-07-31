@@ -3758,17 +3758,47 @@ function viewPlayers()   { return viewPlayersReal(); }
 function viewMyTeam() {
   // not chosen yet → prompt selection (only OPEN teams) or auto-create
   if (!myTeamId()) {
+    // JOINING IS PERMANENT, so the choice has to be legible. A bare list of names
+    // tells you nothing about what you are taking over — an open team may already
+    // have a drafted roster behind it (someone left, or the commissioner made it),
+    // and claiming the wrong one is not undoable. Every row says what it is.
     const claimedTeamIds = new Set(Object.values(LG().members||{}).map(m => String(m.teamId)));
-    const openTeams = (LG().teams||[]).filter(t => !claimedTeamIds.has(String(t.id)));
-    const opts = openTeams.map(t =>
-      `<button class="btn btn-ghost btn-block mt" onclick="pickMyTeam('${t.id}')"
-        style="text-align:left">${esc(t.name)}</button>`).join('');
-    return `<div class="eyebrow">One-time choice</div>
-      <div class="h1">Pick your team</div>
+    const all = LG().teams || [];
+    const openTeams = all.filter(t => !claimedTeamIds.has(String(t.id)));
+    const takenTeams = all.filter(t => claimedTeamIds.has(String(t.id)));
+    const row = (t) => {
+      const n = teamRoster(t.id).length;
+      return `<div class="card card-tight mt">
+        <div class="row-between" style="align-items:center;gap:.6rem">
+          <div style="min-width:0">
+            <div style="font-weight:700;font-size:.9rem">${esc(t.name)}</div>
+            <div class="sub" style="font-size:.68rem">
+              ${t.owner ? `previously ${esc(t.owner)}` : 'no owner yet'} ·
+              ${n ? `<b class="amber">${n} player${n!==1?'s':''} already drafted</b>` : 'empty roster'}
+            </div>
+          </div>
+          <button class="btn btn-sm btn-amber" style="flex:none" onclick="pickMyTeam('${t.id}')">Join</button>
+        </div>
+      </div>`;
+    };
+    const takenRows = takenTeams.map(t => {
+      const owner = Object.values(LG().members||{}).find(m => String(m.teamId)===String(t.id));
+      return `<div class="row-between" style="padding:.3rem 0;font-size:.74rem;opacity:.55">
+        <span>${esc(t.name)}</span><span class="sub" style="font-size:.66rem">taken · ${esc(owner?.name||'')}</span>
+      </div>`;
+    }).join('');
+    return `<div class="eyebrow">${esc(LG().leagueName||'League')} · one-time choice</div>
+      <div class="h1">Join this league</div>
       ${openTeams.length
-        ? `<p class="sub mt mb">Choose an open team, or create your own. <b>This is permanent</b> — it can't be changed later.</p>${opts}`
-        : `<p class="sub mt mb">No open teams right now. Create your own to join the league.</p>`}
-      <button class="btn btn-amber btn-block mt" onclick="createMyTeam()">+ Create my own team</button>`;
+        ? `<p class="sub mt mb">Take over one of these teams, or start a new one. Whichever you pick is
+             <b>permanent</b> — read the line under each name before you tap Join.</p>
+           ${openTeams.map(row).join('')}
+           <div class="divlabel mt">Or</div>`
+        : `<p class="sub mt mb">${all.length ? 'Every team is taken, so a new one will be created for you.'
+             : 'This league has no teams yet — yours will be the first.'}</p>`}
+      <button class="btn btn-amber btn-block mt" onclick="createMyTeam()">+ Start a new team</button>
+      ${takenRows ? `<div class="divlabel mt">Already taken</div>
+        <div class="card card-tight">${takenRows}</div>` : ''}`;
   }
 
   const mine = myTeamId();
@@ -4609,24 +4639,47 @@ window.pickMyTeam = function(teamId) {
       <button class="btn btn-ghost btn-block mt" onclick="closeModal();renderActive()">← Back</button>`);
     return;
   }
+  const existing = teamRoster(teamId).length;
+  const fresh = !!t._new;
   openModal(`
-    <div class="h2">Claim ${esc(t.name)}</div>
-    <p class="sub mt mb">Name your team and enter your name to lock in as the owner.
-      <b>This is permanent.</b></p>
-    <div class="field"><label>Team name</label><input class="input" id="mb-team" value="${esc(t.name||'')}" placeholder="Team name"></div>
+    <div class="h2">${fresh ? 'Name your team' : `Take over ${esc(t.name)}`}</div>
+    ${fresh
+      ? `<p class="sub mt mb">A new team in <b>${esc(LG().leagueName||'this league')}</b>. Give it a name — everyone else
+           sees this, and it is how you'll recognise your own team. <b>This is permanent.</b></p>`
+      : `<div class="card card-tight mb" style="border-color:var(--amber)">
+           <p class="sub" style="font-size:.74rem">You are taking over <b>${esc(t.name)}</b>${t.owner?`, previously ${esc(t.owner)}`:''}.
+             ${existing ? `It comes with <b>${existing} already-drafted player${existing!==1?'s':''}</b>.` : 'Its roster is empty.'}
+             <b>This is permanent</b> — you cannot swap to a different team afterwards.</p>
+         </div>`}
+    <div class="field"><label>Team name</label><input class="input" id="mb-team" value="${fresh ? '' : esc(t.name||'')}" placeholder="e.g. The Sandlot"></div>
     <div class="field"><label>First name</label><input class="input" id="mb-first" placeholder="First"></div>
     <div class="field"><label>Last name</label><input class="input" id="mb-last" placeholder="Last"></div>
     <button class="btn btn-amber btn-block" onclick="confirmMyTeam('${teamId}')">Lock in</button>
-    <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Cancel</button>
+    <button class="btn btn-ghost btn-block mt" onclick="cancelNewTeam('${teamId}')">Cancel</button>
   `);
   setTimeout(()=>$('mb-team')?.focus(), 100);
 };
 /* auto-create a new team for a joiner, then take them to name/claim it */
+/* Backing out of naming a brand-new team must take the empty slot with it.
+   Otherwise every abandoned join leaves an unnamed "Team 7" in the league, and the
+   next person to join is choosing from a list of those. */
+window.cancelNewTeam = function(teamId) {
+  const t = teamById(teamId);
+  if (t && t._new) {
+    LG().teams = (LG().teams || []).filter(x => String(x.id) !== String(teamId));
+    save();
+  }
+  closeModal(); renderActive();
+};
 window.createMyTeam = function() {
   const n = (LG().teams?.length || 0) + 1;
   const id = 't' + Date.now();
   LG().teams = LG().teams || [];
-  LG().teams.push({ id, name: `Team ${n}`, owner:'', abbrev:`T${n}` });
+  // _new marks a slot that exists only because someone is joining right now. It
+  // keeps the claim screen from offering "Team 7" as a name you can just accept —
+  // an unnamed team is exactly what makes the join list unreadable for the NEXT
+  // person, who then can't tell which team is which.
+  LG().teams.push({ id, name: `Team ${n}`, owner:'', abbrev:`T${n}`, _new: true });
   save();
   // go straight to the claim flow for the new team
   pickMyTeam(id);
@@ -4634,6 +4687,12 @@ window.createMyTeam = function() {
 window.confirmMyTeam = function(teamId) {
   const first = $('mb-first')?.value.trim();
   const last = $('mb-last')?.value.trim();
+  const tname = ($('mb-team')?.value || '').trim();
+  // A TEAM NAME IS REQUIRED. Everyone who joins after you picks from a list of team
+  // names; leaving yours as "Team 4" makes that list meaningless and is how someone
+  // ends up claiming the wrong team.
+  if (!tname) { toast('Give your team a name', 'err'); return; }
+  if (/^team\s*\d+$/i.test(tname)) { toast('Pick a real team name, not "Team ' + tname.replace(/\D/g,'') + '"', 'err'); return; }
   if (!first || !last) { toast('Enter your first and last name', 'err'); return; }
   // double-check team still unclaimed (race)
   const claimedBy = Object.values(LG().members||{}).find(m => String(m.teamId)===String(teamId));
@@ -4644,9 +4703,9 @@ window.confirmMyTeam = function(teamId) {
   // also set the team's owner name (so the generic "Team N" shows the owner)
   const team = LG().teams.find(t => String(t.id)===String(teamId));
   if (team) {
-    const tname = $('mb-team')?.value.trim();
-    if (tname) { team.name = tname; team.abbrev = tname.slice(0,3).toUpperCase(); }
+    team.name = tname; team.abbrev = tname.slice(0,3).toUpperCase();
     team.owner = `${first} ${last}`; team.claimed = true;
+    delete team._new;                       // it is a real, named team now
   }
   STATE.memberId = memberId;            // this device is now this member (locked)
   saveLocal();                           // persist identity pointer
@@ -5941,8 +6000,23 @@ function viewSettings() {
 
     <div class="card">
       <div class="h2">Teams</div>
-      <p class="sub mb">Add and manage teams. Members name and claim them when they join. If someone joins and there's no open team, one is created for them automatically.</p>
+      <p class="sub mb">${LG().teams.length
+        ? `${LG().teams.length} team${LG().teams.length!==1?'s':''}, ${Object.keys(LG().members||{}).length} claimed. Members name their own team when they join; a new slot is created for anyone who joins when nothing is open.`
+        : 'No teams yet. You do not have to create any — each member gets a team when they join, and names it themselves. Add them here only if you want the league laid out in advance.'}</p>
       <button class="btn btn-block" onclick="manageTeams()">Manage teams (${LG().teams.length})</button>
+      <button class="btn btn-ghost btn-block mt" onclick="addTeamsPrompt()">+ Add several teams</button>
+    </div>
+
+    <div class="card">
+      <div class="h2">Draft</div>
+      <p class="sub mb">${LG().draft.complete
+        ? `✓ Drafted — ${LG().draft.picks.length} picks${LSET().useSalaryCap&&LSET().capSetFrom?`, cap fixed at ${fmtMoney(leagueCap())}`:''}.`
+        : LG().teams.length < 2 ? 'Add at least two teams first.'
+        : !LG().playerPool.length ? 'Pull the player pool first (site-wide admin).'
+        : 'Run a live draft from the draft room, or fill every roster instantly here.'}</p>
+      <button class="btn btn-block" onclick="commishAutodraft()"
+        ${LG().teams.length>1 && LG().playerPool.length ? '' : 'disabled'}>⚡ Autodraft every team</button>
+      ${LG().draft.complete ? `<button class="btn btn-ghost btn-block mt" onclick="confirmWipeDraft()">Wipe the draft</button>` : ''}
     </div>
 
     <div class="card">
@@ -7828,6 +7902,57 @@ window.addTeam = function() {
   LG().teams.push({ id: 't' + Date.now(), name, owner, abbrev: name.slice(0,3).toUpperCase() });
   save(); manageTeams(); toast('Team added', 'ok');
 };
+/* Add several teams at once. Named "Team N" deliberately: these are placeholders a
+   member renames when they claim one, and the claim screen refuses to keep that
+   name, so no team stays generic once someone owns it. */
+window.addTeamsPrompt = function() {
+  openModal(`<div class="h2">Add teams</div>
+    <p class="sub mb" style="font-size:.72rem">Creates empty, unclaimed teams for people to take.
+      Each one is renamed by whoever claims it. You don't need to do this — anyone joining an
+      empty league gets a team automatically.</p>
+    <div class="field"><label>How many</label>
+      <input class="input" id="nt-count" type="number" min="1" max="32" value="4" style="text-align:center;font-size:1.2rem"></div>
+    <p class="sub" style="font-size:.68rem">This league has <b>${LG().teams.length}</b> right now.</p>
+    <button class="btn btn-amber btn-block mt" onclick="doAddTeams()">Add them</button>
+    <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Cancel</button>`);
+};
+window.doAddTeams = function() {
+  const n = Math.max(1, Math.min(32, parseInt($('nt-count')?.value) || 0));
+  if (!n) { toast('Enter how many', 'err'); return; }
+  LG().teams = LG().teams || [];
+  const base = LG().teams.length;
+  for (let i = 1; i <= n; i++) {
+    LG().teams.push({ id: 't' + Date.now() + '_' + i, name: `Team ${base + i}`, owner: '', abbrev: `T${base + i}` });
+  }
+  save();
+  logTxn('season', `${n} team${n!==1?'s':''} added — ${LG().teams.length} in the league`);
+  toast(`${n} team${n!==1?'s':''} added`, 'ok');
+  closeModal(); renderActive();
+};
+/* Autodraft, for commissioners. It was only ever in site-wide admin under "Quick
+   test", so a league commissioner had no way to fill rosters without a live draft. */
+window.commishAutodraft = function() {
+  if (!(window._masterUnlocked || commishUnlocked())) { toast('Commissioner only', 'err'); return; }
+  if (LG().teams.length < 2) { toast('Need at least 2 teams', 'err'); return; }
+  if (!LG().playerPool.length) { toast('No player pool loaded', 'err'); return; }
+  const rounds = draftRounds();
+  openModal(`<div class="h2">Autodraft every team?</div>
+    <p class="sub mt mb">Fills all ${LG().teams.length} rosters by ADP in snake order —
+      ${rounds} round${rounds!==1?'s':''}, ${LG().teams.length * rounds} picks.
+      ${LG().draft.complete ? '<b>This replaces the draft that already exists.</b>' : 'Nobody gets to pick.'}</p>
+    ${LSET().useSalaryCap ? `<p class="sub mb" style="font-size:.72rem">Salaries are on, so this also fixes
+      the league's salary cap${LSET().capSetFrom?' — replacing the one set by the last draft':''}.</p>` : ''}
+    <button class="btn btn-amber btn-block" onclick="closeModal();autodraft()">Run autodraft</button>
+    <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Cancel</button>`);
+};
+window.confirmWipeDraft = function() {
+  if (!(window._masterUnlocked || commishUnlocked())) { toast('Commissioner only', 'err'); return; }
+  openModal(`<div class="h2">Wipe the draft?</div>
+    <p class="sub mt mb">Every roster empties and the ${LG().draft.picks.length} picks are discarded.
+      Teams, owners and league settings stay.</p>
+    <button class="btn btn-block" style="background:var(--bad);color:#fff" onclick="closeModal();wipeDraft()">Wipe it</button>
+    <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Cancel</button>`);
+};
 window.removeTeam = function(id) {
   LG().teams = LG().teams.filter(t => String(t.id) !== String(id));
   save(); manageTeams();
@@ -9148,7 +9273,9 @@ function executeTrade(t) {
 window.autodraft = function() {
   if (LG().teams.length < 2) { toast('Need at least 2 teams', 'err'); return; }
   if (!LG().playerPool.length) { toast('No player pool', 'err'); return; }
-  const ROUNDS = SP().rosterSize;
+  // draftRounds() honours a commissioner's roster-slot override; SP().rosterSize is
+  // only the sport default and left custom leagues short.
+  const ROUNDS = draftRounds();
   const teamIds = LG().teams.map(t => t.id);
   const picks = [], taken = new Set();
   const pool = [...LG().playerPool].sort((a,b) => a.adp - b.adp); // best ADP first
@@ -9163,6 +9290,14 @@ window.autodraft = function() {
     }
   }
   LG().draft = { started:true, complete:true, order:teamIds, picks, currentPick:picks.length, rounds:ROUNDS, type:'auto' };
+  logTxn('season', `Autodraft ran — ${picks.length} picks across ${teamIds.length} teams`);
+  // a draft is a draft: fix the cap here too, or an autodrafted league would have
+  // salaries switched on and no cap to measure them against
+  if (LSET().useSalaryCap) {
+    delete LG().settings.capSetFrom;         // this draft supersedes any earlier one
+    const cap = setCapFromDraft({ force: true });
+    if (cap) toast(`Salary cap set to ${fmtMoney(cap)}`, 'ok');
+  }
   save(); toast(`Autodraft complete — ${picks.length} picks`, 'ok'); go('teams');
 };
 
