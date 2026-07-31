@@ -147,7 +147,7 @@
     renderPage('standings');
     sh = document.getElementById('page-standings').innerHTML;
     C(T + 'standings follows the week you are viewing, not a pinned one',
-      new RegExp(`Week ${now + 2} matchups`).test(sh));
+      new RegExp(`>Week ${now + 2}<`).test(sh), sh.match(/>Week \d+</)?.[0]);
     C(T + 'and says the season is elsewhere', /the season is on week/.test(sh));
     goToCurrentWeek();
     C(T + 'the button comes home', activeWeek() === now, activeWeek());
@@ -178,6 +178,106 @@
     LG().draft.complete = true;
     LG().settings.playoffStartWeek = 1;
     C(T + 'but a drafted league still locks in its playoffs', rostersLocked() === true);
+
+    // ============================================================
+    // standings works before a draft, and carries the season's money
+    // ============================================================
+    const P2 = `Standings[${sport}]: `;
+    const pre = S.setupLeague(sport, { teams: 6, week: 2, name: 'Pre' + sport,
+      settings: { leagueType: 'dynasty', useSalaryCap: true, salaryCapDollars: 300000000 } });
+    renderPage('standings');
+    let sh2 = document.getElementById('page-standings').innerHTML;
+    C(P2 + 'every team is listed before the draft',
+      LG().teams.every(t => sh2.includes(t.name)), '');
+    C(P2 + 'and it says why there are no records yet', /Records start once the draft/.test(sh2));
+    C(P2 + 'without pretending there are points', !/>PF</.test(sh2));
+    C(P2 + 'and without a playoff line nobody has earned', !/✦/.test(sh2));
+    S.runDraft();
+    STATE.salaryDB = { [sport]: {} };
+    LG().playerPool.forEach((p, i) => {
+      STATE.salaryDB[sport][normName(p.name)] = { aav: Math.max(1000000, 20000000 - i * 60000) };
+    });
+    renderPage('standings');
+    sh2 = document.getElementById('page-standings').innerHTML;
+    C(P2 + 'after the draft it carries payroll', />\$M</.test(sh2));
+    C(P2 + 'and cap room', />Free</.test(sh2));
+    C(P2 + 'for the season being viewed', new RegExp(`for the ${currentSeasonYear()} season`).test(sh2));
+    C(P2 + 'and records come back', /<th class="r">PF<\/th>/.test(sh2));
+    LG().settings.useSalaryCap = false;
+    renderPage('standings');
+    C(P2 + 'a league without salaries gets no money columns',
+      !/>\$M</.test(document.getElementById('page-standings').innerHTML));
+    LG().settings.useSalaryCap = true;
+
+    // ============================================================
+    // contract labels on the roster
+    // ============================================================
+    const L2 = `ContractTag[${sport}]: `;
+    const tid2 = myTeamId();
+    const r2 = teamRoster(tid2);
+    LG().contracts = {};
+    LG().contracts[String(r2[0].espnId)] = { baseAAV: importedAAV(r2[0]),
+      signedYear: currentSeasonYear(), termYears: 3, teamId: tid2 };
+    C(L2 + 'a signed player is labelled by when he hits free agency',
+      contractTag(r2[0]).text === `FA ${currentSeasonYear() + 3}`, contractTag(r2[0]).text);
+    C(L2 + 'and the tooltip says through which year',
+      contractTag(r2[0]).title.includes(`through ${currentSeasonYear() + 2}`), contractTag(r2[0]).title);
+    LG().contracts[String(r2[1].espnId)] = { baseAAV: importedAAV(r2[1]),
+      signedYear: currentSeasonYear(), termYears: 1, teamId: tid2 };
+    C(L2 + 'a deal ending this year is flagged amber', contractTag(r2[1]).tone === 'amber');
+    C(L2 + 'a player with a salary but no deal reads "unsigned"',
+      contractTag(r2[2]).text === 'unsigned', contractTag(r2[2]).text);
+    delete STATE.salaryDB[sport][normName(r2[3].name)];
+    C(L2 + 'and one with no salary at all reads "no contract"',
+      contractTag(r2[3]).text === (FEAT().arb ? 'no contract' : 'unsigned'), contractTag(r2[3]).text);
+    LG().settings.useSalaryCap = false;
+    C(L2 + 'no labels at all in a league without salaries', contractTag(r2[0]) === null);
+    LG().settings.useSalaryCap = true;
+
+    C(L2 + 'cards are the default roster view', rosterDense() === false);
+    STATE.viewingTeamId = null;
+    renderPage('home');
+    let hh = document.getElementById('page-home').innerHTML;
+    C(L2 + 'the label is on the card, next to the name',
+      new RegExp(`FA ${currentSeasonYear() + 3}`).test(hh));
+    C(L2 + 'and unsigned players say so', /unsigned/.test(hh));
+    toggleRosterDense();
+    renderPage('home');
+    C(L2 + 'compact view carries it too',
+      new RegExp(`FA ${currentSeasonYear() + 3}`).test(document.getElementById('page-home').innerHTML));
+    toggleRosterDense();
+    C(L2 + 'and cards come back', rosterDense() === false);
+
+    // ============================================================
+    // moving the league to next season
+    // ============================================================
+    const Y = `NextSeason[${sport}]: `;
+    const yrWas = currentSeasonYear();
+    const rosterWas = teamRoster(tid2).length;
+    window._masterUnlocked = false;
+    openAdvanceYear();
+    C(Y + 'a manager cannot move the season', currentSeasonYear() === yrWas);
+    window._masterUnlocked = true;
+    openAdvanceYear();
+    C(Y + 'the commissioner is asked first',
+      new RegExp(`Move to the ${yrWas + 1} season`).test(grab()));
+    C(Y + 'and told nothing is touched', /left exactly as they are/.test(grab()));
+    C(Y + 'nothing has moved yet', currentSeasonYear() === yrWas);
+    confirmAdvanceYear();
+    C(Y + 'the league is on the next season', currentSeasonYear() === yrWas + 1);
+    C(Y + 'the schedule moved with it — the league is waiting for it to open',
+      preseason() === true && currentWeekNow() === 1, `week ${currentWeekNow()}`);
+    C(Y + 'rosters are untouched', teamRoster(tid2).length === rosterWas);
+    C(Y + 'contracts are untouched', Object.keys(LG().contracts).length === 2);
+    C(Y + 'and it is written down',
+      new RegExp(`moved to the ${yrWas + 1} season`, 'i').test(
+        (LG().transactions || []).map(t => t.text).join(' ')));
+    C(Y + 'a custom opener from the old season is cleared', !LG().schedule.opener);
+    C(Y + 'a contract signed for the old year now shows one season less',
+      contractTag(teamRoster(tid2).find(x => String(x.espnId) === String(r2[0].espnId))).text
+        === `FA ${yrWas + 3}`);
+    C(Y + 'nothing is roster-locked just because a season rolled',
+      rostersLocked() === false && signingOpen() === true);
 
     STATE.salaryDB = {};
     window._masterUnlocked = false;

@@ -1730,6 +1730,35 @@ function playerCapHit(p, year) {
 /* legacy alias used in some views */
 function playerSalary(p) { return playerCapHit(p, currentSeasonYear()); }
 
+/* WHAT IS THIS PLAYER'S CONTRACT, IN THREE WORDS.
+   The contracts table shows terms and dollars in a grid, which is right for
+   planning and useless while you are looking at a roster. What you want next to a
+   name is the one fact that decides whether you can keep him: when he leaves.
+   A signed player is labelled by the year he becomes a fantasy free agent, not by
+   the year his deal ends — "FA 2029" answers the question directly. */
+function contractTag(p) {
+  if (!LSET().useSalaryCap) return null;
+  const c = playerContract(p);
+  if (c) {
+    const last = c.signedYear + c.termYears - 1;
+    const yearsLeft = last - currentSeasonYear() + 1;
+    return { text: `FA ${last + 1}`, tone: yearsLeft <= 1 ? 'amber' : 'good',
+             title: `Signed through ${last} — ${yearsLeft > 0 ? `${yearsLeft} season${yearsLeft!==1?'s':''} left` : 'expired'}. Fantasy free agent in ${last + 1}.` };
+  }
+  if (isArbPlayer(p)) {
+    return { text: 'no contract', tone: 'dim',
+             title: `No salary on file — counts the ${fmtMoney(SALCFG().arbSalary)} minimum and can't be signed to a term yet.` };
+  }
+  return { text: 'unsigned', tone: 'dim',
+           title: `Not signed to a fantasy contract. Counts ${fmtMoney(playerCapHit(p))} this season and leaves at the end of it.` };
+}
+function contractTagHtml(p, opts = {}) {
+  const t = contractTag(p);
+  if (!t) return '';
+  const col = t.tone === 'good' ? 'var(--good)' : t.tone === 'amber' ? 'var(--amber)' : 'var(--sage-dim)';
+  return `<span class="sub" style="font-size:${opts.size || '.58rem'};color:${col};white-space:nowrap"
+    title="${esc(t.title)}">${esc(t.text)}</span>`;
+}
 /* IL RELIEF.
    A player parked on the IL counts only a share of his salary — that's the whole
    point of the slot, and without it stashing an injured star is pure downside.
@@ -2257,8 +2286,14 @@ function seasonOpenerMonday() {
   const custom = LG().schedule?.opener;
   if (custom) return new Date(custom + 'T00:00:00');
   const table = SEASON_OPENERS[STATE.sport] || SEASON_OPENERS.flb;
-  const fallback = STATE.sport === 'fba' ? `${SP().season - 1}-10-20` : `${SP().season}-03-30`;
-  const iso = table[SP().season] || fallback;
+  // THE LEAGUE'S OWN SEASON YEAR WINS over the sport's pull season. They are
+  // different things: SP().season is which year's ADP and stats we fetch, while
+  // seasonYear is the season this league is playing. Advancing a league to next
+  // year has to move its calendar too, otherwise the weeks keep counting up from
+  // the old opener and the league runs off the end of its own schedule.
+  const yr = (LG() && LG().seasonYear) || SP().season;
+  const fallback = STATE.sport === 'fba' ? `${yr - 1}-10-20` : `${yr}-03-30`;
+  const iso = table[yr] || fallback;
   return new Date(iso + 'T00:00:00');
 }
 /* duration (days) of a given week — custom or default 7 */
@@ -2300,6 +2335,17 @@ function currentWeekNow() {
     if (today < start) return Math.max(1, w);  // before this week starts
   }
   return 26;
+}
+/* Has this league's season not started yet? True when today is before week 1 —
+   a league sitting between seasons, waiting for the schedule to come round. */
+function preseason() {
+  const today = new Date(); today.setHours(0,0,0,0);
+  return today < weekStart(1);
+}
+/* ...and the other end: the schedule has run out. */
+function seasonOver() {
+  const today = new Date(); today.setHours(0,0,0,0);
+  return today > weekDateRange(26).end;
 }
 /* The week the UI should show: explicit viewWeek if set, else computed now. */
 function activeWeek() { return LG().viewWeek || currentWeekNow(); }
@@ -3519,10 +3565,10 @@ function viewStandings() {
       <div class="empty"><div class="big">▦</div><div class="msg">No teams yet.</div>
       <button class="btn" onclick="go('settings')">Open Settings</button></div>`;
   }
-  if (!LG().draft.complete) {
-    return `<div class="h1">Standings</div>
-      <div class="empty"><div class="big">▦</div><div class="msg">Standings appear once the draft is complete.</div></div>`;
-  }
+  // BEFORE THE DRAFT, STANDINGS IS STILL THE LEAGUE ROSTER. It used to be an empty
+  // state, which meant the one page that lists everybody was blank exactly when
+  // people most want to see who is in — while teams are still joining.
+  const predraft = !LG().draft.complete;
   const cur = currentWeekNow();
   const mine = myTeamId();
   const rec = computeRecords();
@@ -3538,25 +3584,45 @@ function viewStandings() {
   }).sort((a,b) => b.pct - a.pct || b.pf - a.pf);
 
   // A standings table that doesn't show who's in is only half a standings table.
-  const berths = Math.max(0, Math.min(rows.length, Number(LSET().playoffTeams) || 0));
+  const berths = predraft ? 0 : Math.max(0, Math.min(rows.length, Number(LSET().playoffTeams) || 0));
+  // salary columns, for the season the table is showing
+  const showSal = !!LSET().useSalaryCap;
+  const salYear = currentSeasonYear();
+  const salCap = showSal ? capForYear(salYear) : 0;
   const body = rows.map((r,i) => {
     const isMine = String(r.team.id)===String(mine);
     const cut = berths > 0 && i === berths - 1 && i < rows.length - 1;
     return `<tr style="${isMine?'background:var(--amber-bg)':''}${cut?';border-bottom:2px solid var(--amber)':''}">
       <td class="r num" style="${i===0?'color:var(--amber);font-weight:800':''}">${i+1}${berths>0&&i<berths?'<span class="sub" style="font-size:.5rem"> ✦</span>':''}</td>
-      <td><span class="plink" onclick="setViewingTeam('${r.team.id}');go('home')">${esc(r.team.name)}</span>
-        ${isMine?'<span class="sub" style="font-size:.6rem"> · you</span>':''}
-        ${r.team.owner?`<span class="sub" style="font-size:.6rem;display:block">${esc(r.team.owner)}</span>`:''}</td>
+      <td style="max-width:0"><span class="plink" style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+          onclick="setViewingTeam('${r.team.id}');go('home')">${esc(r.team.name)}${isMine?' ·&nbsp;you':''}</span>
+        ${r.team.owner?`<span class="sub" style="font-size:.58rem;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.team.owner)}</span>`:''}</td>
       <td class="r num" style="font-weight:700">${r.w}-${r.l}${r.t?('-'+r.t):''}</td>
-      <td class="r num cell-best" style="font-size:.75rem">${r.pf.toFixed(0)}</td>
-      <td class="r num" style="font-size:.72rem">${r.pa.toFixed(0)}</td>
+      ${showSal ? (() => {
+        // payroll for the SEASON being viewed, against that season's cap — so a
+        // dynasty commissioner can see next year's commitments from the same table
+        const spent = teamSalaryTotal(r.team.id, salYear);
+        const room = salCap - spent;
+        // millions, bare — "$133.4M" twice per row is most of a phone's width, and
+        // the header and footnote already say what the unit is
+        const m = v => (v / 1000000).toFixed(1).replace(/\.0$/, '');
+        return `<td class="r num" style="font-size:.7rem;white-space:nowrap">${m(spent)}</td>
+          <td class="r num" style="font-size:.7rem;white-space:nowrap;${room<0?'color:var(--bad)':'color:var(--good)'}">${room<0?'-':''}${m(Math.abs(room))}</td>`;
+      })() : ''}
+      ${predraft ? '' : `<td class="r num cell-best" style="font-size:.75rem">${r.pf.toFixed(0)}</td>
+      <td class="r num" style="font-size:.72rem">${r.pa.toFixed(0)}</td>`}
     </tr>`;
   }).join('');
 
   return `
-    <div class="eyebrow">${esc(LG().leagueName)} · through week ${cur}</div>
+    <div class="eyebrow">${esc(LG().leagueName)} · ${predraft
+      ? `${currentSeasonYear()} · not drafted yet`
+      : preseason() ? `${currentSeasonYear()} · season hasn't started`
+      : `through week ${cur}`}</div>
     <div class="h1">Standings</div>
-    <p class="sub mb" style="font-size:.72rem">Head-to-head record by weekly matchup.${LSET().bonusWin?' <b class="amber">Bonus win ON</b> — top-half scorers earn an extra W each week.':''}</p>
+    <p class="sub mb" style="font-size:.72rem">${predraft
+      ? `${LG().teams.length} team${LG().teams.length!==1?'s':''} in the league. Records start once the draft is done.`
+      : `Head-to-head record by weekly matchup.${LSET().bonusWin?' <b class="amber">Bonus win ON</b> — top-half scorers earn an extra W each week.':''}`}</p>
     ${(() => {
       // This card used to be pinned to the real current week while the rest of the app
       // followed whatever week you had browsed to, so standings and matchups could sit
@@ -3575,9 +3641,9 @@ function viewStandings() {
         </div>`).join('');
       if (!rows) return '';
       return `<div class="card">
-        <div class="row-between" style="align-items:center;margin-bottom:.3rem">
-          <div class="h2" style="margin:0">Week ${wk} matchups</div>
-          <div class="row" style="gap:.3rem">
+        <div class="row-between" style="align-items:center;margin-bottom:.3rem;gap:.4rem">
+          <div class="h2" style="margin:0;font-size:.95rem;white-space:nowrap">Week ${wk}</div>
+          <div class="row" style="gap:.3rem;flex-wrap:nowrap;flex-shrink:0">
             <button class="btn btn-sm btn-ghost" onclick="changeWeek(-1)" ${wk<=1?'disabled':''}>←</button>
             <button class="btn btn-sm ${wk===now?'btn-ghost':'btn-amber'}" onclick="goToCurrentWeek()"
               ${wk===now?'disabled':''} title="Jump to week ${now}">This week</button>
@@ -3600,13 +3666,17 @@ function viewStandings() {
       return `<div class="card" style="border-color:var(--amber)"><div class="h2">🏆 Playoffs</div>${rr}
         ${br.champ ? `<p class="mt" style="text-align:center;font-weight:700;color:var(--amber)">🏆 Champion: ${esc(teamName(br.champ))}</p>` : ''}</div>`;
     })()}
-    <div class="card card-tight">
-      <table class="tbl">
-        <thead><tr><th class="r">#</th><th>Team</th><th class="r">Record</th><th class="r">PF</th><th class="r">PA</th></tr></thead>
+    <div class="card card-tight" style="overflow-x:auto">
+      <table class="tbl" style="min-width:${showSal ? (predraft ? 300 : 380) : 280}px">
+        <thead><tr><th class="r">#</th><th style="width:34%">Team</th><th class="r" style="white-space:nowrap">W-L</th>${
+          showSal?`<th class="r" style="white-space:nowrap">$M</th><th class="r" style="white-space:nowrap">Free</th>`:''}${
+          predraft?'':`<th class="r">PF</th><th class="r">PA</th>`}</tr></thead>
         <tbody>${body}</tbody>
       </table>
     </div>
-    <p class="sub mt" style="font-size:.66rem;text-align:center">${berths>0?`<span class="amber">✦</span> = in the playoffs as it stands (top ${berths}, starting week ${LSET().playoffStartWeek||23}). `:''}PF = points for, PA = points against. Tap a team to view their roster.</p>
+    <p class="sub mt" style="font-size:.66rem;text-align:center">${berths>0?`<span class="amber">✦</span> = in the playoffs as it stands (top ${berths}, starting week ${LSET().playoffStartWeek||23}). `:''}${
+      showSal?`<b>$M</b> and <b>Free</b> are millions of payroll and cap room for the ${salYear} season, against a ${fmtMoney(salCap)} cap. `:''}${
+      predraft?'':'PF = points for, PA = points against. '}Tap a team to view their roster.</p>
     <button class="btn btn-ghost btn-block mt" onclick="openSeasonSchedule()">🗓 Full season schedule</button>
     ${(() => {
       const tx = (LG().transactions||[]).slice(0,12);
@@ -3669,7 +3739,7 @@ function viewMatchups() {
     <div class="h1">Matchups</div>
     <div class="card mt" style="border-color:var(--amber)">
       <div class="row-between">
-        <button class="btn btn-sm btn-ghost" onclick="changeWeek(-1)" ${week<=1?'disabled':''}>← Wk ${week-1}</button>
+        <button class="btn btn-sm btn-ghost" onclick="changeWeek(-1)" ${week<=1?'disabled':''}>← ${week<=1?'Wk 1':'Wk '+(week-1)}</button>
         <span class="display amber">WEEK ${week}</span>
         <button class="btn btn-sm btn-ghost" onclick="changeWeek(1)" ${week>=26?'disabled':''}>Wk ${week+1} →</button>
       </div>
@@ -3917,6 +3987,7 @@ function viewMyTeam() {
         </span>
         <span class="row" style="gap:.5rem;align-items:center;flex-shrink:0">
           <span class="sub" style="font-size:.62rem">${esc((p.eligible||[]).join('/'))}</span>
+          ${contractTagHtml(p, { size: '.6rem' })}
           ${LSET().useSalaryCap?`<span class="sub" style="font-size:.64rem">${fmtMoney(teamPlayerCapHit(viewingId, p, currentSeasonYear()))}</span>`:''}
           <span class="num amber" style="font-weight:700;min-width:2ch;text-align:right">${best?best.pts:'—'}</span>
         </span>
@@ -3931,6 +4002,7 @@ function viewMyTeam() {
             ${p.injured?`<span class="il-badge" title="On injured list">IL</span>`:''}
             <span class="plink" style="margin-left:.4rem" onclick="showPlayer('${p.espnId}')">${esc(p.name)}</span>
             <span class="sub" style="font-size:.7rem"> ${esc((p.eligible||[]).join('/'))}</span>
+            ${contractTagHtml(p, { size: '.62rem' }) ? ` · ${contractTagHtml(p, { size: '.62rem' })}` : ''}
             ${p.heldOver ? `<span class="sub" style="font-size:.6rem;display:block;color:var(--amber)">dropped — final week here</span>`
               : pLocked && !onIR ? `<span class="sub" style="font-size:.6rem;display:block">🔒 locked</span>` : ''}
           </div>
@@ -4061,7 +4133,7 @@ function viewMyTeam() {
     ${teamViewMode === 'contracts' ? '' : `
     <div class="card mt" style="border-color:var(--amber)">
       <div class="row-between" style="margin-bottom:.5rem">
-        <button class="btn btn-sm btn-ghost" onclick="changeWeek(-1)" ${week<=1?'disabled':''}>← Wk ${week-1}</button>
+        <button class="btn btn-sm btn-ghost" onclick="changeWeek(-1)" ${week<=1?'disabled':''}>← ${week<=1?'Wk 1':'Wk '+(week-1)}</button>
         <span class="display amber">WEEK ${week}</span>
         <button class="btn btn-sm btn-ghost" onclick="changeWeek(1)" ${week>=26?'disabled':''}>Wk ${week+1} →</button>
       </div>
@@ -4172,6 +4244,8 @@ function renderTeamStats(roster, slotOf) {
 window.setTeamView = function(m) { teamViewMode = m; renderActive(); };
 /* card view (the seven-day grid, for setting a lineup) vs list view (one line a
    player, for reading a roster). Remembered on the device, not in the league. */
+// Cards are the default: they are the view you set a lineup in, which is the job
+// this page exists for. Compact is opt-in and remembered per device.
 let _rosterDense = false;
 try { _rosterDense = localStorage.getItem('tl_roster_dense') === '1'; } catch (e) {}
 function rosterDense() { return _rosterDense; }
@@ -6092,6 +6166,13 @@ function viewSettings() {
           : `<button class="btn btn-sm" onclick="openCommishUnlock()">Unlock</button>`}
       </div>
       <p class="sub mt" style="font-size:.72rem">Rules, scoring, roster, teams, schedule for <b>${esc(LG().leagueName||'this league')}</b>. ${commishUnlocked()?'':'Enter this league\\u2019s PIN to edit. Members can view the league without it.'}</p>
+      <div class="row-between" style="padding:.4rem 0;border-top:1px solid rgba(42,61,48,.4);margin-top:.4rem">
+        <span class="sub">Season<br><span style="font-size:.62rem;color:var(--sage-dim)">${
+          preseason() ? `waiting for ${currentSeasonYear()} to start`
+          : seasonOver() ? `${currentSeasonYear()} has finished`
+          : `week ${currentWeekNow()} of ${currentSeasonYear()}`}</span></span>
+        <button class="btn btn-sm btn-ghost" onclick="openAdvanceYear()">Move to ${currentSeasonYear()+1} →</button>
+      </div>
       <button class="btn btn-ghost btn-block mt" onclick="openLeagueRules()">§ League rules &amp; FAQ</button>
       <button class="btn btn-ghost btn-block mt" onclick="openActivityLog()">≡ Activity log (${(LG().transactions||[]).length})</button>
     </div>
@@ -7656,6 +7737,44 @@ window.showArbPlayers = function() {
    4) dead-cap expiry (this-season hits clear)
    Destructive + irreversible → requires explicit confirmation.
    ============================================================ */
+/* ADVANCE THE LEAGUE A YEAR.
+   Separate from the salary rollover, which only exists for cap leagues and also
+   applies penalties, expires contracts and re-fixes the cap. Plenty of leagues
+   just need "we're done, roll us into next season" — and a league whose sport is
+   between seasons needs it to stop counting weeks off a schedule that has ended.
+   Moving seasonYear moves the schedule with it (see seasonOpenerMonday). */
+window.openAdvanceYear = function() {
+  if (!(window._masterUnlocked || commishUnlocked())) { toast('Commissioner only', 'err'); return; }
+  const yr = currentSeasonYear();
+  const next = yr + 1;
+  const openerNext = (() => {
+    const table = SEASON_OPENERS[STATE.sport] || {};
+    return table[next] || null;
+  })();
+  openModal(`<div class="h2">Move to the ${next} season?</div>
+    <p class="sub mt mb">This league is playing ${yr}. Moving it to ${next} re-points its calendar at
+      the ${next} ${esc(SP().label)} schedule${openerNext?`, which opens ${new Date(openerNext+'T00:00:00').toLocaleDateString([], {month:'long', day:'numeric', year:'numeric'})}`:''}.
+      Until then the league simply sits in week 1, waiting.</p>
+    <div class="card card-tight mb">
+      <p class="sub" style="font-size:.72rem">Rosters, contracts, teams and settings are all left exactly as they are.
+      ${LSET().useSalaryCap ? 'The salary cap is not touched either — use <b>End season &amp; apply penalties</b> if you want contracts to expire and penalties applied.' : ''}</p>
+    </div>
+    ${LG().schedule?.opener ? `<p class="sub mb" style="font-size:.7rem;color:var(--amber)">Your custom season opener
+      (${esc(LG().schedule.opener)}) will be cleared so the ${next} schedule applies. You can set a new one after.</p>` : ''}
+    <button class="btn btn-amber btn-block" onclick="confirmAdvanceYear()">Move to ${next}</button>
+    <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Cancel</button>`);
+};
+window.confirmAdvanceYear = function() {
+  const from = currentSeasonYear();
+  LG().seasonYear = from + 1;
+  // a custom opener belongs to the season it was written for
+  if (LG().schedule) LG().schedule.opener = null;
+  LG().viewWeek = null;
+  logTxn('season', `League moved to the ${from + 1} season`);
+  save();
+  toast(`Now playing ${from + 1}`, 'ok');
+  closeModal(); renderActive();
+};
 window.openSeasonRollover = function() {
   if (!LSET().useSalaryCap) { toast('Salaries are off for this league', 'err'); return; }
   const yr = currentSeasonYear();
