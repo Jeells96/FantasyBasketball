@@ -521,6 +521,7 @@ const SPORTS = {
     statSeason: 2026,            // real-stat season (MLB) — current year; see CURRENT_YEAR
     rosterSize: 23,
     statsApi: 'mlb',
+    injuriesPath: 'baseball/mlb',   // ESPN league-wide injury report
     // ESPN defaultPositionId -> position
     posMap: {1:'SP',2:'C',3:'1B',4:'2B',5:'3B',6:'SS',7:'OF',8:'OF',9:'OF',10:'DH',11:'RP'},
     // ESPN lineupSlotId -> slot label (null = bench/IL, not scored)
@@ -592,6 +593,7 @@ const SPORTS = {
     statSeason: 2025,           // real-stat season (NBA) — matches the pull season
     rosterSize: 13,
     statsApi: 'nba',
+    injuriesPath: 'basketball/nba',
     posMap: {1:'PG',2:'SG',3:'SF',4:'PF',5:'C',6:'G',7:'F'},
     slotMap: {0:'PG',1:'SG',2:'SF',3:'PF',4:'C',5:'G',6:'F',7:'F/C',8:'G/F',9:'UTIL',10:'BE'},
     eligMap: {
@@ -746,6 +748,7 @@ function blankLeague(name) {
     seasonYear: null,           // explicit current season year (set by rollover)
     rollbackSnapshot: null,     // pre-rollover state, so advancing a season is undoable
     rulesDoc: null,             // {text, faq:[{q,a}], updated} commissioner rulebook
+    injuriesCheckedAt: 0,       // when the ESPN injury report was last applied
     tradeBlock: {},             // teamId -> [playerId] players their manager will move
     watchLists: {},             // memberId -> [playerId] personal follow list
     rookieDraft: { enabled:false, started:false, complete:false, live:false, order:[], picks:[],
@@ -1081,6 +1084,7 @@ function leaguePayload() {
     // field, so a dropped key would leave a consumed snapshot undoable forever
     rollbackSnapshot: lg.rollbackSnapshot || null,
     rulesDoc: lg.rulesDoc || null,
+    injuriesCheckedAt: lg.injuriesCheckedAt || 0,
     tradeBlock: lg.tradeBlock || {},
     watchLists: lg.watchLists || {},
     rookieDraft: lg.rookieDraft || {},
@@ -1178,6 +1182,7 @@ function applyLeague(league) {
   if (league.seasonYear !== undefined) lg.seasonYear = league.seasonYear;
   if (league.rollbackSnapshot !== undefined) lg.rollbackSnapshot = league.rollbackSnapshot;
   if (league.rulesDoc !== undefined) lg.rulesDoc = league.rulesDoc;
+  if (league.injuriesCheckedAt !== undefined) lg.injuriesCheckedAt = league.injuriesCheckedAt;
   if (league.tradeBlock) lg.tradeBlock = league.tradeBlock;
   if (league.watchLists) lg.watchLists = league.watchLists;
   if (league.rookieDraft) lg.rookieDraft = { ...lg.rookieDraft, ...league.rookieDraft };
@@ -1764,6 +1769,17 @@ function contractTagHtml(p, opts = {}) {
    point of the slot, and without it stashing an injured star is pure downside.
    The relief applies to the CURRENT season only: nobody knows who'll be hurt in
    2031, so projecting it forward would understate real future commitments. */
+/* The injury badge, in one place. IL means an actual IL/DL/Out status; day-to-day
+   gets a quieter tag because those players are usually still in the lineup. */
+function injuryBadge(p) {
+  if (p && p.injured) {
+    return `<span class="il-badge" title="${esc(p.injuryStatus || 'On the injured list')}${p.injuryDetail?` — ${esc(p.injuryDetail)}`:''}">IL</span>`;
+  }
+  if (p && p.dtd) {
+    return `<span class="il-badge" style="background:var(--field-3);color:var(--sage-dim)" title="${esc(p.injuryStatus || 'Day to day')}${p.injuryDetail?` — ${esc(p.injuryDetail)}`:''}">DTD</span>`;
+  }
+  return '';
+}
 function irDiscountRate() {
   const d = Number(SALCFG().irDiscount);
   return (d >= 0 && d <= 1) ? d : 1;
@@ -1954,6 +1970,78 @@ async function fetchPlayerPool(logFn) {
   return players;
 }
 
+/* INJURY STATUS GOES STALE, SO REFRESH IT ON ITS OWN.
+   p.injured was a snapshot taken whenever the player pool was last pulled, and a
+   pool pull is a manual master action — so a player who came off the IL in July
+   could still be wearing an IL badge in October.
+
+   The pool endpoint is not an option for this: ESPN ignores its limit filter and
+   returns every player in the league, about 190MB. The league-wide injury report
+   is the right source — a couple of megabytes, sent with
+   access-control-allow-origin *, and it lists ONLY the players actually hurt.
+   Anyone absent from it is healthy, which is exactly the fact we were missing. It
+   carries no player ids, so entries match on normalised name, the same way the
+   salary database already does. */
+const IL_REFRESH_MS = 6 * 3600 * 1000;
+async function fetchInjuryReport(sportKey) {
+  const path = (SPORTS[sportKey || STATE.sport] || SPORTS.flb).injuriesPath;
+  if (!path) return null;
+  const res = await fetch(`https://site.api.espn.com/apis/site/v2/sports/${path}/injuries`);
+  if (!res.ok) throw new Error('ESPN injuries HTTP ' + res.status);
+  const data = await res.json();
+  const out = {};
+  (data.injuries || []).forEach(team => {
+    (team.injuries || []).forEach(x => {
+      const nm = (x.athlete || {}).displayName;
+      if (!nm) return;
+      out[normName(nm)] = { status: x.status || '',
+                            detail: (x.type || {}).description || x.shortComment || '' };
+    });
+  });
+  return out;
+}
+/* Which statuses actually merit an IL slot. Day-to-day does not: those players are
+   usually still playable, ESPN doesn't allow them on an IL either, and badging them
+   as injured is the same wrong answer from the other direction. */
+function isIlStatus(status) { return /IL|\bDL\b|^out$/i.test(String(status || '')); }
+function isDayToDay(status) { return /day-?to-?day/i.test(String(status || '')); }
+window.refreshInjuries = async function(opts = {}) {
+  const pool = LG().playerPool || [];
+  if (!pool.length) return false;
+  let report;
+  try { report = await fetchInjuryReport(STATE.sport); }
+  catch (e) {
+    // A failed fetch must never clear anyone's status — silence beats wrong data.
+    if (!opts.silent) toast('Could not reach the injury report', 'err');
+    return false;
+  }
+  if (!report) return false;
+  let changed = 0;
+  pool.forEach(p => {
+    const rec = report[normName(p.name)] || null;
+    const nowInjured = !!rec && isIlStatus(rec.status);
+    const nowDtd = !!rec && isDayToDay(rec.status);
+    if (!!p.injured !== nowInjured || !!p.dtd !== nowDtd) changed++;
+    p.injured = nowInjured;
+    p.dtd = nowDtd;
+    p.injuryStatus = rec ? rec.status : null;
+    p.injuryDetail = rec ? rec.detail : null;
+  });
+  LG().injuriesCheckedAt = Date.now();
+  if (STATE.activeLeagueDoc) saveLeague({ silent: true }); else saveLocal();
+  if (!opts.silent) toast(changed ? `${changed} injury status${changed!==1?'es':''} updated` : 'Injury report is up to date', 'ok');
+  return true;
+};
+let _ilRefreshing = false;
+function ensureFreshInjuries() {
+  if (_ilRefreshing) return;
+  if (!(LG().playerPool || []).length) return;
+  if (Date.now() - (LG().injuriesCheckedAt || 0) < IL_REFRESH_MS) return;
+  _ilRefreshing = true;
+  refreshInjuries({ silent: true })
+    .then(ok => { if (ok) renderActive(); })
+    .finally(() => { _ilRefreshing = false; });
+}
 /* Pull a player's season fantasy-point total from ESPN stat splits.
    ESPN stat split `id` is a string like "00<season>" (season total, actual).
    We try the stat season first, then the league season, then any actual split. */
@@ -3198,19 +3286,23 @@ function renderPage(page) {
   switch(page) {
     case 'home':      el.innerHTML = viewMyTeam();
                       if (typeof ensurePoolPoints === 'function') ensurePoolPoints();
+                      if (typeof ensureFreshInjuries === 'function') ensureFreshInjuries();
                       break;
     case 'draft':     el.innerHTML = viewDraft(); break;
     case 'rookie':    el.innerHTML = viewRookieDraft(); break;
     case 'standings': el.innerHTML = viewStandings(); break;
     case 'matchups':  el.innerHTML = viewMatchups();
                       if (typeof ensurePoolPoints === 'function') ensurePoolPoints();
+                      if (typeof ensureFreshInjuries === 'function') ensureFreshInjuries();
                       break;
     case 'teams':     el.innerHTML = viewTeams(); break;
     case 'myteam':    el.innerHTML = viewMyTeam();
                       if (typeof ensurePoolPoints === 'function') ensurePoolPoints();
+                      if (typeof ensureFreshInjuries === 'function') ensureFreshInjuries();
                       break;
     case 'players':   el.innerHTML = viewPlayers();
                       if (typeof ensurePoolPoints === 'function') ensurePoolPoints();
+                      if (typeof ensureFreshInjuries === 'function') ensureFreshInjuries();
                       break;
     case 'settings':  el.innerHTML = viewSettings(); break;
   }
@@ -4074,7 +4166,7 @@ function viewMyTeam() {
           ${badge}
           <span class="plink" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
             onclick="showPlayer('${p.espnId}')">${esc(p.name)}</span>
-          ${p.injured?'<span class="il-badge">IL</span>':''}
+          ${injuryBadge(p)}
         </span>
         <span class="row" style="gap:.5rem;align-items:center;flex-shrink:0">
           <span class="sub" style="font-size:.62rem">${esc((p.eligible||[]).join('/'))}</span>
@@ -4090,7 +4182,7 @@ function viewMyTeam() {
           ${headshotImg(p, 38)}
           <div>
             ${badge}
-            ${p.injured?`<span class="il-badge" title="On injured list">IL</span>`:''}
+            ${injuryBadge(p)}
             <span class="plink" style="margin-left:.4rem" onclick="showPlayer('${p.espnId}')">${esc(p.name)}</span>
             <span class="sub" style="font-size:.7rem"> ${esc((p.eligible||[]).join('/'))}</span>
             ${contractTagHtml(p, { size: '.62rem' }) ? ` · ${contractTagHtml(p, { size: '.62rem' })}` : ''}
@@ -4287,7 +4379,7 @@ function renderTeamStats(roster, slotOf) {
     return `<tr style="${isStarter?'':'opacity:.7'}">
       <td><span class="row" style="gap:.4rem;align-items:center">${headshotImg(p, 24)}
         <span><span class="plink" onclick="showPlayer('${p.espnId}')">${esc(p.name)}</span>
-        ${p.injured?'<span class="il-badge">IL</span>':''}
+        ${injuryBadge(p)}
         <span class="sub" style="font-size:.6rem;display:block">${esc((p.eligible||[]).join('/'))}${isStarter?' · '+slotOf[String(p.espnId)].label:' · bench'}</span></span></span></td>
       <td class="r num cell-best" style="font-weight:700">${p.bestAvg!=null?p.bestAvg.toFixed(1):'—'}</td>
       <td class="r num">${p.ptsSeason!=null?p.ptsSeason.toFixed(0):'—'}</td>
@@ -4666,7 +4758,7 @@ window.openAddDrop = function() {
     <div class="divlabel">My roster — tap to drop</div>
     <div style="max-height:25vh;overflow-y:auto">
       ${roster.map(p => `<div class="row-between" style="padding:.3rem 0;border-bottom:1px solid rgba(42,61,48,.4)">
-        <span>${esc(p.name)} <span class="sub" style="font-size:.7rem">${esc((p.eligible||[]).join('/'))}</span>${p.injured?' <span class="il-badge">IL</span>':''}</span>
+        <span>${esc(p.name)} <span class="sub" style="font-size:.7rem">${esc((p.eligible||[]).join('/'))}</span> ${injuryBadge(p)}</span>
         <button class="btn btn-sm btn-ghost" onclick="dropPlayer('${p.espnId}')">Drop</button>
       </div>`).join('')}
     </div>
@@ -5325,7 +5417,7 @@ function viewPlayersReal() {
         <span style="min-width:0">
           <span class="plink" style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
             onclick="showPlayer('${p.espnId}')">${esc(p.name)}</span>
-          ${(p.injured||drafted)?`<span class="sub" style="font-size:.58rem;display:block;white-space:nowrap">${p.injured?'<span class="il-badge">IL</span> ':''}${drafted?esc(ownerTeam):''}</span>`:''}
+          ${(p.injured||p.dtd||drafted)?`<span class="sub" style="font-size:.58rem;display:block;white-space:nowrap">${injuryBadge(p)} ${drafted?esc(ownerTeam):''}</span>`:''}
         </span>
       </span></td>
       <td class="pos" style="white-space:nowrap">${esc((p.eligible||[]).join('/') || p.pos || '?')}
@@ -5911,7 +6003,7 @@ window.addWithSwap = function(addId) {
   const roster = teamRoster(myTeamId());
   const rows = roster.map(r => `
     <div class="row-between" style="padding:.4rem 0;border-bottom:1px solid rgba(42,61,48,.4)">
-      <span>${esc(r.name)} <span class="sub" style="font-size:.7rem">${esc((r.eligible||[]).join('/'))}</span>${r.injured?' <span class="il-badge">IL</span>':''}
+      <span>${esc(r.name)} <span class="sub" style="font-size:.7rem">${esc((r.eligible||[]).join('/'))}</span> ${injuryBadge(r)}
         ${r.bestAvg!=null?`<span class="sub" style="font-size:.65rem"> · ${r.bestAvg.toFixed(1)} avg</span>`:''}</span>
       <button class="btn btn-sm" style="background:var(--bad);color:#fff" onclick="confirmSwap('${addId}','${r.espnId}')">Drop</button>
     </div>`).join('');
@@ -6266,6 +6358,9 @@ function viewSettings() {
       <div class="h2">Player eligibility</div>
       <p class="sub mb">Re-derive position eligibility from stored data (fixes inflated positions without an ESPN re-pull).</p>
       <button class="btn btn-block" onclick="reDeriveEligibility()">Re-derive eligibility</button>
+      <button class="btn btn-ghost btn-block mt" onclick="refreshInjuries()">🩹 Refresh injury report now</button>
+      <p class="sub" style="font-size:.66rem;margin-top:.3rem">Refreshes on its own every few hours.
+        ${LG().injuriesCheckedAt ? `Last checked ${new Date(LG().injuriesCheckedAt).toLocaleString([], {month:'short', day:'numeric', hour:'numeric', minute:'2-digit'})}.` : 'Not checked yet.'}</p>
       <button class="btn btn-ghost btn-block mt" onclick="diagEligibility()">🔎 Check a player's ESPN slots</button>
     </div>
 
@@ -7405,7 +7500,12 @@ window.doPullPool = async function() {
         ptsPerGame, gamesPlayed,             // NBA per-game rate (null for MLB)
         ptsSeason: SP().statsApi === 'nba' ? seasonPts : null,  // mark NBA as "has points"
         owned: Math.round((pl.ownership?.percentOwned || 0) * 10) / 10,
-        injured: !!pl.injured || (pl.injuryStatus && pl.injuryStatus !== 'ACTIVE' && pl.injuryStatus !== 'NORMAL' && pl.injuryStatus !== 'INJURY_STATUS_NORMAL'),
+        // Only real IL statuses count as injured — matching refreshInjuries(), so a
+        // pool pull and an injury refresh can never disagree. DAY_TO_DAY is tracked
+        // separately: those players are usually still playable and are not
+        // IL-eligible anywhere.
+        injured: /(_DL|_IL|^OUT$)/i.test(String(pl.injuryStatus || '')),
+        dtd: /DAY_TO_DAY/i.test(String(pl.injuryStatus || '')),
         injuryStatus: pl.injuryStatus || null,
         mlbId: null,
       };

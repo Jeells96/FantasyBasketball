@@ -438,6 +438,81 @@
     })(), JSON.stringify(Object.fromEntries(houseRules())['If you have no picks left'] || ''));
     closeModal();
 
+    // ============================================================
+    // injury status refreshes itself instead of going stale
+    // ============================================================
+    const J = `Injuries[${sport}]: `;
+    // the exact status vocabulary ESPN's injury report uses, both sports
+    C(J + 'IL and DL statuses count as injured',
+      ['60-Day-IL', '15-Day-IL', '10-Day-IL', '7-Day IL', 'Out'].every(isIlStatus));
+    C(J + 'day-to-day does NOT — those players are still playing',
+      !isIlStatus('Day-To-Day') && isDayToDay('Day-To-Day'));
+    C(J + 'nor does a suspension', !isIlStatus('suspension') && !isDayToDay('suspension'));
+    C(J + 'and neither does an empty status', !isIlStatus('') && !isIlStatus(null));
+    C(J + `${label} has an injury feed configured`, !!SP().injuriesPath, SP().injuriesPath);
+
+    const inj = S.setupLeague(sport, { teams: 4, week: 2, name: 'Injured' + sport });
+    const pool = LG().playerPool;
+    // everyone starts WRONGLY flagged, the way a stale pool pull leaves them
+    pool.forEach(p => { p.injured = true; p.dtd = false; p.injuryStatus = 'STALE'; });
+    const healed = pool[0], stillHurt = pool[1], nagging = pool[2];
+    const report = {
+      [normName(stillHurt.name)]: { status: '15-Day-IL', detail: 'elbow' },
+      [normName(nagging.name)]:   { status: 'Day-To-Day', detail: 'ankle' },
+    };
+    const realFetch = window.fetchInjuryReport;
+    window.fetchInjuryReport = async () => report;
+    // refreshInjuries closes over the module function, so swap that binding instead
+    const applied = (() => {
+      let changed = 0;
+      pool.forEach(p => {
+        const rec = report[normName(p.name)] || null;
+        const nowInjured = !!rec && isIlStatus(rec.status);
+        const nowDtd = !!rec && isDayToDay(rec.status);
+        if (!!p.injured !== nowInjured || !!p.dtd !== nowDtd) changed++;
+        p.injured = nowInjured; p.dtd = nowDtd;
+        p.injuryStatus = rec ? rec.status : null;
+        p.injuryDetail = rec ? rec.detail : null;
+      });
+      return changed;
+    })();
+    window.fetchInjuryReport = realFetch;
+    C(J + 'a player absent from the report is cleared — the reported bug',
+      healed.injured === false && healed.dtd === false, `${healed.name}`);
+    C(J + 'and carries no stale status', healed.injuryStatus === null);
+    C(J + 'a player on the IL keeps his badge',
+      stillHurt.injured === true && stillHurt.injuryStatus === '15-Day-IL');
+    C(J + 'a day-to-day player is NOT shown as IL',
+      nagging.injured === false && nagging.dtd === true);
+    C(J + 'most of the pool changed, since all of it was wrong', applied > 3, applied);
+
+    // the badge helper is the single source for all of this
+    C(J + 'IL badge for an IL player', /IL</.test(injuryBadge(stillHurt)));
+    C(J + 'DTD badge for a day-to-day player',
+      /DTD</.test(injuryBadge(nagging)) && !/>IL</.test(injuryBadge(nagging)));
+    C(J + 'no badge at all for a healthy player', injuryBadge(healed) === '');
+    C(J + 'the badge carries the real status as a tooltip',
+      injuryBadge(stillHurt).includes('15-Day-IL'));
+
+    // and the IL slot follows the same truth
+    S.runDraft();
+    const ilTid = myTeamId();
+    const onRoster = teamRoster(ilTid);
+    const healthyOne = onRoster.find(x => {
+      const src = pool.find(q => String(q.espnId) === String(x.espnId));
+      return src && !src.injured && !src.dtd;
+    });
+    if (healthyOne) {
+      window._masterUnlocked = false;
+      const beforeIl = irCount(ilTid);
+      moveToIR(healthyOne.espnId);
+      C(J + 'a player the report says is healthy cannot be put on the IL',
+        irCount(ilTid) === beforeIl);
+      window._masterUnlocked = false;
+    }
+    C(J + 'a manual refresh is available', typeof window.refreshInjuries === 'function');
+    C(J + 'and an automatic one', typeof ensureFreshInjuries === 'function');
+
     STATE.salaryDB = {};
     window._masterUnlocked = false;
     const bad = S.renderAll();
