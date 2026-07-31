@@ -5182,7 +5182,10 @@ function placeholderView(title, msg) {
 }
 
 /* Players view works in Phase 1 once pool is loaded — proves the data layer */
-const playerView = { sort: 'adp', dir: 1, posFilter: 'ALL', search: '', avail: 'all', ptsWindow: 'season', grpFilter: 'all', minGames: 0, minWeeks: 0, salFilter: 'all' };
+// avail starts at 'avail': the players page is overwhelmingly used to find someone
+// to ADD, and a list led by players who are already on somebody's roster is mostly
+// noise. 'all' is one tap away and the summary line always says which you're on.
+const playerView = { sort: 'adp', dir: 1, posFilter: 'ALL', search: '', avail: 'avail', ptsWindow: 'season', grpFilter: 'all', minGames: 0, minWeeks: 0, salFilter: 'all' };
 /* STAT WINDOWS ARE PER SPORT, NOT MLB-ONLY.
    applyPointFields() computes 7/14/30-day totals and a best-week average from any
    sport's gamelog — basketball's included. Basketball was simply pinned to FP/G
@@ -5208,21 +5211,34 @@ let teamViewMode = 'lineup';  // 'lineup' (day grid) | 'stats' (all-stats table)
    ~1400px of controls before seeing a single player. They live behind one button
    now. When any are active the button carries a count and a plain-English summary
    sits under it, so a folded filter can never quietly hide players from you. */
-const PLAYER_FILTER_DEFAULTS = { posFilter: 'ALL', avail: 'all', grpFilter: 'all',
+const PLAYER_FILTER_DEFAULTS = { posFilter: 'ALL', avail: 'avail', grpFilter: 'all',
                                  minGames: 0, minWeeks: 0, salFilter: 'all' };
 let _playerFiltersOpen = false;
 function playerFiltersOpen() { return _playerFiltersOpen; }
+/* Everything currently narrowing the list, INCLUDING the default availability.
+   The summary is there so a folded filter can never quietly hide players from you,
+   and that has to hold for the default too — otherwise someone searches for a
+   rostered player, finds nothing, and has no idea why. */
 function activeFilters() {
   const out = [];
   if (playerView.grpFilter !== 'all') out.push(playerView.grpFilter === 'batters' ? 'batters' : 'pitchers');
   if (playerView.posFilter !== 'ALL') out.push(playerView.posFilter);
-  if (playerView.avail !== 'all') out.push('available only');
+  if (playerView.avail === 'avail') out.push('available only');
+  if (playerView.avail === 'drafted') out.push('rostered only');
   if (playerView.salFilter && playerView.salFilter !== 'all') out.push(playerView.salFilter);
   if (playerView.minGames > 0) out.push(`${playerView.minGames}+ games`);
   if (playerView.minWeeks > 0) out.push(`${playerView.minWeeks}+ weeks`);
   return out;
 }
-function activeFilterCount() { return activeFilters().length; }
+/* How far you are from the defaults — drives the badge count and whether Reset is
+   offered. Distinct from activeFilters() on purpose: sitting on the default
+   "available only" is not something you need a Reset button for, but it IS
+   something the summary must still tell you about. */
+function nonDefaultFilterCount() {
+  return Object.keys(PLAYER_FILTER_DEFAULTS)
+    .filter(k => playerView[k] !== PLAYER_FILTER_DEFAULTS[k]).length;
+}
+function activeFilterCount() { return nonDefaultFilterCount(); }
 function activeFilterSummary() { return activeFilters().join(' · '); }
 window.togglePlayerFilters = function() { _playerFiltersOpen = !_playerFiltersOpen; renderActive(); };
 window.resetPlayerFilters = function() { Object.assign(playerView, PLAYER_FILTER_DEFAULTS); renderActive(); };
@@ -5355,7 +5371,7 @@ function viewPlayersReal() {
         ⚙ Filters${activeFilterCount()?` (${activeFilterCount()})`:''} ${playerFiltersOpen()?'▲':'▼'}</button>
       ${activeFilterCount()?`<button class="btn btn-sm btn-ghost" onclick="resetPlayerFilters()">Reset</button>`:`<span class="sub" style="font-size:.66rem">${list.length} shown</span>`}
     </div>
-    ${activeFilterCount() && !playerFiltersOpen() ? `<p class="sub" style="font-size:.66rem;margin-top:.25rem">${esc(activeFilterSummary())}</p>` : ''}
+    ${activeFilters().length && !playerFiltersOpen() ? `<p class="sub" style="font-size:.66rem;margin-top:.25rem">Showing ${esc(activeFilterSummary())}</p>` : ''}
     <div style="${playerFiltersOpen()?'':'display:none'}">
     ${SP().key==='flb' ? `<div class="row" style="gap:.35rem;margin-top:.5rem">
       <button class="btn btn-sm ${playerView.grpFilter==='all'?'btn-amber':'btn-ghost'}" onclick="setGrpFilter('all')">All</button>
