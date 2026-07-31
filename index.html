@@ -434,6 +434,7 @@ input.input, select, textarea {
   </div>
   <div class="topbar-right">
     <button class="league-chip" id="league-chip" onclick="openLeagueSwitcher()" title="Change league or sport"></button>
+    <button class="icon-btn" id="trade-bell" onclick="openTradeCenter()" title="Trade offers waiting on you" style="display:none"></button>
     <span class="week-pill">WK <b id="wk-label">—</b></span>
     <button class="icon-btn" onclick="go('settings')" title="Settings">⚙</button>
   </div>
@@ -734,6 +735,8 @@ function blankLeague(name) {
     moneyTrades: [],            // [{from,to,amount,perYear,years,startYear}] cash considerations
     seasonApplied: null,        // last season-year penalties/escalators were applied
     seasonYear: null,           // explicit current season year (set by rollover)
+    rollbackSnapshot: null,     // pre-rollover state, so advancing a season is undoable
+    rulesDoc: null,             // {text, faq:[{q,a}], updated} commissioner rulebook
     rookieDraft: { enabled:false, started:false, complete:false, live:false, order:[], picks:[],
                    currentPick:0, draftDate:null, secPerPick:90, snake:true, rounds:4,
                    pickStartedAt:null, paused:false },
@@ -1061,6 +1064,10 @@ function leaguePayload() {
     moneyTrades: lg.moneyTrades || [],
     seasonApplied: lg.seasonApplied || null,
     seasonYear: lg.seasonYear || null,
+    // an explicit null, never a missing key: Firestore merge writes can't delete a
+    // field, so a dropped key would leave a consumed snapshot undoable forever
+    rollbackSnapshot: lg.rollbackSnapshot || null,
+    rulesDoc: lg.rulesDoc || null,
     rookieDraft: lg.rookieDraft || {},
     trades: lg.trades || [],
     lineups: lg.lineups || {},
@@ -1154,6 +1161,8 @@ function applyLeague(league) {
   if (league.moneyTrades) lg.moneyTrades = league.moneyTrades;
   if (league.seasonApplied !== undefined) lg.seasonApplied = league.seasonApplied;
   if (league.seasonYear !== undefined) lg.seasonYear = league.seasonYear;
+  if (league.rollbackSnapshot !== undefined) lg.rollbackSnapshot = league.rollbackSnapshot;
+  if (league.rulesDoc !== undefined) lg.rulesDoc = league.rulesDoc;
   if (league.rookieDraft) lg.rookieDraft = { ...lg.rookieDraft, ...league.rookieDraft };
   if (league.trades) lg.trades = league.trades;
   if (league.lineups) lg.lineups = league.lineups;
@@ -1385,6 +1394,8 @@ const SALARY_DEFAULTS = {
     capGrowthPct: 5,
     signingDiscount: 0.875, escalatorGrowth: 0.125, escalatorPct: 5,
     penaltyTiers: PENALTY_TIERS_DEFAULT,
+    dropPenalty: 2,               // dropping a signed player costs this x his current salary
+    irDiscount: 0.5,              // a player parked on the IL counts this share of his salary
     // cap headroom by league type — how much slack over an evenly-split payroll
     headroom: { dynasty: 1.08, keeper: 1.05, redraft: 1.03 },
   },
@@ -1399,6 +1410,8 @@ const SALARY_DEFAULTS = {
     capGrowthPct: 5,
     signingDiscount: 0.875, escalatorGrowth: 0.125, escalatorPct: 5,
     penaltyTiers: PENALTY_TIERS_DEFAULT,
+    dropPenalty: 2,
+    irDiscount: 0.5,
     headroom: { dynasty: 1.08, keeper: 1.05, redraft: 1.03 },
   },
 };
@@ -1526,6 +1539,43 @@ function leagueCap() {
   if (ov && ov > 0) return ov;
   return SALCFG().defaultCap;
 }
+/* THE CAP IN A GIVEN SEASON.
+   Future years normally compound at capGrowthPct, but a percentage is a guess and a
+   commissioner may have already agreed what 2029's cap will be. capOverrides pins
+   any single year to an exact number; every other year still compounds off the
+   nearest earlier pin, so setting 2029 doesn't silently rewrite 2030 onward. */
+function capOverrides() {
+  const o = LG().settings?.capOverrides;
+  return (o && typeof o === 'object') ? o : {};
+}
+function capForYear(year) {
+  const base = currentSeasonYear();
+  const ovs = capOverrides();
+  const growth = (SALCFG().capGrowthPct || 0) / 100;
+  const exact = Number(ovs[String(year)]);
+  if (exact > 0) return Math.round(exact);
+  // walk back to the most recent pinned year (or the league's current cap) and
+  // compound forward from there
+  let anchorYear = base, anchorCap = leagueCap();
+  for (const k of Object.keys(ovs)) {
+    const y = Number(k), v = Number(ovs[k]);
+    if (v > 0 && y <= year && y >= anchorYear) { anchorYear = y; anchorCap = v; }
+  }
+  const n = year - anchorYear;
+  return Math.round(anchorCap * Math.pow(1 + growth, Math.max(0, n)));
+}
+window.setCapOverride = function(year, val) {
+  ensureSettings();
+  const st = LG().settings;
+  st.capOverrides = { ...(st.capOverrides || {}) };
+  const m = parseFloat(val);
+  // an empty box means "no pin" — store an explicit null rather than dropping the
+  // key, because Firestore merge writes can't delete fields.
+  st.capOverrides[String(year)] = (m > 0) ? Math.round(m * 1000000) : null;
+  save();
+  toast(m > 0 ? `${year} cap pinned to ${fmtMoney(Math.round(m*1000000))}` : `${year} cap back to ${fmtMoney(capForYear(year))}`, 'ok');
+  renderActive();
+};
 function currentSeasonYear() {
   // The fantasy season year = current calendar year. (Previously this added +1,
   // which wrongly jumped to next year during the current season.) A commissioner
@@ -1573,11 +1623,31 @@ function playerCapHit(p, year) {
 /* legacy alias used in some views */
 function playerSalary(p) { return playerCapHit(p, currentSeasonYear()); }
 
+/* IL RELIEF.
+   A player parked on the IL counts only a share of his salary — that's the whole
+   point of the slot, and without it stashing an injured star is pure downside.
+   The relief applies to the CURRENT season only: nobody knows who'll be hurt in
+   2031, so projecting it forward would understate real future commitments. */
+function irDiscountRate() {
+  const d = Number(SALCFG().irDiscount);
+  return (d >= 0 && d <= 1) ? d : 1;
+}
+function irRelief(teamId, p, year) {
+  if (year !== currentSeasonYear()) return 1;
+  if (!teamId || !isOnIR(p.espnId, teamId)) return 1;
+  return irDiscountRate();
+}
+/* a player's cap hit AS CHARGED TO A TEAM (IL relief applied) */
+function teamPlayerCapHit(teamId, p, year) {
+  year = year || currentSeasonYear();
+  return Math.round((playerCapHit(p, year) || 0) * irRelief(teamId, p, year));
+}
+
 /* sum a team's cap hit for a season year, including dead-cap + money-trade effects */
 function teamSalaryTotal(teamId, year) {
   year = year || currentSeasonYear();
   let total = 0;
-  teamRoster(teamId).forEach(p => { total += playerCapHit(p, year) || 0; });
+  teamRoster(teamId).forEach(p => { total += teamPlayerCapHit(teamId, p, year); });
   // dead-cap hits charged to this team for this year
   ((LG().deadCap || {})[teamId] || []).forEach(d => { if (d.year === year) total += d.amount; });
   // money traded: receiving cash reduces cap, sending cash increases it (for that year)
@@ -1606,7 +1676,11 @@ function teamCapPenalty(teamId, year) {
 function dropDeadCap(p) {
   const c = playerContract(p);
   if (!c) return 0;                                     // unsigned = no dead cap
-  return 2 * contractSalaryForYear(c, currentSeasonYear());
+  const raw = SALCFG().dropPenalty;
+  // 0 is a legitimate setting (no dead cap at all) — only a missing/garbage value
+  // falls back to the default, so `|| 2` would be wrong here.
+  const mult = (raw == null || isNaN(raw)) ? 2 : Math.max(0, Number(raw));
+  return mult * contractSalaryForYear(c, currentSeasonYear());
 }
 
 /* ===== PICK OWNERSHIP for penalties =====
@@ -2181,6 +2255,184 @@ function logTxn(type, text) {
   LG().transactions.unshift({ ts: Date.now(), type, text });
   if (LG().transactions.length > 200) LG().transactions.length = 200;
 }
+/* THE LEAGUE RULEBOOK.
+   In a contract league the same three questions get asked in the group chat every
+   year: what does dropping a signed guy cost, how long can I sign someone, when is
+   the deadline. Those answers already exist — they're the league's settings — so
+   the house-rules section is GENERATED from them and can never drift out of date.
+   The commissioner adds the parts a computer can't know (tiebreakers, punishments,
+   dues) as free text, plus a FAQ. */
+function rulesDoc() {
+  const d = LG().rulesDoc;
+  return (d && typeof d === 'object') ? d : { text: '', faq: [], updated: null };
+}
+function houseRules() {
+  const ls = LSET(), c = SALCFG();
+  const rows = [
+    ['Format', `${ls.leagueType || 'redraft'} · ${LG().teams.length} teams · ${rosterCap()} roster spots`],
+    ['Scoring', ls.scoringFormat === 'regular' ? 'every starter game counts' : 'best single game of the week'],
+    ['Trade deadline', `week ${ls.tradeDeadlineWeek || 20} — trades and signings both close`],
+    ['Waivers', ls.waiverMode === 'faab' ? `FAAB, $${ls.faabBudget || 100} budget` : 'rolling priority'],
+    ['Playoffs', `${ls.playoffTeams || 4} teams, starting week ${ls.playoffStartWeek || 21}`],
+  ];
+  if (ls.useSalaryCap) {
+    rows.push(['Salary cap', `${fmtMoney(leagueCap())} this season, ${c.capGrowthPct}%/yr after`]);
+    rows.push(['Contracts', `up to ${c.maxTerm} years · year 1 costs ${c.signingDiscount}× AAV, then +${Math.round(c.escalatorGrowth*100)}%/yr`]);
+    rows.push(['Minimum salary', `${fmtMoney(c.arbSalary)}${c.arbSalaryDerived ? ' (tracks the imported salary data)' : ''}`]);
+    const dp = (c.dropPenalty == null || isNaN(c.dropPenalty)) ? 2 : Number(c.dropPenalty);
+    rows.push(['Dropping a signed player', dp > 0
+      ? `${dp}× his current salary as dead cap, charged this season`
+      : 'no dead cap — the contract is simply voided']);
+    if (FEAT().ir) rows.push(['Injured list', irDiscountRate() < 1
+      ? `a player on the IL counts ${Math.round(irDiscountRate()*100)}% of his salary, this season only`
+      : 'no cap relief — the IL is a roster spot only']);
+    const tiers = (c.penaltyTiers || []).map((t, i, a) => {
+      const lo = i === 0 ? 1 : a[i-1].maxPct + 1;
+      const hi = t.maxPct >= 999 ? 'and up' : `–${t.maxPct}%`;
+      return `${lo}${hi} over = ${t.picks} pick${t.picks!==1?'s':''}`;
+    }).join(', ');
+    rows.push(['Going over the cap', `${tiers}, forfeited at season end (earliest rounds first)`]);
+  }
+  return rows;
+}
+/* Deliberately tiny markdown: escape everything first, then re-introduce only
+   headings, bullets, bold and line breaks. Nothing here can inject markup. */
+function mdLite(text) {
+  return esc(String(text || '')).split('\n').map(line => {
+    const l = line.trim();
+    if (!l) return '';
+    const bold = t => t.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
+    if (/^#{1,3}\s/.test(l)) return `<div class="divlabel" style="margin-top:.6rem">${bold(l.replace(/^#{1,3}\s/, ''))}</div>`;
+    if (/^[-*]\s/.test(l)) return `<div style="font-size:.76rem;padding:.12rem 0 .12rem .8rem">• ${bold(l.slice(2))}</div>`;
+    return `<p style="font-size:.76rem;margin:.25rem 0">${bold(l)}</p>`;
+  }).join('');
+}
+window.openLeagueRules = function() {
+  const d = rulesDoc();
+  const canEdit = window._masterUnlocked || commishUnlocked();
+  const houseHtml = houseRules().map(([k, v]) =>
+    `<div class="row-between" style="padding:.28rem 0;border-bottom:1px solid rgba(42,61,48,.3);gap:.8rem">
+      <span class="sub" style="font-size:.72rem;flex-shrink:0">${esc(k)}</span>
+      <span style="font-size:.72rem;text-align:right">${esc(v)}</span>
+    </div>`).join('');
+  const faq = (d.faq || []).filter(f => f && (f.q || f.a));
+  openModal(`<div class="h2">${esc(LG().leagueName || 'League')} rules</div>
+    <p class="sub mb" style="font-size:.68rem">The house rules below are read straight from this league's settings, so
+      they can't go stale. Everything under "Our rules" is written by your commissioner.</p>
+    <div class="divlabel">House rules</div>
+    <div class="card card-tight">${houseHtml}</div>
+    ${d.text ? `<div class="divlabel mt">Our rules</div>
+      <div class="card card-tight">${mdLite(d.text)}</div>` : ''}
+    ${faq.length ? `<div class="divlabel mt">FAQ</div>
+      <div class="card card-tight">${faq.map(f => `
+        <div style="padding:.3rem 0;border-bottom:1px solid rgba(42,61,48,.3)">
+          <div style="font-size:.76rem;font-weight:700">${esc(f.q)}</div>
+          <div class="sub" style="font-size:.72rem;margin-top:.15rem">${mdLite(f.a)}</div>
+        </div>`).join('')}</div>` : ''}
+    ${d.updated ? `<p class="sub mt" style="font-size:.62rem;text-align:center">Last edited ${new Date(d.updated).toLocaleDateString()}</p>` : ''}
+    ${canEdit ? `<button class="btn btn-ghost btn-block mt" onclick="openRulesEditor()">✎ Edit rules &amp; FAQ</button>` : ''}
+    <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Close</button>`);
+};
+window.openRulesEditor = function() {
+  if (!(window._masterUnlocked || commishUnlocked())) { toast('Commissioner only', 'err'); return; }
+  const d = rulesDoc();
+  const faq = (d.faq || []);
+  openModal(`<div class="h2">Edit rules</div>
+    <p class="sub mb" style="font-size:.68rem">Plain text. <b>#&nbsp;heading</b>, <b>-&nbsp;bullet</b> and <b>**bold**</b> work.
+      Don't restate the cap or deadline — those are generated from your settings already.</p>
+    <div class="field"><label>Our rules</label>
+      <textarea class="input" id="rules-text" rows="10" style="font-family:inherit;line-height:1.5"
+        placeholder="# Tiebreakers&#10;- Head to head, then points for&#10;&#10;# Dues&#10;$50, due before the draft.">${esc(d.text || '')}</textarea></div>
+    <div class="divlabel mt">FAQ</div>
+    <div id="faq-rows">${faq.map((f, i) => `
+      <div class="card card-tight mb">
+        <input class="input mb" id="faq-q-${i}" placeholder="Question" value="${esc(f.q || '')}">
+        <textarea class="input" id="faq-a-${i}" rows="2" placeholder="Answer">${esc(f.a || '')}</textarea>
+        <button class="btn btn-sm btn-ghost mt" onclick="removeFaqEntry(${i})">Remove</button>
+      </div>`).join('')}</div>
+    <button class="btn btn-ghost btn-block" onclick="addFaqEntry()">+ Add a question</button>
+    <button class="btn btn-amber btn-block mt" onclick="saveRulesDoc()">Save</button>
+    <button class="btn btn-ghost btn-block mt" onclick="openLeagueRules()">Cancel</button>`);
+};
+/* read the open editor's inputs back into the league (so adding a row doesn't
+   discard what's already typed) */
+function collectRulesEditor() {
+  const d = rulesDoc();
+  const text = document.getElementById('rules-text');
+  const out = { text: text ? text.value : (d.text || ''), faq: [], updated: d.updated || null };
+  for (let i = 0; ; i++) {
+    const q = document.getElementById('faq-q-' + i), a = document.getElementById('faq-a-' + i);
+    if (!q && !a) break;
+    out.faq.push({ q: q ? q.value : '', a: a ? a.value : '' });
+  }
+  return out;
+}
+window.addFaqEntry = function() {
+  const d = collectRulesEditor();
+  d.faq.push({ q: '', a: '' });
+  LG().rulesDoc = d;
+  openRulesEditor();
+};
+window.removeFaqEntry = function(i) {
+  const d = collectRulesEditor();
+  d.faq.splice(i, 1);
+  LG().rulesDoc = d;
+  openRulesEditor();
+};
+window.saveRulesDoc = function() {
+  const d = collectRulesEditor();
+  d.faq = d.faq.filter(f => (f.q || '').trim() || (f.a || '').trim());
+  d.updated = Date.now();
+  LG().rulesDoc = d;
+  save();
+  toast('Rules saved', 'ok');
+  openLeagueRules();
+};
+
+/* THE ACTIVITY LOG.
+   Every add, drop, trade, waiver claim, keeper decision, contract and season
+   advance already lands in LG().transactions — but only the last dozen were ever
+   shown, at the bottom of standings. In a contract league the log IS the paper
+   trail: who dropped whom, what the dead cap was, when a deal was signed. This
+   gives it a full view with filters and an export you can paste into a group chat. */
+const TXN_TYPES = { add:'➕ Adds', drop:'➖ Drops', trade:'⇄ Trades', waiver:'📥 Waivers',
+                    keeper:'📌 Keepers', contract:'✎ Contracts', season:'⏭ Season' };
+function txnIcon(t) { return (TXN_TYPES[t] || '• Other').split(' ')[0]; }
+window.setTxnFilter = function(type) {
+  window._txnFilter = type === window._txnFilter ? null : type;
+  openActivityLog();
+};
+window.openActivityLog = function() {
+  const all = LG().transactions || [];
+  const filter = window._txnFilter || null;
+  const shown = filter ? all.filter(t => t.type === filter) : all;
+  const counts = {};
+  all.forEach(t => { counts[t.type] = (counts[t.type] || 0) + 1; });
+  const chips = Object.keys(TXN_TYPES).filter(k => counts[k]).map(k =>
+    `<button class="btn btn-sm ${filter===k?'btn-amber':'btn-ghost'}" onclick="setTxnFilter('${k}')">${TXN_TYPES[k]} ${counts[k]}</button>`).join(' ');
+  const rows = shown.length ? shown.map(t => {
+    const d = new Date(t.ts);
+    return `<div style="padding:.35rem 0;border-bottom:1px solid rgba(42,61,48,.3);font-size:.74rem">
+      ${txnIcon(t.type)} ${esc(t.text)}
+      <span class="sub" style="font-size:.6rem">· ${d.toLocaleDateString([], {month:'short', day:'numeric'})} ${d.toLocaleTimeString([], {hour:'numeric', minute:'2-digit'})}</span>
+    </div>`;
+  }).join('') : '<p class="sub" style="font-size:.75rem">Nothing logged yet.</p>';
+
+  openModal(`<div class="h2">League activity</div>
+    <p class="sub mb" style="font-size:.7rem">${all.length} entr${all.length===1?'y':'ies'}, newest first. The log keeps the last 200.</p>
+    ${chips ? `<div class="row mb" style="gap:.3rem;flex-wrap:wrap">
+      ${filter?`<button class="btn btn-sm btn-ghost" onclick="setTxnFilter(null)">All ${all.length}</button>`:''}${chips}</div>` : ''}
+    <div class="card card-tight" style="max-height:55vh;overflow-y:auto">${rows}</div>
+    <button class="btn btn-ghost btn-block mt" onclick="exportActivityLog()">⧉ Copy ${filter?'these':'all'} to clipboard</button>
+    <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Close</button>`);
+};
+window.exportActivityLog = function() {
+  const filter = window._txnFilter || null;
+  const all = LG().transactions || [];
+  const shown = filter ? all.filter(t => t.type === filter) : all;
+  const text = shown.map(t => `${new Date(t.ts).toLocaleString()}  [${t.type}]  ${t.text}`).join('\n');
+  copyText(text || 'No activity logged.');
+};
 /* is this player a pitcher (for best-game scope)? */
 function isPitcherP(p) { return /SP|RP/.test((p.eligible||[]).join(',')); }
 /* which scoring mode applies to THIS player in THIS league?
@@ -2759,6 +3011,15 @@ function renderPage(page) {
   if (chip) {
     chip.textContent = STATE.activeLeagueDoc ? `${SP().icon} ${LG().leagueName}` : '';
   }
+  // a trade offer sitting unanswered is easy to miss — badge it everywhere, not
+  // just on the My Team page where the trade button lives
+  const bell = $('trade-bell');
+  if (bell) {
+    const n = myTeamId() ? pendingForMe().length : 0;
+    bell.style.display = n ? '' : 'none';
+    bell.textContent = n > 9 ? '⇄9+' : `⇄${n}`;
+    bell.title = `${n} trade offer${n!==1?'s':''} waiting on you`;
+  }
   // draft tab appears only while a draft is live
   const navDraft = $('nav-draft');
   if (navDraft) navDraft.style.display = (LG().draft?.live) ? '' : 'none';
@@ -3256,7 +3517,10 @@ function viewStandings() {
         `<div style="padding:.3rem 0;border-bottom:1px solid rgba(42,61,48,.3);font-size:.72rem">
           ${icon(t.type)} ${esc(t.text)} <span class="sub" style="font-size:.6rem">· ${new Date(t.ts).toLocaleDateString([], {month:'short', day:'numeric'})}</span>
         </div>`).join('');
-      return `<div class="card mt"><div class="h2">Recent activity</div>${rows}</div>`;
+      return `<div class="card mt">
+        <div class="row-between"><div class="h2" style="margin:0">Recent activity</div>
+          <button class="btn btn-sm btn-ghost" onclick="openActivityLog()">View all (${(LG().transactions||[]).length})</button></div>
+        ${rows}</div>`;
     })()}`;
 }
 function viewMatchups() {
@@ -3561,6 +3825,8 @@ function viewMyTeam() {
         <button class="btn btn-sm btn-ghost" onclick="openTradeCenter()">⇄ Trades${pendingForMe().length?` (${pendingForMe().length})`:''}</button>
         ${isDynasty()?`<button class="btn btn-sm btn-ghost" onclick="openPickAssets()">◆ Picks</button>`:''}
         <button class="btn btn-sm btn-ghost" onclick="openAddDrop()">+/− Players</button>
+        <button class="btn btn-sm btn-ghost" onclick="openLeagueRules()" title="League rules & FAQ">§ Rules</button>
+        <button class="btn btn-sm btn-ghost" onclick="openActivityLog()" title="League activity log">≡ Log</button>
       </div>` : `<button class="btn btn-sm btn-amber" onclick="viewMyOwnTeam()">← My team</button>`}
     </div>
 
@@ -3766,6 +4032,8 @@ function renderTeamContracts(teamId, isMine) {
       } else if (idx === 0) {
         val = playerCapHit(p, yr); txt = fmtMoney(val);
       }
+      const relief = irRelief(teamId, p, yr);
+      if (relief !== 1 && val > 0) { val = Math.round(val * relief); txt = fmtMoney(val); }
       colTotal[idx] += val;
       const color = idx===0 ? 'var(--chalk)' : (arb ? 'var(--sage-dim)' : 'var(--sage)');
       return `<td class="r num" style="font-size:.62rem;color:${val>0?color:'transparent'}">${txt||'·'}</td>`;
@@ -3787,6 +4055,7 @@ function renderTeamContracts(teamId, isMine) {
       <td style="font-size:.66rem;white-space:nowrap">
         <span class="plink" onclick="showPlayer('${p.espnId}')">${esc(p.name.length>11?p.name.slice(0,10)+'…':p.name)}</span>
         ${c?'<span class="ps-tag" style="display:inline;background:var(--good)">S</span>':''}
+        ${isOnIR(p.espnId, teamId)&&irDiscountRate()<1?`<span class="ps-tag" style="display:inline;background:var(--amber)" title="On the IL — counts ${Math.round(irDiscountRate()*100)}% this season">IL</span>`:''}
       </td>
       <td class="r sub" style="font-size:.58rem">${age||'·'}</td>
       <td class="r num" style="font-size:.58rem;color:var(--sage)">${aav!=null?fmtMoney(aav):'·'}</td>
@@ -3810,7 +4079,7 @@ function renderTeamContracts(teamId, isMine) {
   const totalRow = colTotal.map((v,i) => `<td class="r num" style="font-size:.6rem;font-weight:700;${i===0?'color:var(--amber)':''}">${fmtMoney(v)}</td>`).join('');
   const deadRow = deadByYear.some(v=>v>0) ? `<tr><td class="sub" style="font-size:.58rem" colspan="4">dead cap</td>${deadByYear.map(v=>`<td class="r num" style="font-size:.58rem;color:var(--bad)">${v>0?fmtMoney(v):'·'}</td>`).join('')}</tr>` : '';
   const capRow = years.map((yr,i) => {
-    const cap = Math.round(leagueCap()*Math.pow(1+capGrowth,i));
+    const cap = capForYear(yr);
     const space = cap - colTotal[i];
     return `<td class="r num" style="font-size:.6rem;${space<0?'color:var(--bad)':'color:var(--good)'}">${fmtMoney(space)}</td>`;
   }).join('');
@@ -3844,6 +4113,7 @@ window.setContractTerm = function(espnId, val) {
   const existing = playerContract(p);
   if (term === 0) {
     delete LG().contracts[String(espnId)];           // unsign
+    logTxn('contract', `${teamName(myTeamId())} released ${p.name} from his contract`);
     toast(`${p.name} unsigned`, 'ok');
   } else {
     const aav = existing ? existing.baseAAV : importedAAV(p);   // freeze AAV at first signing
@@ -3854,6 +4124,7 @@ window.setContractTerm = function(espnId, val) {
       termYears: term,
       teamId: existing ? existing.teamId : myTeamId(),
     };
+    logTxn('contract', `${teamName(myTeamId())} signed ${p.name} for ${term}yr at ${fmtMoney(aav)} AAV`);
     toast(`${p.name} signed ${term}yr`, 'ok');
   }
   save();
@@ -3875,9 +4146,11 @@ function renderSalaryLookahead(teamId) {
     let committed = 0;
     roster.forEach(p => {
       const c = playerContract(p);
-      if (c) committed += contractSalaryForYear(c, yr);
-      else if (isArbPlayer(p)) committed += SALCFG().arbSalary;   // arb stays flat, no escalation
+      let v = 0;
+      if (c) v = contractSalaryForYear(c, yr);
+      else if (isArbPlayer(p)) v = SALCFG().arbSalary;   // arb stays flat, no escalation
       // unsigned non-arb players: no future commitment (must sign to keep beyond now)
+      committed += Math.round(v * irRelief(teamId, p, yr));
     });
     // dead cap + money trades for that year
     ((LG().deadCap||{})[teamId]||[]).forEach(d => { if (d.year===yr) committed += d.amount; });
@@ -3886,7 +4159,7 @@ function renderSalaryLookahead(teamId) {
       if (yr>=start && yr<start+yrs){ const idx=yr-start; const per=mt.perYearList?(mt.perYearList[idx]||0):(mt.perYear!=null?mt.perYear:Math.round(mt.amount/yrs));
         if(String(mt.to)===String(teamId))committed-=per; if(String(mt.from)===String(teamId))committed+=per; }
     });
-    const cap = Math.round(cap0 * Math.pow(1+growth, i));
+    const cap = capForYear(yr);
     const space = cap - committed;
     html += `<tr><td class="pos">${yr}</td>
       <td class="r num">${fmtMoney(committed)}</td>
@@ -5021,11 +5294,15 @@ function applyDropDeadCap(espnId, tid) {
   const c = p ? playerContract(p) : null;
   if (!c) return 0;
   const dead = dropDeadCap(p);
-  LG().deadCap = LG().deadCap || {};
-  LG().deadCap[tid] = LG().deadCap[tid] || [];
-  LG().deadCap[tid].push({ playerId: String(espnId), amount: dead, year: currentSeasonYear(), name: p.name });
-  delete LG().contracts[String(espnId)];
-  logTxn('drop', `${teamName(tid)} took ${fmtMoney(dead)} dead cap dropping ${p.name}`);
+  if (dead > 0) {
+    LG().deadCap = LG().deadCap || {};
+    LG().deadCap[tid] = LG().deadCap[tid] || [];
+    LG().deadCap[tid].push({ playerId: String(espnId), amount: dead, year: currentSeasonYear(), name: p.name });
+  }
+  delete LG().contracts[String(espnId)];   // the deal is void either way
+  logTxn('drop', dead > 0
+    ? `${teamName(tid)} took ${fmtMoney(dead)} dead cap dropping ${p.name}`
+    : `${teamName(tid)} dropped ${p.name} from his contract (no dead cap)`);
   return dead;
 }
 
@@ -5332,7 +5609,8 @@ function viewSettings() {
       <button class="btn btn-block mt" onclick="openSalaryPaste()">📋 Paste ${SP().label} salary data</button>
       <button class="btn btn-ghost btn-block mt" onclick="openSalaryConfig()">⚙ Default cap rules & penalties</button>
       ${FEAT().arb ? `<button class="btn btn-ghost btn-block mt" onclick="showArbPlayers()">🚩 Players with no contract (arb)</button>` : ''}
-      <button class="btn btn-block mt" style="background:var(--bad);color:#fff" onclick="openSeasonRollover()">⏭ End season & apply penalties</button>` : ''}
+      <button class="btn btn-block mt" style="background:var(--bad);color:#fff" onclick="openSeasonRollover()">⏭ End season & apply penalties</button>
+      ${LG().rollbackSnapshot ? `<button class="btn btn-ghost btn-block mt" onclick="undoSeasonRollover()">↩ Undo the advance to ${currentSeasonYear()} (back to ${LG().rollbackSnapshot.fromYear})</button>` : ''}` : ''}
     </div>
 
     <div class="card">
@@ -5362,6 +5640,8 @@ function viewSettings() {
           : `<button class="btn btn-sm" onclick="openCommishUnlock()">Unlock</button>`}
       </div>
       <p class="sub mt" style="font-size:.72rem">Rules, scoring, roster, teams, schedule for <b>${esc(LG().leagueName||'this league')}</b>. ${commishUnlocked()?'':'Enter this league\\u2019s PIN to edit. Members can view the league without it.'}</p>
+      <button class="btn btn-ghost btn-block mt" onclick="openLeagueRules()">§ League rules &amp; FAQ</button>
+      <button class="btn btn-ghost btn-block mt" onclick="openActivityLog()">≡ Activity log (${(LG().transactions||[]).length})</button>
     </div>
 
     ${commishUnlocked() ? `
@@ -6589,6 +6869,21 @@ window.openSalaryConfig = function() {
     <p class="sub" style="font-size:.66rem">${c.arbSalaryDerived
       ? 'Read from the bottom of the imported salary data, so it stays current on its own. Type a number here to pin it instead.'
       : 'Set by hand. Clear it to let the imported salary data set the minimum automatically.'}</p>
+    <div class="row-between" style="padding:.3rem 0">
+      <span class="sub">Drop penalty (× salary)</span>
+      <input class="input" type="number" step="0.25" min="0" value="${c.dropPenalty}" style="width:90px;text-align:right"
+        onchange="setSalCfg('dropPenalty', this.value)">
+    </div>
+    <p class="sub" style="font-size:.66rem">Dropping a player who is under contract charges his remaining year at this
+      multiple as dead cap. 0 turns dead cap off entirely.</p>
+    <div class="row-between" style="padding:.3rem 0">
+      <span class="sub">IL discount (× salary)</span>
+      <input class="input" type="number" step="0.05" min="0" max="1" value="${c.irDiscount}" style="width:90px;text-align:right"
+        onchange="setSalCfg('irDiscount', this.value)">
+    </div>
+    <p class="sub" style="font-size:.66rem">A player parked on the IL counts this share of his salary, this season only —
+      future years stay at full price. 1 charges full freight and makes the IL purely a roster-spot convenience.</p>
+
     <div class="divlabel mt">Over-cap penalties (draft picks lost)</div>
     <p class="sub" style="font-size:.66rem">Default: 1–10% over = 1 pick, 11–20% = 2 picks, 21%+ = 3 picks.</p>
     ${tierRows}
@@ -6653,6 +6948,23 @@ window.openLeagueCap = function() {
       <input class="input" id="lg-cap" type="number" step="1" min="1"
         value="${Math.round(leagueCap()/1000000)}" style="text-align:right"></div>
     <button class="btn btn-amber btn-block" onclick="saveLeagueCap()">Save cap</button>
+    <div class="divlabel mt">Future seasons</div>
+    <p class="sub" style="font-size:.66rem">Each year grows ${SALCFG().capGrowthPct}% off the one before it. Type a number
+      to pin a year to an exact cap instead; later years then grow from that pin. Clear a box to un-pin it.</p>
+    ${(() => {
+      const base = currentSeasonYear();
+      const ovs = capOverrides();
+      return Array.from({length: 5}, (_, i) => {
+        const yr = base + 1 + i;
+        const pinned = Number(ovs[String(yr)]) > 0;
+        return `<div class="row-between" style="padding:.25rem 0">
+          <span class="sub">${yr}${pinned?' <span class="amber">· pinned</span>':` · ${fmtMoney(capForYear(yr))}`}</span>
+          <input class="input" type="number" step="1" min="0" placeholder="grow"
+            value="${pinned?Math.round(Number(ovs[String(yr)])/1000000):''}"
+            style="width:110px;text-align:right" onchange="setCapOverride(${yr}, this.value)">
+        </div>`;
+      }).join('');
+    })()}
     <button class="btn btn-ghost btn-block mt" onclick="applySuggestedCap();closeModal()">Use suggested ${fmtMoney(b.cap)}</button>
     <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Cancel</button>`);
 };
@@ -6777,8 +7089,41 @@ window.openSeasonRollover = function() {
     <button class="btn btn-block mt" style="background:var(--bad);color:#fff" onclick="confirmSeasonRollover()">Apply & advance to ${yr+1}</button>
     <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Cancel</button>`);
 };
+/* SEASON ROLLOVER IS DESTRUCTIVE — so it is reversible.
+   Advancing deletes expired contracts, releases those players off rosters, strips
+   penalty picks and rewrites the cap. A commissioner who runs it a week early, or
+   before a disputed contract is fixed, has no other way back. We snapshot exactly
+   the pieces the rollover touches (not the whole league — scores and schedules keep
+   running) and restore them on undo. */
+const ROLLOVER_KEYS = ['contracts', 'deadCap', 'moneyTrades', 'draftPicks', 'lineups', 'irStash'];
+function snapshotForRollover() {
+  const lg = LG();
+  const snap = { fromYear: currentSeasonYear(), at: Date.now(),
+                 cap: LSET().salaryCapDollars || null,
+                 picks: JSON.parse(JSON.stringify(lg.draft?.picks || [])) };
+  ROLLOVER_KEYS.forEach(k => { snap[k] = JSON.parse(JSON.stringify(lg[k] || (Array.isArray(lg[k]) ? [] : {}))); });
+  return snap;
+}
+window.undoSeasonRollover = function() {
+  const lg = LG();
+  const snap = lg.rollbackSnapshot;
+  if (!snap) { toast('Nothing to undo', 'err'); return; }
+  ROLLOVER_KEYS.forEach(k => { lg[k] = snap[k]; });
+  lg.draft = lg.draft || {};
+  lg.draft.picks = snap.picks;                       // rosters live in draft.picks
+  ensureSettings();
+  lg.settings.salaryCapDollars = snap.cap;
+  lg.seasonYear = snap.fromYear;
+  lg.seasonApplied = null;
+  lg.rollbackSnapshot = null;                        // one undo, not a time machine
+  logTxn('season', `Season advance undone — back to ${snap.fromYear}`);
+  save();
+  toast(`Reverted to ${snap.fromYear}`, 'ok');
+  closeModal(); renderActive();
+};
 window.confirmSeasonRollover = function() {
   const yr = currentSeasonYear();
+  LG().rollbackSnapshot = snapshotForRollover();
   const logs = [];
   const log = (m) => logs.push(m);
   // 1) PENALTIES — remove picks for each over-cap team (cascade-aware)
@@ -6789,9 +7134,10 @@ window.confirmSeasonRollover = function() {
       removeOnePick(t.id, k + 1, yr + 1, log);
     }
   });
-  // 2) CAP GROWTH — bake the grown cap into this league's setting
+  // 2) CAP GROWTH — bake next season's cap into this league's setting. capForYear
+  //    honours an explicit pin for that year before falling back to growth %.
   ensureSettings();
-  LG().settings.salaryCapDollars = Math.round(leagueCap() * (1 + (SALCFG().capGrowthPct||0)/100));
+  LG().settings.salaryCapDollars = capForYear(yr + 1);
   // 3) CONTRACT AGING — advance signedYear bookkeeping by expiring finished deals.
   //    Contracts are stored by signedYear+term; "aging" = drop any whose last year was yr.
   const contracts = LG().contracts || {};
@@ -6831,11 +7177,13 @@ window.confirmSeasonRollover = function() {
   // record advance + set the new explicit season year
   LG().seasonApplied = yr;
   LG().seasonYear = yr + 1;
+  logTxn('season', `Season advanced ${yr} → ${yr+1}: ${expired} contract${expired!==1?'s':''} expired, cap now ${fmtMoney(leagueCap())}`);
   save();
   openModal(`<div class="h2">✓ Advanced to ${yr+1}</div>
     <p class="sub mb">${expired} contract${expired!==1?'s':''} expired — those players were released to free agency. Cap is now ${fmtMoney(leagueCap())}.</p>
     ${logs.length?`<div class="card card-tight" style="max-height:40vh;overflow-y:auto"><div class="sub" style="font-size:.7rem;line-height:1.6">${logs.map(esc).join('<br>')}</div></div>`:''}
-    <button class="btn btn-block mt" onclick="closeModal();renderActive()">Done</button>`);
+    <button class="btn btn-block mt" onclick="closeModal();renderActive()">Done</button>
+    <button class="btn btn-ghost btn-block mt" onclick="undoSeasonRollover()">↩ Undo — put ${yr} back</button>`);
 };
 
 /* ---- SCORING EDITOR — edit our own point values ---- */
@@ -7804,12 +8152,14 @@ function tradeCard(t, mode) {
   if (mode === 'incoming') {
     actions = `<div class="row" style="gap:.4rem;margin-top:.5rem">
       <button class="btn btn-sm btn-amber" onclick="acceptTrade('${t.id}')">Accept</button>
+      <button class="btn btn-sm btn-ghost" onclick="counterTrade('${t.id}')">Counter</button>
       <button class="btn btn-sm btn-ghost" onclick="rejectTrade('${t.id}')">Reject</button>
     </div>`;
   } else if (mode === 'outgoing') {
     actions = `<button class="btn btn-sm btn-ghost mt" onclick="cancelTrade('${t.id}')">Cancel offer</button>`;
   }
-  const statusTag = mode==='history' ? `<span class="sub" style="font-size:.6rem">✓ completed</span>` : '';
+  const statusTag = mode==='history' ? `<span class="sub" style="font-size:.6rem">✓ completed</span>`
+    : t.counterOf ? `<span class="sub amber" style="font-size:.6rem">counter</span>` : '';
   return `<div class="card card-tight" style="margin-bottom:.5rem">
     <div class="row-between"><b style="font-size:.82rem">${esc(fromT.name)} ⇄ ${esc(toT.name)}</b>${statusTag}</div>
     <div class="sub" style="font-size:.72rem;margin-top:.3rem">
@@ -7831,6 +8181,29 @@ function describeAssets(playerIds, picks, money) {
   return parts.join(', ');
 }
 
+/* COUNTER-OFFER.
+   A counter is just a new proposal seeded from the one you're answering, with the
+   sides swapped — you become the proposer, so what they were sending becomes what
+   you're asking for. The original is marked 'countered' when the counter is sent,
+   not now, so backing out of the builder leaves the offer live. */
+window.counterTrade = function(id) {
+  const t = (LG().trades||[]).find(x => x.id===id);
+  if (!t || t.status!=='pending') { toast('Trade no longer available', 'err'); return; }
+  if (!tradesOpen()) { toast(`Trades are closed (deadline was week ${LSET().tradeDeadlineWeek||20})`, 'err'); return; }
+  if (String(t.to)!==String(myTeamId())) { toast('Only the receiving team can counter', 'err'); return; }
+  window._trade = {
+    to: t.from,
+    fromPlayers: (t.toPlayers||[]).slice(),      // what they asked me for, now what I offer
+    toPlayers: (t.fromPlayers||[]).slice(),      // what they offered, now what I ask for
+    fromPicks: (t.toPicks||[]).slice(),
+    toPicks: (t.fromPicks||[]).slice(),
+    // cash direction is relative to proposer, and the proposer just changed
+    money: (t.money||[]).map(m => ({ ...m, dir: m.dir==='fromTo' ? 'toFrom' : 'fromTo' })),
+    counterOf: t.id,
+  };
+  window._moneyDraft = { dir:'fromTo', years:1, split:[0] };
+  renderTradeBuilder();
+};
 /* ---- build a new proposal ---- */
 window.newTradeProposal = function() {
   const mine = myTeamId();
@@ -7911,7 +8284,9 @@ function renderTradeBuilder() {
   ` : '';
 
   openModal(`
-    <div class="h2">Propose a trade</div>
+    <div class="h2">${tr.counterOf ? 'Counter offer' : 'Propose a trade'}</div>
+    ${tr.counterOf ? `<p class="sub mb" style="font-size:.7rem">Seeded from their offer with the sides swapped. Sending this
+      retires the original — they answer yours instead.</p>` : ''}
     <label class="sub">Trade with</label>
     <select class="select mb" onchange="setTradePartner(this.value)" style="width:100%">${partnerOpts}</select>
 
@@ -7924,7 +8299,7 @@ function renderTradeBuilder() {
     ${pickSection}
     ${moneySection}
 
-    <button class="btn btn-amber btn-block mt" onclick="sendTradeProposal()">Send proposal</button>
+    <button class="btn btn-amber btn-block mt" onclick="sendTradeProposal()">${tr.counterOf ? 'Send counter' : 'Send proposal'}</button>
     <button class="btn btn-ghost btn-block mt" onclick="openTradeCenter()">← Back</button>
   `);
 }
@@ -8010,11 +8385,17 @@ window.sendTradeProposal = function() {
     fromPicks: tr.fromPicks.slice(), toPicks: tr.toPicks.slice(),
     money: (tr.money||[]).slice(),
     status: 'pending', created: Date.now(),
+    ...(tr.counterOf ? { counterOf: tr.counterOf } : {}),
   };
   LG().trades = LG().trades || [];
   LG().trades.push(trade);
+  if (tr.counterOf) {
+    const orig = LG().trades.find(x => x.id === tr.counterOf);
+    if (orig && orig.status === 'pending') { orig.status = 'countered'; orig.resolved = Date.now(); }
+  }
   save();
-  toast(`Trade proposal sent to ${teamById(tr.to).name}`, 'ok');
+  logTxn('trade', `${teamName(trade.from)} ${tr.counterOf?'countered':'offered'} a trade to ${teamName(trade.to)}`);
+  toast(tr.counterOf ? `Counter sent to ${teamById(tr.to).name}` : `Trade proposal sent to ${teamById(tr.to).name}`, 'ok');
   window._trade = null;
   openTradeCenter();
 };
