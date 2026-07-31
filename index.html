@@ -1875,8 +1875,40 @@ function removeOnePick(teamId, round, startYear, log) {
     log && log(`${teamById(teamId).name}: lost their ${y} R${round} pick (penalty)`);
     return true;
   }
-  log && log(`${teamById(teamId).name}: no owned R${round} pick within 15 years to forfeit`);
+  // Nothing of that round left. Rather than give up — which would mean a team that
+  // has traded its picks away pays NOTHING for going over the cap — take the
+  // nearest pick of ANY round they still own.
+  for (let y = startYear; y < startYear + 15; y++) {
+    for (let r = 1; r <= 5; r++) {
+      if (r === round) continue;                            // already searched
+      if (pickRemoved(y, r, teamId)) continue;
+      if (String(pickOwner(y, r, teamId)) !== String(teamId)) continue;
+      LG().removedPicks = LG().removedPicks || {};
+      LG().removedPicks[y] = LG().removedPicks[y] || {};
+      LG().removedPicks[y][r] = LG().removedPicks[y][r] || {};
+      LG().removedPicks[y][r][teamId] = true;
+      log && log(`${teamById(teamId).name}: no R${round} pick left, so their ${y} R${r} goes instead`);
+      return true;
+    }
+  }
+  log && log(`${teamById(teamId).name}: owns no future pick to forfeit`);
   return false;
+}
+/* THE PENALTY CANNOT BE TRADED AWAY.
+   Forfeiting picks only punishes a team that still has picks. A team that has
+   traded all of theirs could blow past the cap for free — which turns "sell the
+   future" into a way to buy the present with nothing down. So when there is no
+   pick left to take, the penalty converts to money: the full amount they were over
+   by is charged as dead cap next season. That removes exactly the advantage going
+   over bought them, and it lands on the team that did it, never on the innocent
+   team holding their traded pick. */
+function chargeUnpayablePenalty(teamId, year, overBy, log) {
+  if (!(overBy > 0)) return;
+  LG().deadCap = LG().deadCap || {};
+  LG().deadCap[teamId] = LG().deadCap[teamId] || [];
+  LG().deadCap[teamId].push({ playerId: null, amount: overBy, year: year + 1,
+                              name: `${year} over-cap penalty (no picks left to forfeit)` });
+  log && log(`${teamById(teamId).name}: no picks left, so ${fmtMoney(overBy)} is charged as dead cap in ${year + 1}`);
 }
 function fmtMoney(n) {
   if (n == null) return '—';
@@ -2453,6 +2485,11 @@ function houseRules() {
       return `${lo}${hi} over = ${t.picks} pick${t.picks!==1?'s':''}`;
     }).join(', ');
     rows.push(['Going over the cap', `${tiers}, forfeited at season end (earliest rounds first)`]);
+    rows.push(['If you traded that pick away',
+      'the team that acquired it keeps it — a penalty never takes a pick out of an innocent team\'s hands. ' +
+      'The forfeit rolls forward to your nearest future pick of that round, then to any round you still own']);
+    rows.push(['If you have no picks left',
+      'the amount you went over by is charged as dead cap the following season, so trading your picks away is not a way to go over the cap for free']);
   }
   return rows;
 }
@@ -3194,9 +3231,12 @@ function renderPage(page) {
     bell.textContent = n > 9 ? '⇄9+' : `⇄${n}`;
     bell.title = `${n} trade offer${n!==1?'s':''} waiting on you`;
   }
-  // draft tab appears only while a draft is live
+  // The draft tab is available while a draft is LIVE and also before one has
+  // happened — the order, the date and who picks where are exactly what people
+  // want to look at in the weeks beforehand. It disappears once the draft is done.
   const navDraft = $('nav-draft');
-  if (navDraft) navDraft.style.display = (LG().draft?.live) ? '' : 'none';
+  const showDraftTab = !!LG().draft?.live || (!LG().draft?.complete && (LG().teams || []).length > 0);
+  if (navDraft) navDraft.style.display = showDraftTab ? '' : 'none';
   const navRookie = $('nav-rookie');
   if (navRookie) navRookie.style.display = (RD().live) ? '' : 'none';
   // run the draft clock only while viewing a live draft
@@ -3276,10 +3316,50 @@ function checkRow(label, done, hint) {
 function viewDraft() {
   const d = LG().draft;
   if (!d.live && !d.complete) {
-    return `<div class="h1">Draft</div>
-      <div class="empty"><div class="big">◷</div>
-      <div class="msg">No draft is live yet.${LSET().draftDate?`<br><br>Scheduled: <b>${esc(new Date(LSET().draftDate).toLocaleString())}</b>`:''}</div>
-      ${(window._masterUnlocked || commishUnlocked())?'<button class="btn" onclick="go(\'settings\')">Open draft setup</button>':'<p class="sub">Your commissioner will open the draft room when it\'s time.</p>'}</div>`;
+    // THE DRAFT ROOM BEFORE THE DRAFT. It used to be an empty "no draft is live"
+    // panel, which is the opposite of useful in the weeks when everyone actually
+    // cares: they want to know when it is, what order they pick in, and how many
+    // rounds. All of that is already decided — show it.
+    const order = (d.order && d.order.length) ? d.order : (LG().teams || []).map(t => t.id);
+    const rounds = draftRounds();
+    const mine = myTeamId();
+    const commish = window._masterUnlocked || commishUnlocked();
+    const when = LSET().draftDate ? new Date(LSET().draftDate) : null;
+    const orderRows = order.map((tid, i) => {
+      const t = teamById(tid);
+      const isMe = String(tid) === String(mine);
+      // where this team picks in round 2, so a snake league can see the turn
+      const snakeBack = LSET().snake ? (order.length * 2 - i) : (order.length + i + 1);
+      return `<div class="row-between" style="padding:.35rem 0;border-bottom:1px solid rgba(42,61,48,.35);
+          ${isMe ? 'background:var(--amber-bg)' : ''}">
+        <span style="font-size:.8rem">
+          <b class="${isMe ? 'amber' : ''}" style="display:inline-block;min-width:1.6rem">${i + 1}.</b>
+          ${esc(t.name)}${isMe ? ' <span class="sub" style="font-size:.62rem">· you</span>' : ''}
+        </span>
+        <span class="sub" style="font-size:.66rem">pick ${i + 1}${rounds > 1 ? `, then ${snakeBack}` : ''}</span>
+      </div>`;
+    }).join('');
+    return `<div class="eyebrow">${esc(LG().leagueName || 'League')} · not drafted yet</div>
+      <div class="h1">Draft room</div>
+      <div class="card card-tight mt" style="border-color:var(--amber)">
+        <div class="row-between" style="font-size:.76rem;padding:.25rem 0;gap:.8rem">
+          <span class="sub" style="flex-shrink:0">When</span>
+          <b style="text-align:right">${when ? esc(when.toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })) : 'not scheduled yet'}</b>
+        </div>
+        <div class="row-between" style="font-size:.76rem;padding:.25rem 0"><span class="sub">Teams</span><b>${order.length}</b></div>
+        <div class="row-between" style="font-size:.76rem;padding:.25rem 0"><span class="sub">Rounds</span><b>${rounds}</b></div>
+        <div class="row-between" style="font-size:.76rem;padding:.25rem 0;gap:.8rem"><span class="sub" style="flex-shrink:0">Format</span>
+          <b style="text-align:right">${LSET().snake ? 'Snake' : 'Linear'} · ${LSET().secPerPick || 90}s a pick</b></div>
+        ${LSET().useSalaryCap ? `<p class="sub" style="font-size:.66rem;margin-top:.35rem">
+          The salary cap is set from this draft once it finishes.</p>` : ''}
+      </div>
+      ${order.length ? `<div class="divlabel mt">Draft order${LSET().snake ? ' · snakes back each round' : ''}</div>
+        <div class="card card-tight">${orderRows}</div>` : `
+        <div class="empty"><div class="big">◷</div><div class="msg">No teams yet — the order appears once people join.</div></div>`}
+      ${commish
+        ? `<button class="btn btn-amber btn-block mt" onclick="go('settings')">Open draft setup</button>`
+        : `<p class="sub mt" style="font-size:.7rem;text-align:center">Your commissioner opens the room when it's time.
+             This page turns into the live draft then.</p>`}`;
   }
   if (d.complete) {
     return `<div class="h1">Draft complete</div>
@@ -7548,6 +7628,10 @@ window.openSalaryConfig = function() {
     <div class="divlabel mt">Over-cap penalties (draft picks lost)</div>
     <p class="sub" style="font-size:.66rem">Default: 1–10% over = 1 pick, 11–20% = 2 picks, 21%+ = 3 picks.</p>
     ${tierRows}
+    <p class="sub" style="font-size:.66rem;margin-top:.4rem">A pick you already traded away is never taken back —
+      whoever acquired it keeps it. The forfeit rolls forward to your nearest future pick of that round, then to any
+      round you still own. If you own no future picks at all, the amount you went over by is charged as dead cap the
+      next season, so selling your picks is not a way to go over the cap for free.</p>
     <button class="btn btn-block mt" onclick="closeModal()">Done</button>`);
 };
 /* All salary-rule edits write into the ACTIVE sport's slot, never a shared object,
@@ -7772,6 +7856,25 @@ window.confirmAdvanceYear = function() {
   toast(`Now playing ${from + 1}`, 'ok');
   closeModal(); renderActive();
 };
+/* Will this team actually be able to pay its pick penalty, or does it convert to
+   money? Answered without mutating anything, so the rollover preview can say. */
+function penaltyPayableIn(teamId, startYear, picksOwed) {
+  const taken = new Set();
+  let payable = 0;
+  for (let k = 0; k < picksOwed; k++) {
+    let found = false;
+    for (let y = startYear; y < startYear + 15 && !found; y++) {
+      for (let r = 1; r <= 5 && !found; r++) {
+        const key = y + ':' + r;
+        if (taken.has(key)) continue;
+        if (pickRemoved(y, r, teamId)) continue;
+        if (String(pickOwner(y, r, teamId)) !== String(teamId)) continue;
+        taken.add(key); payable++; found = true;
+      }
+    }
+  }
+  return payable;
+}
 window.openSeasonRollover = function() {
   if (!LSET().useSalaryCap) { toast('Salaries are off for this league', 'err'); return; }
   const yr = currentSeasonYear();
@@ -7781,11 +7884,21 @@ window.openSeasonRollover = function() {
     return { t, pen };
   });
   const overTeams = teamLines.filter(x => x.pen.picks > 0);
-  const penHtml = overTeams.length ? overTeams.map(x =>
-    `<div class="row-between" style="padding:.3rem 0;border-bottom:1px solid rgba(42,61,48,.4)">
-      <span style="font-size:.8rem">${esc(x.t.name)}</span>
-      <span class="cell-neg" style="font-size:.75rem">${x.pen.overPct}% over → −${x.pen.picks} pick${x.pen.picks!==1?'s':''}</span>
-    </div>`).join('') : '<p class="sub" style="font-size:.75rem">No teams are over the cap. No pick penalties.</p>';
+  const penHtml = overTeams.length ? overTeams.map(x => {
+    // say up front which of these are payable in picks and which turn into money —
+    // a team that traded its picks away pays the overage as dead cap instead
+    const payable = penaltyPayableIn(x.t.id, yr + 1, x.pen.picks);
+    const unpaid = x.pen.picks - payable;
+    const cash = unpaid > 0 ? Math.round(x.pen.over * (unpaid / x.pen.picks)) : 0;
+    return `<div style="padding:.3rem 0;border-bottom:1px solid rgba(42,61,48,.4)">
+      <div class="row-between">
+        <span style="font-size:.8rem">${esc(x.t.name)}</span>
+        <span class="cell-neg" style="font-size:.75rem">${x.pen.overPct}% over → −${x.pen.picks} pick${x.pen.picks!==1?'s':''}</span>
+      </div>
+      ${unpaid > 0 ? `<div class="sub" style="font-size:.66rem;color:var(--amber)">
+        only ${payable} pick${payable!==1?'s':''} left to take — the rest becomes ${fmtMoney(cash)} dead cap in ${yr+1}</div>` : ''}
+    </div>`;
+  }).join('') : '<p class="sub" style="font-size:.75rem">No teams are over the cap. No pick penalties.</p>';
   const newCap = Math.round(leagueCap() * (1 + (SALCFG().capGrowthPct||0)/100));
   openModal(`<div class="h2">Advance to ${yr+1} season</div>
     <div class="card card-tight mt mb" style="border-color:var(--bad)">
@@ -7793,6 +7906,8 @@ window.openSeasonRollover = function() {
     </div>
     <div class="divlabel">Pick penalties (over-cap teams)</div>
     ${penHtml}
+    ${overTeams.length ? `<p class="sub" style="font-size:.64rem;margin-top:.3rem">Picks already traded away stay with
+      the team that acquired them; the forfeit rolls to the penalised team's nearest future pick instead.</p>` : ''}
     <div class="divlabel mt">Cap change</div>
     <div class="row-between" style="font-size:.78rem"><span class="sub">${yr} cap</span><b>${fmtMoney(leagueCap())}</b></div>
     <div class="row-between" style="font-size:.78rem"><span class="sub">${yr+1} cap (+${SALCFG().capGrowthPct}%)</span><b class="amber">${fmtMoney(newCap)}</b></div>
@@ -7841,9 +7956,16 @@ window.confirmSeasonRollover = function() {
   // 1) PENALTIES — remove picks for each over-cap team (cascade-aware)
   LG().teams.forEach(t => {
     const pen = teamCapPenalty(t.id, yr);
+    let unpaid = 0;
     for (let k = 0; k < pen.picks; k++) {
       // remove from round 1 first, then round 2, etc. (one pick per round, escalating)
-      removeOnePick(t.id, k + 1, yr + 1, log);
+      if (!removeOnePick(t.id, k + 1, yr + 1, log)) unpaid++;
+    }
+    // a penalty nobody can pay in picks is paid in money instead — see
+    // chargeUnpayablePenalty(). Split the overage across the picks that went unpaid
+    // so a team owing three picks and able to pay one still carries the rest.
+    if (unpaid > 0 && pen.picks > 0) {
+      chargeUnpayablePenalty(t.id, yr, Math.round(pen.over * (unpaid / pen.picks)), log);
     }
   });
   // 2) CAP GROWTH — bake next season's cap into this league's setting. capForYear
