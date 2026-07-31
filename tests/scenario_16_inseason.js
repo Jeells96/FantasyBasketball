@@ -197,6 +197,68 @@
   C(P + 'and say what the mark means', /in the playoffs as it stands/.test(stand));
   C(P + 'with a way to the full schedule', /openSeasonSchedule\(\)/.test(stand));
 
+  // ============================================================
+  // changing format after the draft (a testing affordance, not a normal move)
+  // ============================================================
+  const F = 'FormatSwitch: ';
+  STATE.salaryDB = { flb: {} };
+  lg = S.setupLeague('flb', { teams: 6, week: 2, name: 'FlipLeague',
+    settings: { leagueType: 'dynasty', useSalaryCap: true, salaryCapDollars: 300000000 } });
+  LG().playerPool.forEach((p, i) => {
+    STATE.salaryDB.flb[normName(p.name)] = { aav: Math.max(1000000, 25000000 - i * 100000) };
+  });
+  S.runDraft();
+  const ftid = LG().teams[0].id;
+  LG().contracts = {};
+  teamRoster(ftid).slice(0, 4).forEach(p => {
+    LG().contracts[String(p.espnId)] = { baseAAV: importedAAV(p), signedYear: currentSeasonYear(),
+                                         termYears: 3, teamId: ftid };
+  });
+  LG().draftPicks = { [currentSeasonYear() + 1]: { 1: { t2: 't1' } } };
+  const capWas = leagueCap();
+
+  window._masterUnlocked = false; window._commishUnlocked = null;
+  setLeagueType('redraft');
+  C(F + 'a manager cannot change format after the draft', LSET().leagueType === 'dynasty');
+
+  window._masterUnlocked = true;
+  setLeagueType('redraft');
+  C(F + 'the commissioner gets a confirmation, not a refusal',
+    /Change format mid-season/.test(document.getElementById('modal-body')?.innerHTML || ''));
+  C(F + 'nothing has changed until it is confirmed', LSET().leagueType === 'dynasty');
+  const warn = document.getElementById('modal-body')?.innerHTML || '';
+  C(F + 'it warns about traded picks going quiet', /Traded draft picks/.test(warn));
+  C(F + 'and about the multiplier moving', /multiplier changes/.test(warn));
+  C(F + 'while saying the league cap itself is untouched', /is not touched/.test(warn));
+  confirmLeagueType('redraft');
+  C(F + 'confirming switches the format', LSET().leagueType === 'redraft');
+
+  // the whole point: nothing is destroyed on the way through
+  C(F + 'contracts survive the switch', Object.keys(LG().contracts).length === 4);
+  C(F + 'traded picks survive', !!LG().draftPicks[currentSeasonYear() + 1]);
+  C(F + 'salaries stay on', LSET().useSalaryCap === true);
+  C(F + "the league's own cap is not rewritten", leagueCap() === capWas, leagueCap());
+  C(F + 'but the SUGGESTED cap follows the new type',
+    capBasis().headroom === capHeadroom('redraft'), capBasis().headroom);
+  C(F + 'dynasty-only features go quiet', isDynasty() === false);
+  let badF = S.renderAll();
+  C(F + 'every page still renders as a redraft league', badF.length === 0, badF.join(' ; '));
+
+  setLeagueType('keeper'); confirmLeagueType('keeper');
+  C(F + 'and on to keeper', LSET().leagueType === 'keeper');
+  badF = S.renderAll();
+  C(F + 'which also renders', badF.length === 0, badF.join(' ; '));
+
+  setLeagueType('dynasty'); confirmLeagueType('dynasty');
+  C(F + 'switching back restores dynasty', isDynasty() === true);
+  C(F + 'with the contracts still there', Object.keys(LG().contracts).length === 4);
+  C(F + 'and the traded picks still there', !!LG().draftPicks[currentSeasonYear() + 1]);
+  C(F + 'every switch is written to the activity log',
+    (LG().transactions || []).filter(t => /League type changed/.test(t.text)).length === 3);
+  C(F + 'setting the type it already is does nothing',
+    (setLeagueType('dynasty'), LSET().leagueType === 'dynasty'));
+  window._masterUnlocked = false;
+
   STATE.salaryDB = {};
   STATE.salaryConfig = {};
   const bad = S.renderAll();
