@@ -669,6 +669,127 @@
       statWindowOptions()[0].join('/'));
 
     // ============================================================
+    // last season's numbers, in the pool and in the draft room
+    // ============================================================
+    const LS = `LastSeason[${sport}]: `;
+    S.setupLeague(sport, { teams: 2, week: 9, name: 'Prev' + sport,
+      settings: { scoringFormat: 'bestGame', bestGameScope: 'all', useSalaryCap: true,
+                  salaryCapDollars: 300000000 } });
+    S.genLogs(9);
+    C(LS + 'the prior season is the one before the stat season',
+      priorStatSeason() === SP().statSeason - 1, `${priorStatSeason()} vs ${SP().statSeason}`);
+    // a finished season has no fantasy weeks of ours, so it is bucketed into its own
+    // seven-day blocks from its first game — two games in one block, only the best counts
+    const lp = LG().playerPool[0];
+    const g = (date, pts) => ({ date, group: sport === 'fba' ? 'stats' : 'hitting',
+      stat: sport === 'fba' ? { points: pts, rebounds: 0, assists: 0, steals: 0, blocks: 0, turnovers: 0 }
+                            : { atBats: 4, hits: 0, doubles: 0, triples: 0, homeRuns: pts, runs: 0,
+                                rbi: 0, baseOnBalls: 0, strikeOuts: 0, stolenBases: 0, caughtStealing: 0, hitByPitch: 0 } });
+    applyPrevFields(lp, [g('2024-04-01', 10), g('2024-04-03', 30), g('2024-04-12', 20)]);
+    C(LS + 'games are counted', lp.prevGames === 3, lp.prevGames);
+    C(LS + 'the season total is the sum', lp.prevPts > 0, lp.prevPts);
+    C(LS + 'per game is the total over the games', lp.prevPerGame === Math.round(lp.prevPts / 3 * 10) / 10,
+      `${lp.prevPerGame} vs ${lp.prevPts}/3`);
+    C(LS + 'and the best-per-week average keeps one game per seven-day block',
+      lp.prevBestAvg < lp.prevPts && lp.prevBestAvg > 0, `${lp.prevBestAvg} of ${lp.prevPts}`);
+    C(LS + 'the year it belongs to is recorded with it', lp.prevSeason === priorStatSeason());
+    C(LS + 'an empty season is zero, not a crash', (() => {
+      const blank = { name: 'Nobody' };
+      applyPrevFields(blank, []);
+      return blank.prevPts === 0 && blank.prevGames === 0 && blank.prevBestAvg === 0;
+    })());
+
+    // the pool offers it as a column, labelled with the year
+    C(LS + 'the pool offers a last-season column',
+      statWindowOptions().some(o => o[0] === 'prev' && o[1] === String(priorStatSeason())),
+      statWindowOptions().map(o => o[1]).join(','));
+    C(LS + 'it is last in the row, not something you land on by accident',
+      statWindowOptions()[statWindowOptions().length - 1][0] === 'prev');
+    C(LS + 'and it resolves to a last-season field',
+      /^prev/.test(ptsFieldFor('prev', lp)), ptsFieldFor('prev', lp));
+    C(LS + 'which is the best-of-week one in a best-of-week league',
+      ptsFieldFor('prev', lp) === 'prevBestAvg');
+    C(LS + 'the column explains which season it is',
+      statColumnMeaning('prev').includes(String(priorStatSeason())), statColumnMeaning('prev'));
+    LG().playerPool.forEach(p => applyPrevFields(p, [g('2024-04-01', 12), g('2024-04-10', 8)]));
+    setPtsWindow('prev');
+    renderPage('players');
+    let lsh = document.getElementById('page-players').innerHTML;
+    C(LS + 'the page shows the year as the column header', lsh.includes(String(priorStatSeason())));
+    C(LS + 'and says what it means above the list',
+      lsh.indexOf(String(priorStatSeason()) + ' season') < lsh.indexOf('showPlayer('),
+      statColumnMeaning('prev'));
+    setSearch(lp.name);
+    lsh = document.getElementById('page-players').innerHTML;
+    C(LS + 'with the player\'s last-season value in the column',
+      new RegExp(`>${lp.prevBestAvg.toFixed(1)}<`).test(lsh), lp.prevBestAvg.toFixed(1));
+    setSearch('');
+
+    // a total-points league gets last season's TOTAL, not a best-of-week average
+    LG().settings.scoringFormat = 'regular';
+    C(LS + 'a total-points league gets last season\'s total', ptsFieldFor('prev', lp) === 'prevPts');
+    C(LS + 'and is told so', /total points/.test(statColumnMeaning('prev')), statColumnMeaning('prev'));
+    LG().settings.scoringFormat = 'bestGame';
+
+    // ---- the draft room shows the same numbers ----
+    const DR = `DraftStats[${sport}]: `;
+    LG().draft = { started: true, live: true, complete: false, rounds: draftRounds(),
+                   order: LG().teams.map(t => t.id), picks: [], currentPick: 0,
+                   pickStartedAt: Date.now() };
+    LG().teams.forEach((t, i) => { if (i === 0) t.claimed = true; });
+    renderPage('draft');
+    let dh = document.getElementById('page-draft').innerHTML;
+    C(DR + 'the draft room offers every stat window the pool does',
+      statWindowOptions().every(o => dh.includes(`setPtsWindow('${o[0]}')`)),
+      statWindowOptions().map(o => o[0]).join(','));
+    C(DR + 'including last season', dh.includes("setPtsWindow('prev')"));
+    C(DR + 'and lets you sort by it rather than only by ADP',
+      /setDraftSort\('pts'\)/.test(dh) && /setDraftSort\('adp'\)/.test(dh));
+    C(DR + 'a cap league can sort by salary too', /setDraftSort\('salary'\)/.test(dh));
+    // the clock is running — four rows of chips before the first name is the whole
+    // screen on a phone, so they fold away exactly as they do on the players page
+    C(DR + 'the controls are folded, not stacked on top of the players',
+      /togglePlayerFilters\(\)/.test(dh) && /display:none/.test(dh));
+    C(DR + 'no chip sits above the first player',
+      dh.indexOf('setPosFilter') > dh.indexOf('togglePlayerFilters'));
+    C(DR + 'the search box stays out in the open', dh.indexOf('setSearch') < dh.indexOf('makeDraftPick'));
+    C(DR + 'and it says how the list is sorted without opening anything',
+      /sorted by/.test(dh));
+    C(DR + 'it says what the stat column means, same words as the pool',
+      dh.includes(statColumnMeaning(activeStatWindow())), statColumnMeaning(activeStatWindow()));
+    C(DR + 'the salary is on the row — you cannot draft blind in a cap league',
+      dh.includes(fmtMoney(playerCapHit(LG().playerPool[0]))));
+    C(DR + 'and the stat column is the one selected', (() => {
+      setPtsWindow('prev');
+      const a = document.getElementById('page-draft');
+      renderPage('draft');
+      const prevHtml = document.getElementById('page-draft').innerHTML;
+      setPtsWindow('season');
+      renderPage('draft');
+      const seasonHtml = document.getElementById('page-draft').innerHTML;
+      const p0 = LG().playerPool.find(x => x.prevBestAvg !== x.bestAvg) || LG().playerPool[0];
+      return prevHtml !== seasonHtml && a != null;
+    })());
+    // sorting really reorders, it does not just light up a chip
+    setPtsWindow('season');
+    setDraftSort('pts');
+    const byPts = filteredPool().slice(0, 5).map(p => p.bestAvg ?? 0);
+    C(DR + 'sorting by the stat really orders by it',
+      byPts.every((v, i) => i === 0 || byPts[i - 1] >= v), byPts.join(','));
+    setDraftSort('adp');
+    const byAdp = filteredPool().slice(0, 5).map(p => p.adp);
+    C(DR + 'and ADP order still comes back',
+      byAdp.every((v, i) => i === 0 || byAdp[i - 1] <= v), byAdp.join(','));
+    LG().draft.live = false;
+
+    // ESPN files play-in games under their own "regular season" heading
+    C(LS + 'a play-in game is not a regular-season game',
+      isRegularSeasonType('2023-24 Regular Season')
+      && !isRegularSeasonType('2023-24 Play In Regular Season')
+      && !isRegularSeasonType('2023-24 Postseason')
+      && !isRegularSeasonType('2023-24 Preseason'));
+
+    // ============================================================
     // the player card fits on a phone
     // ============================================================
     const CD = `PlayerCard[${sport}]: `;
