@@ -197,8 +197,13 @@
     addBlockedReason(me));
   LG().settings.maxAddsPerSeason = 5;
   C(A + 'raising the limit unblocks immediately', addBlockedReason(me) === null);
+  // a limit on adds must never trap you — prove it by actually dropping while capped
+  LG().settings.maxAddsPerSeason = 1;
+  C(A + 'and the limit is biting again', addBlockedReason(me) !== null);
+  const beforeDrop = teamRoster(me).length;
+  confirmDrop(teamRoster(me)[beforeDrop - 1].espnId);
   C(A + 'drops are never blocked — you can always get legal',
-    typeof window.dropPlayer === 'function');
+    teamRoster(me).length === beforeDrop - 1, `${beforeDrop} -> ${teamRoster(me).length}`);
   LG().settings.maxAddsPerSeason = 0;
 
   // ============================================================
@@ -213,6 +218,18 @@
   C(B + 'and taken off again', onBlock(me).length === 0);
   toggleTradeBlock(mineP.espnId);
   C(B + 'the block is per team', onBlock(LG().teams[1].id).length === 0);
+  // the button used to read "Block" / "Listed" — neither said what tapping does,
+  // and "Listed" gave no hint that tapping again takes them off
+  showPlayer(mineP.espnId);
+  let cardHtml = document.getElementById('modal-body')?.innerHTML || '';
+  C(B + 'a listed player is offered the way off', /Off block/.test(cardHtml));
+  toggleTradeBlock(mineP.espnId);
+  C(B + 'and tapping it really takes them off', onBlock(me).length === 0);
+  showPlayer(mineP.espnId);
+  cardHtml = document.getElementById('modal-body')?.innerHTML || '';
+  C(B + 'the button says trade block, not just block', /⇄ Trade block/.test(cardHtml));
+  C(B + 'and never just "Block"', !/>⇄ Block</.test(cardHtml));
+  toggleTradeBlock(mineP.espnId);
   openTradeBlock();
   const blockHtml = document.getElementById('modal-body')?.innerHTML || '';
   C(B + 'the block lists the player', blockHtml.includes(mineP.name));

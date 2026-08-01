@@ -4254,7 +4254,13 @@ function viewMyTeam() {
   const filledCount = shown.size;
 
   return `
-    <div class="eyebrow">${isMine?'★ Your team':'👁 Viewing'} · ${esc(t.name)}${t.owner?` · ${esc(t.owner)}`:''}</div>
+    <div class="eyebrow">${isMine?'★ Your team':'👁 Viewing'} · ${esc(t.name)}${
+      // a pen right beside the name you are looking at, so renaming is where you
+      // read the name. Inline, not a flex child, or it drops to its own line when
+      // a long name wraps.
+      isMine?` <button class="btn btn-ghost" style="display:inline-block;padding:0 .3rem;font-size:.7rem;line-height:1.4;min-height:0;vertical-align:middle"
+        onclick="openRenameTeam()" title="Rename your team" aria-label="Rename your team">✎</button>`:''
+      }${t.owner?` · ${esc(t.owner)}`:''}</div>
     <div class="row-between">
       <div class="h1">${isMine?'My Team':'League Team'}</div>
       ${isMine ? '' : `<button class="btn btn-sm btn-amber" onclick="viewMyOwnTeam()">← My team</button>`}
@@ -4282,10 +4288,8 @@ function viewMyTeam() {
     ${isMine ? `<div class="row" style="gap:.35rem;margin-top:.35rem;flex-wrap:wrap">
       <button class="btn btn-sm btn-ghost" onclick="openTradeCenter()">⇄ Trades${pendingForMe().length?` (${pendingForMe().length})`:''}</button>
       ${isDynasty()?`<button class="btn btn-sm btn-ghost" onclick="openPickAssets()">◆ Picks</button>`:''}
-      <button class="btn btn-sm btn-ghost" onclick="openAddDrop()">+/− Players</button>
       <button class="btn btn-sm btn-ghost" onclick="openLeagueRules()" title="League rules & FAQ">§ Rules</button>
-      <button class="btn btn-sm btn-ghost" onclick="openActivityLog()" title="League activity log">≡ Log</button>
-      <button class="btn btn-sm btn-ghost" onclick="openRenameTeam()" title="Rename your team">✎ Name</button>
+      <button class="btn btn-sm btn-ghost" onclick="openActivityLog()" title="League activity">≡ Activity</button>
     </div>` : ''}
 
     <div class="card" style="padding:.5rem .75rem;margin-top:.5rem">
@@ -4727,53 +4731,6 @@ window.activateFromIR = function(espnId) {
   save(); closeModal(); toast(`${p?.name||'Player'} activated`, 'ok'); renderActive();
 };
 
-/* ADD a free-agent player to my team (respects cap; changes apply to upcoming week only) */
-window.openAddDrop = function() {
-  const tid = myTeamId();
-  const cap = rosterCap();
-  const count = rosterActiveCount(tid);
-  const roster = teamRoster(tid);
-  const rosterIds = new Set(roster.map(p => String(p.espnId)));
-  // free agents = pool players not on ANY team
-  const allRostered = new Set(LG().draft.picks.map(pk => String(pk.playerId)));
-  const freeAgents = LG().playerPool.filter(p => !allRostered.has(String(p.espnId)))
-    .sort((a,b)=>a.adp-b.adp).slice(0, 100);
-
-  const blocked = addBlockedReason(tid);
-  const faRows = freeAgents.map(p => `
-    <div class="row-between" style="padding:.35rem 0;border-bottom:1px solid rgba(42,61,48,.4)">
-      <span><b>${esc(p.name)}</b> <span class="sub" style="font-size:.7rem">${esc((p.eligible||[]).join('/'))} · ${esc(p.proTeam||'')} · ADP ${p.adp<9999?p.adp:'—'}</span></span>
-      <button class="btn btn-sm ${(count>=cap||blocked)?'btn-ghost':''}" ${(count>=cap||blocked)?'disabled':''}
-        onclick="addPlayer('${p.espnId}')">Add</button>
-    </div>`).join('');
-  // a limit you only discover by being refused is a bad limit — show what's left
-  const wkMax = Number(LSET().maxAddsPerWeek) || 0, snMax = Number(LSET().maxAddsPerSeason) || 0;
-  const limitLine = (wkMax || snMax) ? `<span class="sub">Adds left: ${[
-      wkMax ? `<b>${Math.max(0, wkMax - addsUsed(tid,'week'))}</b> this week` : null,
-      snMax ? `<b>${Math.max(0, snMax - addsUsed(tid,'season'))}</b> this season` : null,
-    ].filter(Boolean).join(' · ')}</span>` : '';
-
-  openModal(`
-    <div class="h2">Add / Drop</div>
-    <div class="row-between mb">
-      <span class="sub">Roster: <b class="${count>=cap?'cell-neg':'amber'}">${count}/${cap}</b> (IL doesn't count)</span>
-      ${limitLine}
-    </div>
-    ${count>=cap ? `<p class="sub mb" style="font-size:.72rem;color:var(--bad)">Roster full — drop a player before adding.</p>` : ''}
-    ${blocked ? `<p class="sub mb" style="font-size:.72rem;color:var(--bad)">${esc(blocked)}. You can still drop players and set your lineup.</p>` : ''}
-    <div class="divlabel">My roster — tap to drop</div>
-    <div style="max-height:25vh;overflow-y:auto">
-      ${roster.map(p => `<div class="row-between" style="padding:.3rem 0;border-bottom:1px solid rgba(42,61,48,.4)">
-        <span>${esc(p.name)} <span class="sub" style="font-size:.7rem">${esc((p.eligible||[]).join('/'))}</span> ${injuryBadge(p)}</span>
-        <button class="btn btn-sm btn-ghost" onclick="dropPlayer('${p.espnId}')">Drop</button>
-      </div>`).join('')}
-    </div>
-    <div class="divlabel mt">Free agents (top 100 by ADP)</div>
-    <div style="max-height:30vh;overflow-y:auto">${faRows}</div>
-    <button class="btn btn-block mt" onclick="closeModal()">Done</button>
-  `);
-};
-
 /* AN IL SPOT IS FOR INJURED PLAYERS.
    ESPN clears a player's injury tag when he comes back, but nothing moved him off
    our IL — so a healthy player kept sitting in an IL slot, out of the roster count
@@ -4826,49 +4783,25 @@ function addBlockedReason(teamId) {
   }
   return null;
 }
-window.addPlayer = function(espnId) {
-  const tid = myTeamId();
-  if (rosterActiveCount(tid) >= rosterCap()) { toast('Roster full — drop someone first', 'err'); return; }
-  const il = ilBlockReason(tid);
-  if (il) { toast(il, 'err'); return; }
-  const blocked = addBlockedReason(tid);
-  if (blocked) { toast(blocked, 'err'); return; }
-  // add as a "pick" so it shows on the roster (pick number after current max)
-  const maxPick = LG().draft.picks.reduce((m,pk)=>Math.max(m,pk.pick||0), 0);
-  LG().draft.picks.push({ teamId: tid, playerId: espnId, pick: maxPick+1, addedFA: true });
-  const p = LG().playerPool.find(x=>String(x.espnId)===String(espnId));
-  logTxn('add', `${teamName(tid)} added ${p?.name||'a player'}`);
-  save();
-  toast(`Added ${p?.name||'player'}`, 'ok');
-  openAddDrop(); // refresh
-};
-
-window.dropPlayer = function(espnId) {
-  const tid = myTeamId();
-  const p = LG().playerPool.find(x=>String(x.espnId)===String(espnId));
-  const dead = (LSET().useSalaryCap && p && playerContract(p)) ? dropDeadCap(p) : 0;
-  const wk = currentWeekNow();
-  const held = !!(p && getStarters(tid, wk).some(pid => String(pid)===String(p.espnId)) && playerLockedForWeek(p, wk));
-  openModal(`
-    <div class="h2">Drop ${esc(p?.name||'player')}?</div>
-    ${dead ? `<p class="sub mt mb" style="color:var(--bad)">⚠ Under contract — dropping incurs a <b>${fmtMoney(dead)}</b> dead-cap hit (2× this year's salary).</p>` : ''}
-    ${held ? `<p class="sub mt mb" style="color:var(--amber)">🔒 They've already played this week, so they stay in your week ${wk} lineup and you keep those points. The roster spot opens up from week ${wk+1}.</p>`
-           : `<p class="sub mt mb">They'll return to free agency. This affects your upcoming roster only.</p>`}
-    <button class="btn btn-amber btn-block" onclick="confirmDrop('${espnId}')">Drop player</button>
-    <button class="btn btn-ghost btn-block mt" onclick="openAddDrop()">Cancel</button>
-  `);
-};
+/* THE drop. Every drop in the app goes through here. There used to be a second one
+   behind the Add/Drop screen that skipped waivers and never wrote to the activity
+   log, so which button you happened to use changed what actually happened. One
+   path now: dead cap, holdover, waivers, log. */
 window.confirmDrop = function(espnId) {
   const tid = myTeamId();
+  const wp = LG().playerPool.find(x=>String(x.espnId)===String(espnId));
+  const dead = (LSET().useSalaryCap && playerContract(wp)) ? dropDeadCap(wp) : 0;  // BEFORE the contract is voided
   const held = doDropPlayer(espnId, tid);   // holdover-aware: locked starters finish the week
   // dropped players sit on waivers before becoming instant-add free agents
-  const wp = LG().playerPool.find(x=>String(x.espnId)===String(espnId));
   LG().waivers = LG().waivers || {};
   LG().waivers[espnId] = { until: Date.now() + (LSET().waiverDays||1)*86400000, claims: [] };
-  logTxn('drop', `${teamName(tid)} dropped ${wp?.name||'a player'}${held?` (stays in week ${currentWeekNow()} — already played)`:''}`);
+  logTxn('drop', `${teamName(tid)} dropped ${wp?.name||'a player'}${held?` (stays in week ${currentWeekNow()} — already played)`:''}${dead?` — ${fmtMoney(dead)} dead cap`:''}`);
   save();
-  toast(held ? `Dropped — ${wp?.name||'they'} still count for week ${currentWeekNow()}` : 'Player dropped — on waivers', 'ok');
-  openAddDrop();
+  toast(held ? `Dropped — ${wp?.name||'they'} still count for week ${currentWeekNow()}`
+       : dead ? `Dropped — ${fmtMoney(dead)} dead cap applied`
+       : 'Player dropped — on waivers', 'ok');
+  closeModal();
+  renderActive();
 };
 
 /* starters for team+week — manual lineup, or default to first N if unset */
@@ -5897,7 +5830,9 @@ function renderPlayerModal(p, loading) {
         return `<div class="row" style="gap:.4rem">
           <button class="btn btn-sm btn-ghost" style="flex:1" onclick="closeModal();go('home')">My team →</button>
           ${ir}
-          <button class="btn btn-sm ${blocked?'btn-amber':'btn-ghost'}" style="flex:1" onclick="toggleTradeBlock('${p.espnId}')">⇄ ${blocked?'Listed':'Block'}</button>
+          <button class="btn btn-sm ${blocked?'btn-amber':'btn-ghost'}" style="flex:1"
+            title="${blocked?'Take off the trade block':'Put on the trade block'}"
+            onclick="toggleTradeBlock('${p.espnId}')">⇄ ${blocked?'Off block':'Trade block'}</button>
         </div>`;
       })()}
       ${LSET().useSalaryCap ? signContractSection(p) : ''}
@@ -6078,15 +6013,7 @@ window.dropFromCard = function(espnId) {
     <button class="btn btn-ghost btn-block mt" onclick="showPlayer('${espnId}')">Cancel</button>
   `);
 };
-window.confirmDropCard = function(espnId) {
-  const p = LG().playerPool.find(x=>String(x.espnId)===String(espnId));
-  const hadContract = LSET().useSalaryCap && !!playerContract(p);
-  const dead = hadContract ? dropDeadCap(p) : 0;   // capture BEFORE the contract is voided
-  doDropPlayer(espnId);                            // applies dead cap + voids contract
-  toast(hadContract ? `Dropped — ${fmtMoney(dead)} dead cap applied` : 'Player dropped', 'ok');
-  closeModal();
-  renderActive();
-};
+window.confirmDropCard = function(espnId) { return window.confirmDrop(espnId); };
 
 /* add a free agent when roster is FULL — pick someone to drop in the same move */
 window.addWithSwap = function(addId) {
@@ -6510,7 +6437,7 @@ function viewSettings() {
         <button class="btn btn-sm btn-ghost" onclick="openAdvanceYear()">Move to ${currentSeasonYear()+1} →</button>
       </div>
       <button class="btn btn-ghost btn-block mt" onclick="openLeagueRules()">§ League rules &amp; FAQ</button>
-      <button class="btn btn-ghost btn-block mt" onclick="openActivityLog()">≡ Activity log (${(LG().transactions||[]).length})</button>
+      <button class="btn btn-ghost btn-block mt" onclick="openActivityLog()">≡ Activity (${(LG().transactions||[]).length})</button>
     </div>
 
     ${commishUnlocked() ? `
