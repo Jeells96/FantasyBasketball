@@ -1861,76 +1861,70 @@ function pickRemoved(year, round, teamId) {
   const rm = (LG().removedPicks||{});
   return !!(rm[year] && rm[year][round] && rm[year][round][teamId]);
 }
-/* Find a team's NEXT AVAILABLE own pick of a given round, at/after startYear.
-   "Available" = the team still owns their own line slot (not traded away) AND it
-   hasn't already been removed by a prior penalty. Returns {year, round} or null. */
-function nextAvailableOwnPick(teamId, round, startYear) {
-  for (let y = startYear; y < startYear + 15; y++) {
-    // does this team still own THEIR OWN pick this year/round?
-    const owner = pickOwner(y, round, teamId);
-    const ownsOwnLine = String(owner) === String(teamId);
-    if (ownsOwnLine && !pickRemoved(y, round, teamId)) return { year: y, round };
+/* HOW FAR A FORFEIT IS ALLOWED TO ROLL.
+   Two rules, and both matter:
+
+   1. SAME ROUND ONLY. A 4th-rounder is not payment for a forfeited 1st. Taking a
+      different round is not a lighter penalty, it is a different penalty, and it
+      lets the tiers ("21% over = 3 picks") mean whatever the team's leftovers
+      happen to be worth.
+   2. WITHIN A YEAR. A punishment several drafts out is not a punishment — it lands
+      on a roster that may not resemble the one that broke the rule, and everyone
+      has forgotten by then. If the next draft's pick of that round is already gone,
+      the forfeit takes the following year's, and that is as far as it goes.
+
+   When neither is available the penalty does not shrink and it does not vanish —
+   it converts to dead cap. See chargeUnpayablePenalty(). */
+const PENALTY_ROLL_YEARS = 1;   // next draft, or the one after it. That is all.
+/* Which year this team pays a round-`round` forfeit from, or null if they cannot.
+   `taken` optionally guards against counting the same pick twice in a preview. */
+function penaltyPickYear(teamId, round, startYear, taken) {
+  for (let y = startYear; y <= startYear + PENALTY_ROLL_YEARS; y++) {
+    if (taken && taken.has(y + ':' + round)) continue;
+    if (pickRemoved(y, round, teamId)) continue;            // already gone
+    // A penalty can NEVER touch a pick the team traded away — the receiver acquired
+    // it in good faith and keeps it exactly as-is.
+    if (String(pickOwner(y, round, teamId)) !== String(teamId)) continue;
+    return y;
   }
   return null;
 }
-/* Apply ONE pick-removal penalty to a team for a given round, cascading to their
-   next available pick if their nearest one was traded away. Also: if the targeted
-   pick had been TRADED to someone else, the obligation follows to the next pick the
-   team owns (the receiving team still gets a pick — the team's NEXT available one). */
+/* Apply ONE pick-removal penalty to a team for a given round. Returns false if they
+   have no pick of that round inside the window, in which case the caller charges it
+   as dead cap instead. */
 function removeOnePick(teamId, round, startYear, log) {
-  // A penalty can NEVER touch a pick the team already traded away — the receiver
-  // acquired it in good faith and keeps it exactly as-is. The forfeit falls on the
-  // team's nearest future pick of that round that they still own, cascading past
-  // traded and already-removed years.
-  for (let y = startYear; y < startYear + 15; y++) {
-    if (pickRemoved(y, round, teamId)) continue;          // already gone
-    const owner = pickOwner(y, round, teamId);
-    if (String(owner) !== String(teamId)) {
-      // traded away — receiver keeps it; keep searching later years
-      log && log(`${teamById(teamId).name}: ${y} R${round} was traded to ${teamById(owner).name} — receiver keeps it; penalty rolls forward`);
-      continue;
-    }
-    LG().removedPicks = LG().removedPicks || {};
-    LG().removedPicks[y] = LG().removedPicks[y] || {};
-    LG().removedPicks[y][round] = LG().removedPicks[y][round] || {};
-    LG().removedPicks[y][round][teamId] = true;
-    log && log(`${teamById(teamId).name}: lost their ${y} R${round} pick (penalty)`);
-    return true;
+  const y = penaltyPickYear(teamId, round, startYear);
+  if (y == null) {
+    log && log(`${teamById(teamId).name}: no R${round} pick in ${startYear}–${startYear + PENALTY_ROLL_YEARS} left to take — charged as dead cap instead`);
+    return false;
   }
-  // Nothing of that round left. Rather than give up — which would mean a team that
-  // has traded its picks away pays NOTHING for going over the cap — take the
-  // nearest pick of ANY round they still own.
-  for (let y = startYear; y < startYear + 15; y++) {
-    for (let r = 1; r <= 5; r++) {
-      if (r === round) continue;                            // already searched
-      if (pickRemoved(y, r, teamId)) continue;
-      if (String(pickOwner(y, r, teamId)) !== String(teamId)) continue;
-      LG().removedPicks = LG().removedPicks || {};
-      LG().removedPicks[y] = LG().removedPicks[y] || {};
-      LG().removedPicks[y][r] = LG().removedPicks[y][r] || {};
-      LG().removedPicks[y][r][teamId] = true;
-      log && log(`${teamById(teamId).name}: no R${round} pick left, so their ${y} R${r} goes instead`);
-      return true;
-    }
+  if (y !== startYear) {
+    log && log(`${teamById(teamId).name}: ${startYear} R${round} is already gone — the forfeit falls on ${y} R${round}`);
   }
-  log && log(`${teamById(teamId).name}: owns no future pick to forfeit`);
-  return false;
+  LG().removedPicks = LG().removedPicks || {};
+  LG().removedPicks[y] = LG().removedPicks[y] || {};
+  LG().removedPicks[y][round] = LG().removedPicks[y][round] || {};
+  LG().removedPicks[y][round][teamId] = true;
+  log && log(`${teamById(teamId).name}: lost their ${y} R${round} pick (penalty)`);
+  return true;
 }
 /* THE PENALTY CANNOT BE TRADED AWAY.
    Forfeiting picks only punishes a team that still has picks. A team that has
    traded all of theirs could blow past the cap for free — which turns "sell the
-   future" into a way to buy the present with nothing down. So when there is no
-   pick left to take, the penalty converts to money: the full amount they were over
-   by is charged as dead cap next season. That removes exactly the advantage going
-   over bought them, and it lands on the team that did it, never on the innocent
-   team holding their traded pick. */
+   future" into a way to buy the present with nothing down. So when there is no pick
+   of that round inside the one-year window, the penalty converts to money: the
+   amount they were over by is charged as dead cap next season. Money, rather than a
+   pick from some other round or some distant draft, because those are not the
+   penalty the rules named. It removes exactly the advantage going over bought them,
+   and it lands on the team that did it, never on the innocent team holding their
+   traded pick. */
 function chargeUnpayablePenalty(teamId, year, overBy, log) {
   if (!(overBy > 0)) return;
   LG().deadCap = LG().deadCap || {};
   LG().deadCap[teamId] = LG().deadCap[teamId] || [];
   LG().deadCap[teamId].push({ playerId: null, amount: overBy, year: year + 1,
-                              name: `${year} over-cap penalty (no picks left to forfeit)` });
-  log && log(`${teamById(teamId).name}: no picks left, so ${fmtMoney(overBy)} is charged as dead cap in ${year + 1}`);
+                              name: `${year} over-cap penalty (no pick of that round to forfeit)` });
+  log && log(`${teamById(teamId).name}: nothing left to forfeit, so ${fmtMoney(overBy)} is charged as dead cap in ${year + 1}`);
 }
 function fmtMoney(n) {
   if (n == null) return '—';
@@ -2581,9 +2575,9 @@ function houseRules() {
     rows.push(['Going over the cap', `${tiers}, forfeited at season end (earliest rounds first)`]);
     rows.push(['If you traded that pick away',
       'the team that acquired it keeps it — a penalty never takes a pick out of an innocent team\'s hands. ' +
-      'The forfeit rolls forward to your nearest future pick of that round, then to any round you still own']);
-    rows.push(['If you have no picks left',
-      'the amount you went over by is charged as dead cap the following season, so trading your picks away is not a way to go over the cap for free']);
+      'The forfeit falls on your own pick of the same round the following year instead, and no further']);
+    rows.push(['If you have no pick of that round in either year',
+      'the amount you went over by is charged as dead cap the following season. A pick from a different round is never taken instead, and the penalty is never deferred further out — so trading your picks away is not a way to go over the cap for free']);
   }
   return rows;
 }
@@ -7790,9 +7784,10 @@ window.openSalaryConfig = function() {
     <p class="sub" style="font-size:.66rem">Default: 1–10% over = 1 pick, 11–20% = 2 picks, 21%+ = 3 picks.</p>
     ${tierRows}
     <p class="sub" style="font-size:.66rem;margin-top:.4rem">A pick you already traded away is never taken back —
-      whoever acquired it keeps it. The forfeit rolls forward to your nearest future pick of that round, then to any
-      round you still own. If you own no future picks at all, the amount you went over by is charged as dead cap the
-      next season, so selling your picks is not a way to go over the cap for free.</p>
+      whoever acquired it keeps it. The forfeit falls on your own pick of the <b>same round</b> the year after instead,
+      and no further out than that: a different round is not payment for the one you owe, and a penalty several drafts
+      away is not a penalty. If you have no pick of that round in either year, the amount you went over by is charged
+      as dead cap the next season, so selling your picks is not a way to go over the cap for free.</p>
     <button class="btn btn-block mt" onclick="closeModal()">Done</button>`);
 };
 /* All salary-rule edits write into the ACTIVE sport's slot, never a shared object,
@@ -7973,7 +7968,7 @@ window.showArbPlayers = function() {
 
 /* ============================================================
    SEASON ROLLOVER — commissioner advances to the next season. Applies:
-   1) over-cap penalties (remove draft picks, cascading per nextAvailableOwnPick)
+   1) over-cap penalties (remove draft picks, per penaltyPickYear)
    2) cap growth (next season's cap = cap * (1+growth))
    3) contract aging (each signed contract moves a year forward; expired ones end)
    4) dead-cap expiry (this-season hits clear)
@@ -8022,17 +8017,13 @@ window.confirmAdvanceYear = function() {
 function penaltyPayableIn(teamId, startYear, picksOwed) {
   const taken = new Set();
   let payable = 0;
+  // mirrors confirmSeasonRollover exactly: pick k is round k+1, same round only,
+  // inside the roll window. If the preview and the rollover ever disagree, the
+  // preview is lying about what the button is going to do.
   for (let k = 0; k < picksOwed; k++) {
-    let found = false;
-    for (let y = startYear; y < startYear + 15 && !found; y++) {
-      for (let r = 1; r <= 5 && !found; r++) {
-        const key = y + ':' + r;
-        if (taken.has(key)) continue;
-        if (pickRemoved(y, r, teamId)) continue;
-        if (String(pickOwner(y, r, teamId)) !== String(teamId)) continue;
-        taken.add(key); payable++; found = true;
-      }
-    }
+    const y = penaltyPickYear(teamId, k + 1, startYear, taken);
+    if (y == null) continue;
+    taken.add(y + ':' + (k + 1)); payable++;
   }
   return payable;
 }
@@ -8068,7 +8059,8 @@ window.openSeasonRollover = function() {
     <div class="divlabel">Pick penalties (over-cap teams)</div>
     ${penHtml}
     ${overTeams.length ? `<p class="sub" style="font-size:.64rem;margin-top:.3rem">Picks already traded away stay with
-      the team that acquired them; the forfeit rolls to the penalised team's nearest future pick instead.</p>` : ''}
+      the team that acquired them; the forfeit falls on the penalised team's own pick of the same round the year
+      after instead. No further, and never a different round — what it cannot pay in picks it pays as dead cap.</p>` : ''}
     <div class="divlabel mt">Cap change</div>
     <div class="row-between" style="font-size:.78rem"><span class="sub">${yr} cap</span><b>${fmtMoney(leagueCap())}</b></div>
     <div class="row-between" style="font-size:.78rem"><span class="sub">${yr+1} cap (+${SALCFG().capGrowthPct}%)</span><b class="amber">${fmtMoney(newCap)}</b></div>

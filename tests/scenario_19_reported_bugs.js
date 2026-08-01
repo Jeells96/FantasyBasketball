@@ -419,17 +419,35 @@
     removeOnePick('a', 1, yr2 + 1, m => logLines.push(m));
     C(K2 + 'a traded pick stays with the team that acquired it',
       String(pickOwner(yr2 + 1, 1, 'a')) === 'b' && !pickRemoved(yr2 + 1, 1, 'b'));
-    C(K2 + 'and the forfeit rolls to a later year they still own',
+    C(K2 + 'and the forfeit falls on the same round the year after',
       pickRemoved(yr2 + 2, 1, 'a') === true);
-    C(K2 + 'the log explains it', logLines.some(l => /receiver keeps it/.test(l)), logLines.join(' | '));
+    C(K2 + 'the log explains it',
+      logLines.some(l => new RegExp(`${yr2 + 1} R1 is already gone`).test(l)), logLines.join(' | '));
 
-    // if that round is gone entirely, any round they own is taken instead
+    // ONE year, and only that round. A 4th-rounder is not payment for a 1st, and a
+    // pick five drafts out is not a penalty — both convert to money instead.
     LG().removedPicks = {};
     LG().draftPicks = {};
     for (let y = yr2 + 1; y < yr2 + 16; y++) { LG().draftPicks[y] = { 1: { a: 'b' } }; }
-    removeOnePick('a', 1, yr2 + 1, null);
-    C(K2 + 'with no R1 left, another round is forfeited instead',
-      [2, 3, 4, 5].some(r => pickRemoved(yr2 + 1, r, 'a')));
+    const gone = [];
+    const paid = removeOnePick('a', 1, yr2 + 1, m => gone.push(m));
+    C(K2 + 'with no R1 inside the window, nothing is taken', paid === false);
+    C(K2 + 'and no other round is raided to make up for it',
+      [1, 2, 3, 4, 5].every(r => !pickRemoved(yr2 + 1, r, 'a') && !pickRemoved(yr2 + 2, r, 'a')),
+      JSON.stringify(LG().removedPicks));
+    C(K2 + 'nor is it deferred to some far-off draft they do still own',
+      [3, 4, 5, 6, 7, 8].every(n => !pickRemoved(yr2 + n, 1, 'a')));
+    C(K2 + 'and the log says it became dead cap instead',
+      gone.some(l => /dead cap instead/.test(l)), gone.join(' | '));
+    // one year past is in; two is out
+    LG().removedPicks = {};
+    LG().draftPicks = { [yr2 + 1]: { 1: { a: 'b' } }, [yr2 + 2]: { 1: { a: 'b' } } };
+    C(K2 + 'the window really is one year, not two',
+      removeOnePick('a', 1, yr2 + 1, null) === false && !pickRemoved(yr2 + 3, 1, 'a'));
+    LG().removedPicks = {};
+    LG().draftPicks = { [yr2 + 1]: { 1: { a: 'b' } } };
+    C(K2 + 'while the year after a traded pick is still payable',
+      removeOnePick('a', 1, yr2 + 1, null) === true && pickRemoved(yr2 + 2, 1, 'a'));
 
     // and if they own NOTHING, the penalty becomes money — the actual loophole
     LG().removedPicks = {};
@@ -441,6 +459,21 @@
     }
     C(K2 + 'a team that traded everything can pay no picks at all',
       penaltyPayableIn('a', yr2 + 1, pen2.picks) === 0);
+    // the preview and the button must agree, or the preview is lying
+    C(K2 + 'and the preview says the same as the rollover will do', (() => {
+      LG().removedPicks = {};
+      LG().draftPicks = { [yr2 + 1]: { 1: { a: 'b' } } };   // only their next R1 is gone
+      const predicted = penaltyPayableIn('a', yr2 + 1, 3);
+      let actual = 0;
+      for (let k = 0; k < 3; k++) if (removeOnePick('a', k + 1, yr2 + 1, null)) actual++;
+      return predicted === actual && actual === 3;
+    })());
+    LG().removedPicks = {};
+    LG().draftPicks = {};
+    for (let y = yr2 + 1; y < yr2 + 16; y++) {
+      LG().draftPicks[y] = {};
+      for (let r = 1; r <= 5; r++) LG().draftPicks[y][r] = { a: 'b' };
+    }
     const overBy = pen2.over;
     confirmSeasonRollover();
     const dead2 = (LG().deadCap || {}).a || [];
@@ -454,9 +487,13 @@
       [1, 2, 3, 4, 5].every(r => !pickRemoved(yr2 + 1, r, 'b')));
     C(K2 + 'the rulebook states all of it', (() => {
       const h = Object.fromEntries(houseRules());
+      const noneLeft = h['If you have no pick of that round in either year'] || '';
       return /keeps it/.test(h['If you traded that pick away'] || '')
-          && /dead cap/.test(h['If you have no picks left'] || '');
-    })(), JSON.stringify(Object.fromEntries(houseRules())['If you have no picks left'] || ''));
+          && /same round the following year/.test(h['If you traded that pick away'] || '')
+          && /dead cap/.test(noneLeft)
+          && /different round is never taken/.test(noneLeft)
+          && /never deferred further out/.test(noneLeft);
+    })(), JSON.stringify(Object.fromEntries(houseRules())));
     closeModal();
 
     // ============================================================

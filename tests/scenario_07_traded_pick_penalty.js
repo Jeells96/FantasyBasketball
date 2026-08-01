@@ -37,24 +37,37 @@
   C(T + 'penalized team did NOT get their traded pick back',
     String(pickOwner(2027, 1, 't1')) !== 't1');
 
-  // a team that traded away R1s for ALL of the next 3 years: penalty lands on year 4
+  // A team that traded away R1s for ALL of the next 3 years. The forfeit gets ONE
+  // year of grace and then gives up — it does not chase them into 2030, because a
+  // penalty four drafts away is not a penalty, and it does not settle for a lesser
+  // round, because a 4th is not payment for a 1st. It becomes dead cap instead.
   const lg2 = S.setupLeague('flb', { teams: 4, week: 2, name: 'PickPen2',
     settings: { leagueType: 'dynasty', useSalaryCap: true, scoringFormat: 'regular' } });
   lg2.seasonYear = 2026;
   lg2.draft = { started: true, complete: true, order: lg2.teams.map(t => t.id), picks: [], currentPick: 0 };
   lg2.draftPicks = { 2027: { 1: { t1: 't2' } }, 2028: { 1: { t1: 't3' } }, 2029: { 1: { t1: 't4' } } };
-  removeOnePick('t1', 1, 2027, null);
-  C(T + 'all near-term R1s traded: penalty hits first still-owned year (2030)',
-    pickRemoved(2030, 1, 't1') && !pickRemoved(2027, 1, 't1') && !pickRemoved(2028, 1, 't1') && !pickRemoved(2029, 1, 't1'),
-    JSON.stringify(lg2.removedPicks));
+  C(T + 'both years of the window traded: no pick is taken at all',
+    removeOnePick('t1', 1, 2027, null) === false, JSON.stringify(lg2.removedPicks));
+  C(T + 'and it does not reach past the window to 2029 or 2030',
+    !pickRemoved(2029, 1, 't1') && !pickRemoved(2030, 1, 't1'), JSON.stringify(lg2.removedPicks));
+  C(T + 'nor take a cheaper round instead',
+    [2, 3, 4, 5].every(r => !pickRemoved(2027, r, 't1') && !pickRemoved(2028, r, 't1')));
   C(T + 'receivers all keep their acquired picks',
     String(pickOwner(2027, 1, 't1')) === 't2' && String(pickOwner(2028, 1, 't1')) === 't3' && String(pickOwner(2029, 1, 't1')) === 't4');
 
-  // second penalty in the same round cascades past the first removal
-  removeOnePick('t1', 1, 2027, null);
-  C(T + 'second R1 penalty cascades to 2031', pickRemoved(2031, 1, 't1'), JSON.stringify(lg2.removedPicks));
+  // one R1 traded, the next year's still theirs: that is what gets taken, and a
+  // second penalty in the same round then has nothing left inside the window
+  lg2.draftPicks = { 2027: { 1: { t1: 't2' } } };
+  lg2.removedPicks = {};
+  C(T + 'a one-year roll is allowed', removeOnePick('t1', 1, 2027, null) === true);
+  C(T + 'landing on 2028, the same round', pickRemoved(2028, 1, 't1'));
+  C(T + 'a second R1 penalty has nothing left to take and converts to money',
+    removeOnePick('t1', 1, 2027, null) === false, JSON.stringify(lg2.removedPicks));
 
   // rookie draft: receiver picks with the acquired slot, penalized slot vanishes
+  lg2.draftPicks = { 2027: { 1: { t1: 't2' } } };
+  lg2.removedPicks = {};
+  removeOnePick('t1', 1, 2027, null);   // t1 forfeits 2028 R1; 2027 R1 belongs to t2
   lg2.seasonYear = 2027;
   ensureRD(); lg2.rookieDraft.enabled = true; lg2.rookieDraft.rounds = 1; lg2.rookieDraft.snake = false;
   lg2.rookieDraft.order = lg2.teams.map(t => t.id);
