@@ -123,8 +123,11 @@
     renderPage('home');
     C(T + 'the team page says why', /healthy but still on your IL/.test(
       document.getElementById('page-home').innerHTML));
-    C(T + 'but the lineup and drops are untouched, so there is a way out',
-      typeof window.moveToSlot === 'function' && typeof window.dropPlayer === 'function');
+    C(T + 'but the lineup and drops are untouched, so there is a way out', (() => {
+      const n = teamRoster(me).length;
+      confirmDrop(teamRoster(me)[n - 1].espnId);   // blocked from adding, never from dropping
+      return typeof window.moveToSlot === 'function' && teamRoster(me).length === n - 1;
+    })());
     activateFromIR(hurt.espnId);
     C(T + 'activating clears it', !ilBlockReason(me));
     // activating refills the active roster, so make room before proving adds work
@@ -314,8 +317,26 @@
     const myTid = myTeamId(), theirTid = LG().teams[1].id;
     STATE.viewingTeamId = null;
     renderPage('home');
+    const homeHtml = document.getElementById('page-home').innerHTML;
     C(R2 + 'the rename control is on my team page',
-      /openRenameTeam\(\)/.test(document.getElementById('page-home').innerHTML));
+      /openRenameTeam\(\)/.test(homeHtml));
+    // it is a pen beside the name you can see, not a "Name" button in the row of
+    // tabs — you rename the thing you are looking at
+    C(R2 + 'and it is a pen next to the displayed team name',
+      homeHtml.indexOf('openRenameTeam()') < homeHtml.indexOf('openTradeCenter()')
+      && /✎<\/button>/.test(homeHtml));
+    C(R2 + 'the old ✎ Name button is gone', !/✎ Name/.test(homeHtml));
+    C(R2 + 'only my own team gets the pen, not one I am just viewing', (() => {
+      setViewingTeam(theirTid);
+      renderPage('home');
+      const other = document.getElementById('page-home').innerHTML;
+      setViewingTeam(myTid); renderPage('home');
+      return !/openRenameTeam\(\)/.test(other);
+    })());
+    // adds and drops belong to the players page and the player card, which handle
+    // waivers, dead cap and acquisition limits; the old modal did none of that
+    C(R2 + 'the +/− Players button is gone', !/openAddDrop/.test(homeHtml) && !/Players<\/button>/.test(homeHtml));
+    C(R2 + 'and the log is called Activity', /≡ Activity/.test(homeHtml) && !/≡ Log/.test(homeHtml));
     const typeName = v => {
       const el = document.getElementById('rn-team');
       if (el) { el.value = v; return; }
