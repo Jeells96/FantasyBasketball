@@ -123,13 +123,21 @@
   window._signTerm = 1; confirmSign(oneYr.espnId);
   C(T + '1yr contract signed pre-rollover', !!playerContract(oneYr));
   const t6PicksLostBefore = JSON.stringify(lg.removedPicks || {});
+  // t1's overage as it stands the instant before the rollover — signing above changed it
+  const pen1 = teamCapPenalty('t1', 2026);
   confirmSeasonRollover();
   C(T + 'rollover advances season year', currentSeasonYear() === 2027, currentSeasonYear());
   C(T + 'cap grows 5%', leagueCap() === Math.round(capBefore * 1.05), leagueCap());
   C(T + 'expired 1yr contract released player to FA',
     !teamRoster('t1').some(x => String(x.espnId) === String(oneYr.espnId)) && !playerContract(oneYr));
   C(T + 'over-cap team lost pick(s)', JSON.stringify(lg.removedPicks || {}) !== t6PicksLostBefore, JSON.stringify(lg.removedPicks));
-  C(T + 'dead cap from 2026 cleared', !(lg.deadCap['t1'] || []).length, JSON.stringify(lg.deadCap));
+  // 2026's drop-related dead cap is gone; what remains is the over-cap penalty the
+  // rollover just charged for 2027, which is the point — picks AND money, both
+  const carried = (lg.deadCap['t1'] || []);
+  C(T + 'dead cap from 2026 cleared', !carried.some(d => d.year === 2026), JSON.stringify(carried));
+  C(T + 'and the over-cap penalty is charged in money as well as picks',
+    carried.some(d => d.year === 2027 && /over-cap penalty/.test(d.name || '') && d.amount === pen1.over),
+    JSON.stringify(carried));
 
   const bad = S.renderAll();
   C(T + 'all pages render', bad.length === 0, bad.join(' ; '));

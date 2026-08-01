@@ -449,7 +449,28 @@
     C(K2 + 'while the year after a traded pick is still payable',
       removeOnePick('a', 1, yr2 + 1, null) === true && pickRemoved(yr2 + 2, 1, 'a'));
 
-    // and if they own NOTHING, the penalty becomes money — the actual loophole
+    // THE MONEY IS NOT INSTEAD OF THE PICKS. A team that can pay every pick it owes
+    // still pays the overage too — otherwise forfeiting picks would buy off the cash.
+    LG().removedPicks = {};
+    LG().deadCap = {};
+    LG().draftPicks = {};                      // owns everything
+    const capBefore2 = LG().settings.salaryCapDollars;
+    confirmSeasonRollover();
+    C(K2 + 'a team that can pay every pick still pays the money too', (() => {
+      const paidPicks = [1, 2, 3].filter(r => pickRemoved(yr2 + 1, r, 'a')).length;
+      const cash = ((LG().deadCap || {}).a || []).filter(d => /over-cap penalty/.test(d.name || ''));
+      return paidPicks === pen2.picks
+          && cash.reduce((s, d) => s + d.amount, 0) === pen2.over;
+    })(), JSON.stringify({ removed: LG().removedPicks, dead: (LG().deadCap || {}).a }));
+    C(K2 + 'and the money is the full overage, not a fraction of it',
+      (((LG().deadCap || {}).a || [])[0] || {}).amount === pen2.over,
+      `${(((LG().deadCap || {}).a || [])[0] || {}).amount} vs ${pen2.over}`);
+    closeModal();
+    // put the year and the cap back, so the no-picks case below is the same offence
+    LG().seasonYear = yr2;
+    LG().settings.salaryCapDollars = capBefore2;
+
+    // and if they own NOTHING, the money still lands in full — the actual loophole
     LG().removedPicks = {};
     LG().deadCap = {};
     LG().draftPicks = {};
@@ -478,7 +499,7 @@
     confirmSeasonRollover();
     const dead2 = (LG().deadCap || {}).a || [];
     const charged = dead2.filter(d => /over-cap penalty/.test(d.name || ''));
-    C(K2 + 'so the penalty converts to dead cap instead of vanishing', charged.length > 0);
+    C(K2 + 'so the penalty still lands as dead cap rather than vanishing', charged.length > 0);
     C(K2 + 'for exactly what they went over by',
       charged.reduce((s, d) => s + d.amount, 0) === overBy,
       `${charged.reduce((s, d) => s + d.amount, 0)} vs ${overBy}`);
@@ -488,9 +509,12 @@
     C(K2 + 'the rulebook states all of it', (() => {
       const h = Object.fromEntries(houseRules());
       const noneLeft = h['If you have no pick of that round in either year'] || '';
+      const over = h['Going over the cap'] || '';
       return /keeps it/.test(h['If you traded that pick away'] || '')
           && /same round the following year/.test(h['If you traded that pick away'] || '')
-          && /dead cap/.test(noneLeft)
+          && /dead cap the following season/.test(over)
+          && /Both, every time/.test(over)
+          && /charged in full regardless/.test(noneLeft)
           && /different round is never taken/.test(noneLeft)
           && /never deferred further out/.test(noneLeft);
     })(), JSON.stringify(Object.fromEntries(houseRules())));
