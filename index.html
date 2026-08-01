@@ -2211,6 +2211,14 @@ const NBA_ET_DATE = new Intl.DateTimeFormat('en-CA', {
 function nbaGameDay(iso) {
   try { return NBA_ET_DATE.format(new Date(iso)); } catch(e) { return String(iso||'').slice(0,10); }
 }
+/* Which of ESPN's season buckets counts as the fantasy regular season.
+   Preseason and postseason obviously don't. ESPN also ships a separate
+   "2023-24 Play In Regular Season" bucket, and a plain /regular season/ test
+   matched it — quietly folding a play-in game into the 82. */
+function isRegularSeasonType(displayName) {
+  const n = String(displayName || '');
+  return /regular season/i.test(n) && !/play[\s-]?in/i.test(n);
+}
 async function nbaGameLog(espnId, season) {
   const yr = season || statSeasonNow();
   const res = await fetch(`${NBA_WEB}/athletes/${espnId}/gamelog?season=${yr}`);
@@ -2225,9 +2233,9 @@ async function nbaGameLog(espnId, season) {
   };
   const meta = data.events || {};
   const out = [];
-  // regular season only — preseason/postseason don't belong in a fantasy season total
+  // Regular season only — see isRegularSeasonType.
   (data.seasonTypes || [])
-    .filter(st => /regular season/i.test(st.displayName || ''))
+    .filter(st => isRegularSeasonType(st.displayName))
     .forEach(st => (st.categories || []).forEach(cat => (cat.events || []).forEach(ev => {
       const m = meta[ev.eventId] || {};
       if (!m.gameDate) return;
@@ -3485,15 +3493,7 @@ function viewDraft() {
   // available players (reuse player filters)
   const taken = new Set(d.picks.map(p=>String(p.playerId)));
   const avail = filteredPool().filter(p => !taken.has(String(p.espnId))).slice(0, 80);
-  const playerRows = avail.map(p => `
-    <div class="row-between draft-pick-row" style="padding:.4rem 0;border-bottom:1px solid rgba(42,61,48,.4)">
-      <span class="row" style="gap:.45rem;align-items:center">
-        ${headshotImg(p, 30)}
-        <span class="plink" onclick="showPlayer('${p.espnId}')">${esc(p.name)}
-        <span class="sub" style="font-size:.65rem">${esc((p.eligible||[]).join('/'))} · ${esc(p.proTeam||'')} · ADP ${p.adp<9999?p.adp.toFixed(0):'—'}${p.bestAvg!=null?` · ${p.bestAvg.toFixed(1)}avg`:''}</span></span>
-      </span>
-      ${mine?`<button class="btn btn-sm btn-amber" onclick="makeDraftPick('${p.espnId}')">Draft</button>`:''}
-    </div>`).join('');
+  const playerRows = avail.map(p => draftPlayerRow(p, mine, 'makeDraftPick')).join('');
 
   // recent picks
   const recent = d.picks.slice(-6).reverse().map(pk => {
@@ -3572,13 +3572,7 @@ function viewRookieDraft() {
 
   const taken = new Set(d.picks.map(p=>String(p.playerId)));
   const avail = filteredPool().filter(p => !taken.has(String(p.espnId))).slice(0, 80);
-  const playerRows = avail.map(p => `
-    <div class="row-between" style="padding:.4rem 0;border-bottom:1px solid rgba(42,61,48,.4)">
-      <span class="plink" onclick="showPlayer('${p.espnId}')">${esc(p.name)}
-        ${p.isRookie?'<span class="ps-tag" style="display:inline">R</span>':''}
-        <span class="sub" style="font-size:.65rem">${esc((p.eligible||[]).join('/'))} · ${esc(p.proTeam||'')} · ADP ${p.adp<9999?p.adp.toFixed(0):'—'}</span></span>
-      ${mine?`<button class="btn btn-sm btn-amber" onclick="makeRookiePick('${p.espnId}')">Draft</button>`:''}
-    </div>`).join('');
+  const playerRows = avail.map(p => draftPlayerRow(p, mine, 'makeRookiePick')).join('');
 
   const recent = d.picks.slice(-6).reverse().map(pk => {
     const pl = LG().playerPool.find(x=>String(x.espnId)===String(pk.playerId));
@@ -3620,19 +3614,100 @@ function draftSecondsLeft() {
 }
 function fmtClock(s) { const m=Math.floor(s/60), ss=s%60; return `${m}:${String(ss).padStart(2,'0')}`; }
 
-/* compact filter bar for the draft room (mirrors the players page filters) */
+/* compact filter bar for the draft room (mirrors the players page filters).
+   THE DRAFT IS WHERE THE NUMBERS MATTER MOST, and this bar used to offer only a
+   search box and position chips while every stat on the players page — the stat
+   window, last season, the salary — was a page away. Same windows, same sort, same
+   meaning line, so nobody has to leave the room mid-pick to look something up. */
 function draftFilterBar() {
   const allPos = SP().posFilters;
   const posBtn = (pos) => `<button class="btn btn-sm ${playerView.posFilter===pos?'btn-amber':'btn-ghost'}" onclick="setPosFilter('${pos}')">${pos}</button>`;
+  const win = activeStatWindow();
+  const winBtn = ([w, label]) =>
+    `<button class="btn btn-sm ${win===w?'btn-amber':'btn-ghost'}" onclick="setPtsWindow('${w}')">${label}</button>`;
+  if (win === 'prev') ensurePrevPoolPoints();
+  const meaning = statColumnMeaning(win);
+  const open = playerFiltersOpen();
+  const scroll = 'display:flex;gap:.3rem;overflow-x:auto;flex-wrap:nowrap;padding-bottom:.3rem';
+  // FOLDED, like the players page. Four rows of chips before the first player is
+  // the whole screen on a phone, and the draft room is the one place you need to
+  // see names immediately — the clock is running.
   return `
     <div class="field"><input class="input" placeholder="Search…" value="${esc(playerView.search)}" oninput="setSearch(this.value)"></div>
-    ${SP().key==='flb'?`<div class="row" style="gap:.3rem;margin-top:.4rem">
-      <button class="btn btn-sm ${playerView.grpFilter==='all'?'btn-amber':'btn-ghost'}" onclick="setGrpFilter('all')">All</button>
-      <button class="btn btn-sm ${playerView.grpFilter==='batters'?'btn-amber':'btn-ghost'}" onclick="setGrpFilter('batters')">Batters</button>
-      <button class="btn btn-sm ${playerView.grpFilter==='pitchers'?'btn-amber':'btn-ghost'}" onclick="setGrpFilter('pitchers')">Pitchers</button>
-    </div>`:''}
-    <div class="row" style="gap:.3rem;overflow-x:auto;margin-top:.4rem;padding-bottom:.3rem">${allPos.map(posBtn).join('')}</div>`;
+    <div class="row-between" style="margin-top:.4rem">
+      <button class="btn btn-sm btn-ghost" onclick="togglePlayerFilters()">⚙ Filters${activeFilterCount()?` (${activeFilterCount()})`:''} ${open?'▲':'▼'}</button>
+      <span class="sub" style="font-size:.65rem">sorted by ${esc(playerView.sort==='pts'?statWindowLabel(win):playerView.sort==='salary'?'salary':'ADP')}</span>
+    </div>
+    <div style="${open?'':'display:none'}">
+      ${SP().key==='flb'?`<div class="row" style="gap:.3rem;margin-top:.4rem">
+        <button class="btn btn-sm ${playerView.grpFilter==='all'?'btn-amber':'btn-ghost'}" onclick="setGrpFilter('all')">All</button>
+        <button class="btn btn-sm ${playerView.grpFilter==='batters'?'btn-amber':'btn-ghost'}" onclick="setGrpFilter('batters')">Batters</button>
+        <button class="btn btn-sm ${playerView.grpFilter==='pitchers'?'btn-amber':'btn-ghost'}" onclick="setGrpFilter('pitchers')">Pitchers</button>
+      </div>`:''}
+      <div style="${scroll};margin-top:.4rem">${allPos.map(posBtn).join('')}</div>
+      ${FEAT().statWindows?`<div style="${scroll}">
+        <span class="sub" style="font-size:.62rem;align-self:center;flex:none">Stat</span>
+        ${statWindowOptions().map(winBtn).join('')}
+      </div>
+      <div style="${scroll}">
+        <span class="sub" style="font-size:.62rem;align-self:center;flex:none">Sort</span>
+        <button class="btn btn-sm ${playerView.sort==='pts'?'btn-ghost':playerView.sort==='salary'?'btn-ghost':'btn-amber'}" onclick="setDraftSort('adp')">ADP</button>
+        <button class="btn btn-sm ${playerView.sort==='pts'?'btn-amber':'btn-ghost'}" onclick="setDraftSort('pts')">${esc(statWindowLabel(win))}</button>
+        ${LSET().useSalaryCap?`<button class="btn btn-sm ${playerView.sort==='salary'?'btn-amber':'btn-ghost'}" onclick="setDraftSort('salary')">$</button>`:''}
+      </div>`:''}
+    </div>
+    ${meaning?`<p class="sub" style="font-size:.62rem;margin:.2rem 0 .3rem">
+      <b>${esc(statWindowLabel(win))}</b> = ${esc(meaning)}${win==='prev'&&!havePrevPoolPoints()?' · <span class="amber">loading…</span>':''}</p>`:''}`;
 }
+/* the short header label for a stat window (BEST, 30d, 2025…) */
+function statWindowLabel(win) {
+  return (statWindowOptions().find(o => o[0] === win) || ['', 'PTS'])[1];
+}
+/* plain-language meaning of the active stat column. Shared by the players page and
+   the draft room so the same chip can never be explained two different ways. */
+function statColumnMeaning(win) {
+  if (!FEAT().gameLogs) return '';
+  if (win === 'fpg') return 'fantasy points per game';
+  if (win === 'prev') return leagueUsesBestGame()
+    ? `the ${priorStatSeason()} season — average of each week's best game`
+    : `the ${priorStatSeason()} season — total points`;
+  if (leagueUsesBestGame()) return win === 'season'
+    ? "average of each week's best game"
+    : `average of each week's best game, last ${win} days`;
+  if (win === 'season') return 'total points this season';
+  if (win === 'bestavg') return "average of each week's best game";
+  return `total points, last ${win} days`;
+}
+/* one available-player row in either draft room — name, position, ADP, the stat
+   column the room is currently showing, and the salary if the league has one */
+function draftPlayerRow(p, canPick, pickFn) {
+  const win = activeStatWindow();
+  const field = ptsFieldFor(win, p);
+  const val = p[field];
+  const txt = val != null ? val.toFixed(AVG_PTS_FIELDS.has(field) ? 1 : 0) : '—';
+  const sal = LSET().useSalaryCap ? playerCapHit(p) : null;
+  return `
+    <div class="row-between draft-pick-row" style="padding:.4rem 0;border-bottom:1px solid rgba(42,61,48,.4)">
+      <span class="row" style="gap:.45rem;align-items:center;min-width:0">
+        ${headshotImg(p, 30)}
+        <span class="plink" style="min-width:0" onclick="showPlayer('${p.espnId}')">${esc(p.name)} ${injuryBadge(p)}${p.isRookie?' <span class="ps-tag" style="display:inline">R</span>':''}
+        <span class="sub" style="font-size:.65rem;display:block">${esc((p.eligible||[]).join('/'))} · ${esc(p.proTeam||'')}
+          · ADP ${p.adp<9999?p.adp.toFixed(0):'—'}${sal!=null?` · ${fmtMoney(sal)}`:''}</span></span>
+      </span>
+      <span class="row" style="gap:.5rem;align-items:center;flex:none">
+        <span class="num" style="font-size:.78rem;font-weight:600;${(val==null||val<=0)?'color:var(--sage-dim)':'color:var(--chalk)'}"
+          title="${esc(statWindowLabel(win))}">${txt}</span>
+        ${canPick?`<button class="btn btn-sm btn-amber" onclick="${pickFn}('${p.espnId}')">Draft</button>`:''}
+      </span>
+    </div>`;
+}
+window.setDraftSort = function(kind) {
+  // ADP is stored as 'adp' on the players page but the shared pool sorter also
+  // accepts 'seasonPts' from an older default — normalise so the chip lights up
+  playerView.sort = kind;
+  playerView.dir = kind === 'adp' ? 1 : -1;
+  renderActive();
+};
 
 /* the filtered+sorted pool used by both the players page and draft room */
 function filteredPool() {
@@ -3651,7 +3726,13 @@ function filteredPool() {
     }
     return true;
   });
-  list.sort((a,b)=>a.adp-b.adp);
+  // the draft room lets you re-sort by the stat column or by salary, same as the
+  // players page — 'adp' (and the legacy 'seasonPts' default) mean draft order
+  const s = playerView.sort, dir = playerView.dir || 1;
+  const win = activeStatWindow();
+  if (s === 'pts') list.sort((a,b) => dir * ((a[ptsFieldFor(win,a)] ?? -Infinity) - (b[ptsFieldFor(win,b)] ?? -Infinity)));
+  else if (s === 'salary') list.sort((a,b) => dir * ((playerCapHit(a) ?? 0) - (playerCapHit(b) ?? 0)));
+  else list.sort((a,b)=>a.adp-b.adp);
   return list;
 }
 /* a team's total for a given week = sum of its starters' best single game */
@@ -5219,15 +5300,18 @@ const playerView = { sort: 'adp', dir: 1, posFilter: 'ALL', search: '', avail: '
    with the window buttons hidden, so there was no way to ask who is hot right now.
    Its default is still FP/G, because that is how basketball managers think. */
 const PTS_FIELDS = { season:'ptsSeason', '7':'pts7', '14':'pts14', '30':'pts30',
+                     prev:'prevPts',
                      bestavg:'bestAvg', fpg:'ptsPerGame' };
 /* In a best-of-week league every window shows the AVERAGE BEST GAME over that
    window instead of a running total — the same units the league actually scores in.
    A player's own mode is used, not the league's, because MLB leagues can score
    pitchers and hitters differently. */
 const PTS_FIELDS_BEST = { season:'bestAvg', '7':'bestAvg7', '14':'bestAvg14',
-                          '30':'bestAvg30', bestavg:'bestAvg', fpg:'ptsPerGame' };
+                          '30':'bestAvg30', bestavg:'bestAvg', fpg:'ptsPerGame',
+                          prev:'prevBestAvg' };
 /* which of those fields are averages rather than totals — they get a decimal */
-const AVG_PTS_FIELDS = new Set(['bestAvg', 'bestAvg7', 'bestAvg14', 'bestAvg30', 'ptsPerGame']);
+const AVG_PTS_FIELDS = new Set(['bestAvg', 'bestAvg7', 'bestAvg14', 'bestAvg30',
+                                'ptsPerGame', 'prevBestAvg', 'prevPerGame']);
 function ptsFieldFor(win, p) {
   const best = p ? playerScoreMode(p) === 'best' : (LSET().scoringFormat !== 'regular');
   return (best ? PTS_FIELDS_BEST[win] : null) || PTS_FIELDS[win];
@@ -5240,6 +5324,9 @@ function statWindowOptions() {
   const base = leagueUsesBestGame()
     ? [['season','BEST'], ['30','30d'], ['14','14d'], ['7','7d']]
     : [['season','PTS'], ['bestavg','AVG'], ['30','30d'], ['14','14d'], ['7','7d']];
+  // last season goes last: it is the one you reach for deliberately, and it is the
+  // only column that costs a fetch to fill in
+  if (FEAT().gameLogs) base.push(['prev', String(priorStatSeason())]);
   if (!FEAT().perGameScoring) return base;
   // FP/G leads in basketball — except in a best-of-week league, where only one game
   // a week is ever scored. There the week's best leads and FP/G sits beside it.
@@ -5331,17 +5418,14 @@ function viewPlayersReal() {
   const ptsOf = (p) => p[ptsFieldFor(win, p)];
   // short header labels: on a phone every character of header width is stolen from
   // the player-name column, which is the only column anyone reads
-  const ptsLabel = (statWindowOptions().find(o => o[0] === win) || ['','PTS'])[1];
+  const ptsLabel = statWindowLabel(win);
   // Say plainly what the points column is, because "30d" means two different things
   // depending on how the league scores.
-  const ptsMeaning = !FEAT().gameLogs ? ''
-    : win === 'fpg' ? 'fantasy points per game'
-    : leagueUsesBestGame()
-      ? (win === 'season' ? 'average of each week\'s best game'
-         : `average of each week's best game, last ${win} days`)
-      : (win === 'season' ? 'total points this season'
-         : win === 'bestavg' ? 'average of each week\'s best game'
-         : `total points, last ${win} days`);
+  const ptsMeaning = statColumnMeaning(win);
+  // last season is the one column that isn't already in hand — fetching it is a
+  // second sweep of the stats API, so it starts when someone asks for it, not at boot
+  if (win === 'prev') ensurePrevPoolPoints();
+  const prevLoading = win === 'prev' && !havePrevPoolPoints();
 
   const useSal = LSET().useSalaryCap;
   const s = playerView.sort, dir = playerView.dir;
@@ -5438,7 +5522,7 @@ function viewPlayersReal() {
     </div>
     ${activeFilters().length && !playerFiltersOpen() ? `<p class="sub" style="font-size:.66rem;margin-top:.25rem">Showing ${esc(activeFilterSummary())}</p>` : ''}
     ${ptsMeaning ? `<p class="sub" style="font-size:.62rem;margin-top:.15rem">
-      <b>${esc(ptsLabel)}</b> = ${esc(ptsMeaning)}</p>` : ''}
+      <b>${esc(ptsLabel)}</b> = ${esc(ptsMeaning)}${prevLoading?' · <span class="amber">loading…</span>':''}</p>` : ''}
     <div style="${playerFiltersOpen()?'':'display:none'}">
     ${SP().key==='flb' ? `<div class="row" style="gap:.35rem;margin-top:.5rem">
       <button class="btn btn-sm ${playerView.grpFilter==='all'?'btn-amber':'btn-ghost'}" onclick="setGrpFilter('all')">All</button>
@@ -5650,6 +5734,97 @@ function applyPointFields(p, log) {
   p.weeksPlayed = Object.keys(weekBest).length; // distinct fantasy weeks played
 }
 
+/* ============================================================
+   LAST SEASON
+   The season that just finished is what you actually draft off, and in a keeper or
+   dynasty league it is often more informative than a half-played current one. Both
+   game-log endpoints already take a season argument, so this is the same fetch
+   against a different year, cached separately so it can never mix with this year's.
+   ============================================================ */
+function priorStatSeason() { return SP().statSeason - 1; }
+function prevLogs() { return (LG().gameLogsPrev ||= {}); }
+/* A finished season has no fantasy weeks — weekOfDate is anchored to THIS league's
+   opener, and pointing it at last year returns nothing. Bucket by seven-day blocks
+   from that season's own first game instead, which is what a week meant then. */
+function applyPrevFields(p, log) {
+  let total = 0;
+  const weekBest = {};
+  const first = log.reduce((m, g) => (!m || g.date < m) ? g.date : m, null);
+  const day0 = first ? new Date(first + 'T00:00:00').getTime() : null;
+  log.forEach(g => {
+    const pts = gamePoints(g.stat, g.group);
+    total += pts;
+    if (day0 != null) {
+      const wk = Math.floor((new Date(g.date + 'T00:00:00').getTime() - day0) / 604800000);
+      weekBest[wk] = Math.max(weekBest[wk] ?? -Infinity, pts);
+    }
+  });
+  const vals = Object.values(weekBest).filter(x => x > -Infinity);
+  const r1 = (n) => Math.round(n * 10) / 10;
+  p.prevPts = r1(total);
+  p.prevGames = log.length;
+  p.prevPerGame = log.length ? r1(total / log.length) : 0;
+  p.prevBestAvg = vals.length ? r1(vals.reduce((a, b) => a + b, 0) / vals.length) : 0;
+  p.prevSeason = priorStatSeason();
+}
+/* one player's game log for a given season, in the shape everything downstream wants */
+async function fetchSeasonLog(p, season) {
+  if (SP().statsApi === 'nba') return await nbaGameLog(p.espnId, season);   // carries group:'stats'
+  const elig = (p.eligible || []).join('');
+  const isPitcher = /SP|RP/.test(elig) && !/1B|2B|3B|SS|OF|C|DH/.test(elig);
+  const grp = isPitcher ? 'pitching' : 'hitting';
+  const raw = await mlbGameLog(p.mlbId, grp, season);
+  return raw.map(g => ({ ...g, group: grp }));
+}
+/* last season for ONE player — a single request, so opening a card always shows it
+   without anybody waiting on a 300-player sweep */
+async function computeOnePlayerPrev(p) {
+  if (!p?.mlbId || !FEAT().gameLogs) return;
+  let log = prevLogs()[p.mlbId];
+  if (!log) { log = await fetchSeasonLog(p, priorStatSeason()); prevLogs()[p.mlbId] = log; }
+  applyPrevFields(p, log);
+}
+let _prevPoolRunning = false, _prevPooledOnce = false;
+/* last season for the WHOLE pool — the same sweep computePoolPoints does, so the
+   player list can sort and rank on it. Only run when someone asks for that column. */
+async function computePoolPrevPoints(progressFn) {
+  if (_prevPoolRunning) return;
+  _prevPoolRunning = true;
+  try {
+    const mapped = (LG().playerPool || []).filter(p => p.mlbId);
+    let done = 0;
+    for (const p of mapped) {
+      done++;
+      try {
+        let log = prevLogs()[p.mlbId];
+        if (!log) {
+          log = await fetchSeasonLog(p, priorStatSeason());
+          prevLogs()[p.mlbId] = log;
+          await new Promise(r => setTimeout(r, 40));
+        }
+        applyPrevFields(p, log);
+      } catch (e) {}
+      progressFn?.(done, mapped.length);
+    }
+    if (STATE.activeLeagueDoc) saveLeague({silent:true}); else saveLocal();
+  } finally { _prevPoolRunning = false; }
+}
+/* have we got last season for this pool yet? */
+function havePrevPoolPoints() {
+  return (LG().playerPool || []).some(p => p.prevPts != null);
+}
+function prevPoolLoading() { return _prevPoolRunning; }
+/* kicked off by selecting the last-season column, not at boot — it is a second full
+   sweep of the stats API and nobody should pay for it unless they asked to see it */
+function ensurePrevPoolPoints() {
+  if (_prevPooledOnce || !FEAT().gameLogs) return;
+  if (!(LG().playerPool || []).some(p => p.mlbId)) return;
+  if (havePrevPoolPoints()) return;
+  _prevPooledOnce = true;
+  computePoolPrevPoints(() => {}).then(() => renderActive())
+    .catch(() => { _prevPooledOnce = false; });
+}
+
 /* compute points for ONE player on demand (when their modal opens) */
 async function computeOnePlayer(p) {
   if (!p?.mlbId) return;
@@ -5716,13 +5891,24 @@ window.showPlayer = function(espnId) {
   // and a different player always starts with the weekly table folded, so the card
   // opens showing everything rather than a scroll box in the middle of it
   if (String(window._weeksOpen) !== String(espnId)) window._weeksOpen = null;
+  // last season is one request for one player, so a card always carries it — no
+  // waiting on the whole-pool sweep the players page uses for its column
+  const wantPrev = () => {
+    if (p.prevPts != null || !p.mlbId || !FEAT().gameLogs) return;
+    computeOnePlayerPrev(p).then(() => {
+      // only repaint if this card is still the one on screen
+      if (String(window._cardOpen) === String(espnId)) renderPlayerModal(p, false);
+    }).catch(() => {});
+  };
+  window._cardOpen = String(espnId);
   // if this player's points aren't computed yet but they're mapped, fetch on demand
   if (p.ptsSeason == null && p.mlbId) {
     renderPlayerModal(p, true);  // show with a loading hint
-    computeOnePlayer(p).then(() => { renderPlayerModal(p, false); });
+    computeOnePlayer(p).then(() => { renderPlayerModal(p, false); wantPrev(); });
     return;
   }
   renderPlayerModal(p, false);
+  wantPrev();
 };
 function renderPlayerModal(p, loading) {
   const pk = LG().draft.picks.find(x => String(x.playerId) === String(p.espnId));
@@ -5763,7 +5949,19 @@ function renderPlayerModal(p, loading) {
         ? `<div class="stat"><div class="lbl">Base AAV</div><div class="val" style="font-size:1rem">${fmtMoney(importedAAV(p))}</div></div>`
         : `<div class="stat"><div class="lbl">Status</div><div class="val" style="font-size:1rem">${pk?(onMyTeam?'Yours':'Rostered'):'Free'}</div></div>`}
     </div>
-    ${isNBA && p.gamesPlayed ? `<p class="sub mb" style="font-size:.68rem">${SP().statSeason} season · ${bestMode&&p.ptsPerGame!=null?`${p.ptsPerGame.toFixed(1)} FP/G · `:''}${p.seasonPts?.toFixed(0)||0} total fantasy pts over ${p.gamesPlayed} games</p>` : ''}
+    ${(() => {
+      // LAST SEASON. In a keeper or dynasty league it is often the more useful
+      // number, and in March a half-played current season says almost nothing.
+      // It replaces the basketball-only "this season" caption that used to sit
+      // here — that line only repeated the season total already in the summary
+      // card below, and the card has no spare height to carry both.
+      if (!statsLive || p.prevPts == null) return '';
+      const bits = [bestMode ? `${(p.prevBestAvg??0).toFixed(1)} best/wk` : null,
+                    `${(p.prevPts??0).toFixed(0)} pts`,
+                    isNBA ? `${(p.prevPerGame??0).toFixed(1)} FP/G` : null,
+                    `${p.prevGames||0} g`].filter(Boolean);
+      return `<p class="sub mb" style="font-size:.68rem"><b>${p.prevSeason}</b> · ${bits.join(' · ')}</p>`;
+    })()}
     ${LSET().useSalaryCap ? (()=>{ const r=salaryDB()[normName(p.name)]; const c=playerContract(p);
       let html = '<div class="card card-tight mb" style="font-size:.72rem;padding:.4rem .6rem;line-height:1.35">';
       // age + real pro contract (MLB / NBA — never label it with the wrong league)
@@ -6134,7 +6332,7 @@ function renderWeeklyBreakdown(p) {
   const open = !!window._weeksOpen && String(window._weeksOpen) === String(p.espnId);
   return `
     <div class="row-between mt" style="align-items:center;gap:.5rem">
-      <div class="divlabel" style="margin:0">Weekly scoring</div>
+      <div class="divlabel" style="margin:0">Weekly scoring${p.gamesPlayed?` · ${p.gamesPlayed} g`:''}</div>
       <button class="btn btn-sm btn-ghost" style="flex:none" onclick="toggleWeeks('${p.espnId}')">
         ${open ? 'Hide' : `${bd.weeks.length} week${bd.weeks.length!==1?'s':''}`} ${open ? '▲' : '▼'}</button>
     </div>
