@@ -1908,23 +1908,25 @@ function removeOnePick(teamId, round, startYear, log) {
   log && log(`${teamById(teamId).name}: lost their ${y} R${round} pick (penalty)`);
   return true;
 }
-/* THE PENALTY CANNOT BE TRADED AWAY.
-   Forfeiting picks only punishes a team that still has picks. A team that has
-   traded all of theirs could blow past the cap for free — which turns "sell the
-   future" into a way to buy the present with nothing down. So when there is no pick
-   of that round inside the one-year window, the penalty converts to money: the
-   amount they were over by is charged as dead cap next season. Money, rather than a
-   pick from some other round or some distant draft, because those are not the
-   penalty the rules named. It removes exactly the advantage going over bought them,
-   and it lands on the team that did it, never on the innocent team holding their
-   traded pick. */
-function chargeUnpayablePenalty(teamId, year, overBy, log) {
+/* THE MONEY IS NOT AN ALTERNATIVE TO THE PICKS — IT IS THE OTHER HALF.
+   Going over the cap costs you the picks the tiers name AND the amount you went
+   over by, charged as dead cap the next season. Both, every time.
+
+   Picks alone punish only teams that still have picks: a team that had already sold
+   its future could blow past the cap for nothing, which turns "sell the future" into
+   a way to buy the present with nothing down. Money alone is just a delayed
+   instalment plan on the players you already got to play. Together, the overage is
+   taken back and the tier still means what it says.
+
+   The cash half always lands, whether or not any pick was available to take. It hits
+   the team that did it, never the innocent team holding their traded pick. */
+function chargeOverCapPenalty(teamId, year, overBy, log) {
   if (!(overBy > 0)) return;
   LG().deadCap = LG().deadCap || {};
   LG().deadCap[teamId] = LG().deadCap[teamId] || [];
   LG().deadCap[teamId].push({ playerId: null, amount: overBy, year: year + 1,
-                              name: `${year} over-cap penalty (no pick of that round to forfeit)` });
-  log && log(`${teamById(teamId).name}: nothing left to forfeit, so ${fmtMoney(overBy)} is charged as dead cap in ${year + 1}`);
+                              name: `${year} over-cap penalty (${fmtMoney(overBy)} over)` });
+  log && log(`${teamById(teamId).name}: ${fmtMoney(overBy)} over the ${year} cap — charged as dead cap in ${year + 1}, on top of the picks`);
 }
 function fmtMoney(n) {
   if (n == null) return '—';
@@ -2572,12 +2574,12 @@ function houseRules() {
       const hi = t.maxPct >= 999 ? 'and up' : `–${t.maxPct}%`;
       return `${lo}${hi} over = ${t.picks} pick${t.picks!==1?'s':''}`;
     }).join(', ');
-    rows.push(['Going over the cap', `${tiers}, forfeited at season end (earliest rounds first)`]);
+    rows.push(['Going over the cap', `${tiers}, forfeited at season end (earliest rounds first), AND the amount you went over by charged as dead cap the following season. Both, every time — the picks do not buy off the money`]);
     rows.push(['If you traded that pick away',
       'the team that acquired it keeps it — a penalty never takes a pick out of an innocent team\'s hands. ' +
       'The forfeit falls on your own pick of the same round the following year instead, and no further']);
     rows.push(['If you have no pick of that round in either year',
-      'the amount you went over by is charged as dead cap the following season. A pick from a different round is never taken instead, and the penalty is never deferred further out — so trading your picks away is not a way to go over the cap for free']);
+      'that pick is simply not taken — a pick from a different round is never taken instead, and the penalty is never deferred further out. The money is charged in full regardless, so trading your picks away is not a way to go over the cap for free']);
   }
   return rows;
 }
@@ -7783,11 +7785,12 @@ window.openSalaryConfig = function() {
     <div class="divlabel mt">Over-cap penalties (draft picks lost)</div>
     <p class="sub" style="font-size:.66rem">Default: 1–10% over = 1 pick, 11–20% = 2 picks, 21%+ = 3 picks.</p>
     ${tierRows}
-    <p class="sub" style="font-size:.66rem;margin-top:.4rem">A pick you already traded away is never taken back —
-      whoever acquired it keeps it. The forfeit falls on your own pick of the <b>same round</b> the year after instead,
-      and no further out than that: a different round is not payment for the one you owe, and a penalty several drafts
-      away is not a penalty. If you have no pick of that round in either year, the amount you went over by is charged
-      as dead cap the next season, so selling your picks is not a way to go over the cap for free.</p>
+    <p class="sub" style="font-size:.66rem;margin-top:.4rem">Going over costs the picks <b>and</b> the money: the
+      amount you went over by is charged as dead cap the next season, every time, on top of the forfeited picks.
+      A pick you already traded away is never taken back — whoever acquired it keeps it. The forfeit falls on your own
+      pick of the <b>same round</b> the year after instead, and no further out than that: a different round is not
+      payment for the one you owe, and a penalty several drafts away is not a penalty. A pick you cannot pay is simply
+      not taken; the dead cap is charged in full regardless, so selling your picks is not a way to go over for free.</p>
     <button class="btn btn-block mt" onclick="closeModal()">Done</button>`);
 };
 /* All salary-rule edits write into the ACTIVE sport's slot, never a shared object,
@@ -8040,15 +8043,15 @@ window.openSeasonRollover = function() {
     // say up front which of these are payable in picks and which turn into money —
     // a team that traded its picks away pays the overage as dead cap instead
     const payable = penaltyPayableIn(x.t.id, yr + 1, x.pen.picks);
-    const unpaid = x.pen.picks - payable;
-    const cash = unpaid > 0 ? Math.round(x.pen.over * (unpaid / x.pen.picks)) : 0;
+    const missing = x.pen.picks - payable;
     return `<div style="padding:.3rem 0;border-bottom:1px solid rgba(42,61,48,.4)">
       <div class="row-between">
         <span style="font-size:.8rem">${esc(x.t.name)}</span>
-        <span class="cell-neg" style="font-size:.75rem">${x.pen.overPct}% over → −${x.pen.picks} pick${x.pen.picks!==1?'s':''}</span>
+        <span class="cell-neg" style="font-size:.75rem">${x.pen.overPct}% over → −${x.pen.picks} pick${x.pen.picks!==1?'s':''}
+          + ${fmtMoney(x.pen.over)}</span>
       </div>
-      ${unpaid > 0 ? `<div class="sub" style="font-size:.66rem;color:var(--amber)">
-        only ${payable} pick${payable!==1?'s':''} left to take — the rest becomes ${fmtMoney(cash)} dead cap in ${yr+1}</div>` : ''}
+      <div class="sub" style="font-size:.66rem">${fmtMoney(x.pen.over)} dead cap in ${yr+1}${
+        missing > 0 ? ` · only ${payable} of ${x.pen.picks} pick${x.pen.picks!==1?'s':''} is theirs to take — the money is charged in full either way` : ''}</div>
     </div>`;
   }).join('') : '<p class="sub" style="font-size:.75rem">No teams are over the cap. No pick penalties.</p>';
   const newCap = Math.round(leagueCap() * (1 + (SALCFG().capGrowthPct||0)/100));
@@ -8058,9 +8061,10 @@ window.openSeasonRollover = function() {
     </div>
     <div class="divlabel">Pick penalties (over-cap teams)</div>
     ${penHtml}
-    ${overTeams.length ? `<p class="sub" style="font-size:.64rem;margin-top:.3rem">Picks already traded away stay with
-      the team that acquired them; the forfeit falls on the penalised team's own pick of the same round the year
-      after instead. No further, and never a different round — what it cannot pay in picks it pays as dead cap.</p>` : ''}
+    ${overTeams.length ? `<p class="sub" style="font-size:.64rem;margin-top:.3rem">Going over costs both: the picks AND the
+      amount you went over by, as dead cap next season. Picks already traded away stay with the team that acquired
+      them; the forfeit falls on the penalised team's own pick of the same round the year after instead — no further,
+      and never a different round. A pick they cannot pay is simply not taken; the money is charged in full regardless.</p>` : ''}
     <div class="divlabel mt">Cap change</div>
     <div class="row-between" style="font-size:.78rem"><span class="sub">${yr} cap</span><b>${fmtMoney(leagueCap())}</b></div>
     <div class="row-between" style="font-size:.78rem"><span class="sub">${yr+1} cap (+${SALCFG().capGrowthPct}%)</span><b class="amber">${fmtMoney(newCap)}</b></div>
@@ -8109,17 +8113,14 @@ window.confirmSeasonRollover = function() {
   // 1) PENALTIES — remove picks for each over-cap team (cascade-aware)
   LG().teams.forEach(t => {
     const pen = teamCapPenalty(t.id, yr);
-    let unpaid = 0;
+    if (pen.picks <= 0) return;
     for (let k = 0; k < pen.picks; k++) {
       // remove from round 1 first, then round 2, etc. (one pick per round, escalating)
-      if (!removeOnePick(t.id, k + 1, yr + 1, log)) unpaid++;
+      removeOnePick(t.id, k + 1, yr + 1, log);
     }
-    // a penalty nobody can pay in picks is paid in money instead — see
-    // chargeUnpayablePenalty(). Split the overage across the picks that went unpaid
-    // so a team owing three picks and able to pay one still carries the rest.
-    if (unpaid > 0 && pen.picks > 0) {
-      chargeUnpayablePenalty(t.id, yr, Math.round(pen.over * (unpaid / pen.picks)), log);
-    }
+    // AND the money — always, in full, whether or not every pick was there to take.
+    // The picks are not a payment that buys off the overage. See chargeOverCapPenalty.
+    chargeOverCapPenalty(t.id, yr, pen.over, log);
   });
   // 2) CAP GROWTH — bake next season's cap into this league's setting. capForYear
   //    honours an explicit pin for that year before falling back to growth %.
