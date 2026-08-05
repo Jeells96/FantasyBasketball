@@ -1348,6 +1348,32 @@ function normName(name) {
    The two $ lines anchor the end of each block. AAV (2nd $) counts vs the cap.
    ============================================================ */
 const SALARY_POS = new Set(['C','1B','2B','3B','SS','OF','LF','CF','RF','DH','SP','RP','P','UTIL','PG','SG','SF','PF','G','F']);
+/* Positions that belong to ONE sport only — 'C' is a catcher and a center, so it
+   tells you nothing. Used to notice a paste that has landed in the wrong sport's
+   database, which is silent and destructive: the write replaces the whole DB. */
+const SPORT_ONLY_POS = {
+  flb: new Set(['1B','2B','3B','SS','OF','LF','CF','RF','DH','SP','RP','P']),
+  fba: new Set(['PG','SG','SF','PF','G','F']),
+};
+/* of two contract rows for the same player, which one is his current deal? */
+function betterContractRow(a, b, year) {
+  if (!a) return b;
+  if (!b) return a;
+  const covers = (r) => r.start != null && r.end != null && year >= r.start && year <= r.end;
+  if (covers(a) !== covers(b)) return covers(a) ? a : b;
+  return (b.start ?? -Infinity) > (a.start ?? -Infinity) ? b : a;
+}
+function salaryPasteSport(parsed) {
+  let flb = 0, fba = 0;
+  (parsed || []).forEach(p => {
+    const v = String(p.pos || '').toUpperCase();
+    if (SPORT_ONLY_POS.flb.has(v)) flb++;
+    else if (SPORT_ONLY_POS.fba.has(v)) fba++;
+  });
+  if (flb && flb > fba * 2) return 'flb';
+  if (fba && fba > flb * 2) return 'fba';
+  return null;   // nothing decisive — say nothing rather than guess
+}
 function parseMoney(s) { const m = String(s).replace(/[^0-9]/g, ''); return m ? parseInt(m) : null; }
 function parseSalaryPaste(text) {
   const rawLines = String(text||'').split('\n');
@@ -6579,18 +6605,24 @@ function viewSettings() {
 
     <div class="card" style="border-color:var(--sage)">
       <div class="h2">💰 Salaries & cap (default)</div>
-      <p class="sub mb">Turn salaries on and load the shared salary database (1 per sport).
-        ${Object.keys(salaryDB()).length ? `<b class="amber">${Object.keys(salaryDB()).length} ${SP().label} salaries loaded.</b>` : 'No salary data yet.'}</p>
-      <div class="row-between" style="padding:.4rem 0;border-top:1px solid rgba(42,61,48,.4)">
+      <p class="sub mb">The salary database is shared site-wide, one per sport.
+        ${Object.keys(salaryDB()).length ? `<b class="amber">${Object.keys(salaryDB()).length} ${SP().label} salaries loaded.</b>` : `No ${SP().label} salary data yet.`}</p>
+      <!-- LOADING THE DATABASE IS NOT A LEAGUE SETTING. These three used to sit behind
+           the cap toggle below, so a sport with no cap league yet — or the master
+           screen, which is bound to no league at all — offered no way to load its
+           salaries. You could not enter basketball's contracts until a basketball
+           league already had salaries switched on, using data that did not exist. -->
+      <button class="btn btn-block" onclick="openSalaryPaste()">📋 Paste ${SP().label} salary data</button>
+      <button class="btn btn-ghost btn-block mt" onclick="openSalaryConfig()">⚙ Default cap rules & penalties</button>
+      <button class="btn btn-ghost btn-block mt" onclick="showArbPlayers()">🚩 ${FEAT().arb?'Players with no contract (arb)':'Players with no salary on file'}</button>
+      ${inLeague ? `
+      <div class="row-between" style="padding:.4rem 0;border-top:1px solid rgba(42,61,48,.4);margin-top:.5rem">
         <span class="sub">Use salaries (this league)</span>
         <button class="btn btn-sm ${LSET().useSalaryCap?'btn-amber':'btn-ghost'}" onclick="toggleSalaryCap()">${LSET().useSalaryCap?`ON (${fmtMoney(leagueCap())})`:'OFF'}</button>
       </div>
       ${LSET().useSalaryCap ? `
-      <button class="btn btn-block mt" onclick="openSalaryPaste()">📋 Paste ${SP().label} salary data</button>
-      <button class="btn btn-ghost btn-block mt" onclick="openSalaryConfig()">⚙ Default cap rules & penalties</button>
-      <button class="btn btn-ghost btn-block mt" onclick="showArbPlayers()">🚩 ${FEAT().arb?'Players with no contract (arb)':'Players with no salary on file'}</button>
       <button class="btn btn-block mt" style="background:var(--bad);color:#fff" onclick="openSeasonRollover()">⏭ End season & apply penalties</button>
-      ${LG().rollbackSnapshot ? `<button class="btn btn-ghost btn-block mt" onclick="undoSeasonRollover()">↩ Undo the advance to ${currentSeasonYear()} (back to ${LG().rollbackSnapshot.fromYear})</button>` : ''}` : ''}
+      ${LG().rollbackSnapshot ? `<button class="btn btn-ghost btn-block mt" onclick="undoSeasonRollover()">↩ Undo the advance to ${currentSeasonYear()} (back to ${LG().rollbackSnapshot.fromYear})</button>` : ''}` : ''}` : ''}
     </div>
 
     <div class="card">
@@ -7855,19 +7887,48 @@ window.parseSalaryData = function() {
   const text = $('sal-paste')?.value || '';
   const parsed = parseSalaryPaste(text);
   if (!parsed.length) { toast('No players parsed — check the format', 'err'); return; }
+  // A save REPLACES that sport's whole database. Pasting basketball contracts while
+  // baseball is selected wipes baseball and leaves basketball still empty, with
+  // nothing on screen to say so. Check the positions before writing.
+  const looks = salaryPasteSport(parsed);
+  if (looks && looks !== STATE.sport) {
+    window._pendingSalaryPaste = parsed;
+    openModal(`<div class="h2">That looks like ${esc(SPORTS[looks].label)}</div>
+      <p class="sub mb">These ${parsed.length} rows use ${esc(SPORTS[looks].label.toLowerCase())} positions, but
+        <b>${esc(SP().label)}</b> is selected. Saving replaces the whole ${esc(SP().label)} database.</p>
+      <button class="btn btn-amber btn-block" onclick="saveSalaryPaste('${looks}')">
+        ${SPORTS[looks].icon} Save to ${esc(SPORTS[looks].label)} instead</button>
+      <button class="btn btn-ghost btn-block mt" onclick="saveSalaryPaste('${STATE.sport}')">
+        Save to ${esc(SP().label)} anyway</button>
+      <button class="btn btn-ghost btn-block mt" onclick="openSalaryPaste()">Back</button>`);
+    return;
+  }
+  saveSalaryPaste(STATE.sport, parsed);
+};
+window.saveSalaryPaste = function(sportKey, parsedIn) {
+  const parsed = parsedIn || window._pendingSalaryPaste || [];
+  window._pendingSalaryPaste = null;
+  if (!parsed.length || !SPORTS[sportKey]) { toast('Nothing to save', 'err'); return; }
   STATE.salaryDB = STATE.salaryDB || {};
   const db = {};
-  let withAav = 0;
+  const yr = currentSeasonYear() || SPORTS[sportKey].season;
   parsed.forEach(p => {
-    db[normName(p.name)] = { name:p.name, pos:p.pos, team:p.team, age:p.age,
-      start:p.start, end:p.end, years:p.years, total:p.total, aav:p.aav };
-    if (p.aav) withAav++;
+    const key = normName(p.name);
+    const rec = { name:p.name, pos:p.pos, team:p.team, age:p.age,
+                  start:p.start, end:p.end, years:p.years, total:p.total, aav:p.aav };
+    // These lists carry a player's OLD deal and his new one on separate rows —
+    // Bam Adebayo appears at 2021–2025 and again at 2026–2028. Sorted by total, not
+    // by date, so "last row wins" picks whichever happened to be bigger. Take the
+    // deal he is actually playing under, and failing that the later one.
+    db[key] = betterContractRow(db[key], rec, yr);
   });
-  STATE.salaryDB[STATE.sport] = db;
+  const withAav = Object.values(db).filter(r => r.aav).length;
+  STATE.salaryDB[sportKey] = db;
   save({master:true});
-  // preview the result
+  // preview the result — and name the sport, because it is not always the one
+  // you were looking at when you pasted
   const sample = parsed.slice(0,5).map(p => `${esc(p.name)} — ${fmtMoney(p.aav)} AAV`).join('<br>');
-  openModal(`<div class="h2">✓ ${parsed.length} salaries saved</div>
+  openModal(`<div class="h2">✓ ${parsed.length} ${esc(SPORTS[sportKey].label)} salaries saved</div>
     <p class="sub mb">${withAav} have an AAV value (counts vs cap). Sample:</p>
     <div class="card card-tight"><div class="sub" style="font-size:.75rem">${sample}</div></div>
     <button class="btn btn-block mt" onclick="closeModal();renderActive()">Done</button>`);
