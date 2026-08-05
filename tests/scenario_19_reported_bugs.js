@@ -669,6 +669,150 @@
       statWindowOptions()[0].join('/'));
 
     // ============================================================
+    // loading a sport's salary database is not a league setting
+    // ============================================================
+    const SD = `SalaryPaste[${sport}]: `;
+    // the exact shape of a real paste: name, pos, team, age, start, end, years, $total, $aav
+    const NBA_PASTE = [
+      "Jayson Tatum\tPF\t BOS\t26\t2025\t2029\t5\t$313,933,410\t$62,786,682",
+      "Nikola Jokic\tC\t DEN\t27\t2023\t2027\t5\t$276,122,630\t$55,224,526",
+      "Shai Gilgeous-Alexander\tPG\t OKC\t26\t2027\t2030\t4\t$271,656,000\t$67,914,000",
+      "De'Aaron Fox\tPG\t SAS\t27\t2026\t2029\t4\t$221,707,584\t$55,426,896",
+      "R.J. Barrett\tSG\t TOR\t22\t2023\t2026\t4\t$107,000,000\t$26,750,000",
+      "Jaren Jackson Jr.\tPF\t UTA\t25\t2026\t2029\t4\t$205,000,000\t$51,250,000",
+    ].join('\n');
+    const MLB_PASTE = [
+      "Juan Soto\tRF\t NYM\t26\t2025\t2039\t15\t$765,000,000\t$51,000,000",
+      "Zack Wheeler\tSP\t PHI\t34\t2025\t2027\t3\t$126,000,000\t$42,000,000",
+      "Bobby Witt Jr.\tSS\t KCR\t24\t2024\t2034\t11\t$288,777,000\t$26,252,454",
+    ].join('\n');
+    const nba = parseSalaryPaste(NBA_PASTE);
+    C(SD + 'a tab-separated basketball paste parses every row', nba.length === 6, nba.length);
+    C(SD + 'names with a period and an apostrophe survive',
+      nba.some(x => x.name === 'R.J. Barrett') && nba.some(x => x.name === "De'Aaron Fox"),
+      nba.map(x => x.name).join(' | '));
+    C(SD + 'a suffix is not mistaken for a stray field',
+      (nba.find(x => /Jaren/.test(x.name)) || {}).name === 'Jaren Jackson Jr.');
+    C(SD + 'basketball positions are read as positions', (() => {
+      const t = nba.find(x => /Tatum/.test(x.name));
+      return t.pos === 'PF' && t.team === 'BOS';
+    })(), JSON.stringify(nba[0]));
+    C(SD + 'the leading space on the team is trimmed', nba.every(x => x.team && !/^\s/.test(x.team)));
+    C(SD + 'age, both years and the term all land in the right slots', (() => {
+      const t = nba.find(x => /Tatum/.test(x.name));
+      return t.age === 26 && t.start === 2025 && t.end === 2029 && t.years === 5;
+    })(), JSON.stringify(nba.find(x => /Tatum/.test(x.name))));
+    C(SD + 'the total and the AAV are not swapped', (() => {
+      const t = nba.find(x => /Tatum/.test(x.name));
+      return t.total === 313933410 && t.aav === 62786682;
+    })());
+    C(SD + 'a centre parses like any other position',
+      (nba.find(x => /Jokic/.test(x.name)) || {}).pos === 'C');
+
+    // a paste is recognised by its positions, so it cannot land in the wrong sport
+    C(SD + 'a basketball paste is recognised as basketball', salaryPasteSport(nba) === 'fba');
+    C(SD + 'a baseball paste is recognised as baseball',
+      salaryPasteSport(parseSalaryPaste(MLB_PASTE)) === 'flb');
+    C(SD + 'and an ambiguous one is not guessed at',
+      salaryPasteSport([{ pos: 'C' }, { pos: 'C' }]) === null);
+
+    // THE BUG: loading the database was gated behind one league's cap toggle, so a
+    // sport with no cap league yet had no way to get its salaries in at all
+    STATE.sport = sport;
+    STATE.leagues[sport] = blankLeague('NoCap' + sport);
+    STATE.activeLeagueDoc = null;             // master settings: bound to no league
+    LG().settings.useSalaryCap = false;
+    window._masterUnlocked = true;
+    window._settingsScope = 'master';
+    renderPage('settings');
+    const seth = document.getElementById('page-settings').innerHTML;
+    C(SD + 'the paste button is there with no league bound and no cap switched on',
+      /openSalaryPaste\(\)/.test(seth));
+    C(SD + 'named for the sport whose database it writes', seth.includes(`Paste ${SP().label} salary data`));
+    C(SD + 'the default cap rules are reachable too', /openSalaryConfig\(\)/.test(seth));
+    C(SD + 'but the per-league cap switch is not offered when no league is open',
+      !/toggleSalaryCap\(\)/.test(seth));
+    C(SD + 'and neither is the season rollover', !/openSeasonRollover\(\)/.test(seth));
+
+    // saving writes to the sport you chose, and says which one
+    STATE.salaryDB = {};
+    saveSalaryPaste(sport, parseSalaryPaste(sport === 'fba' ? NBA_PASTE : MLB_PASTE));
+    C(SD + 'the rows land in that sport\'s database',
+      Object.keys(STATE.salaryDB[sport] || {}).length > 0,
+      JSON.stringify(Object.keys(STATE.salaryDB)));
+    C(SD + 'and the other sport is untouched', !STATE.salaryDB[sport === 'fba' ? 'flb' : 'fba']);
+    C(SD + 'the confirmation names the sport it saved to',
+      grab().includes(`${SP().label} salaries saved`), grab().slice(0, 120));
+    // these lists carry an old deal and a new one on separate rows, sorted by total
+    // rather than by date, so the bigger row is not necessarily the current one
+    C(SD + 'a player listed twice is stored under the deal he is playing', (() => {
+      const DUPES = [
+        "Bam Adebayo\tC\t MIA\t23\t2021\t2025\t5\t$163,000,300\t$32,600,060",
+        "Bam Adebayo\tC\t MIA\t26\t2026\t2028\t3\t$160,342,092\t$53,447,364",
+      ].join('\n');
+      STATE.salaryDB = {};
+      STATE.leagues[sport].seasonYear = 2027;
+      saveSalaryPaste(sport, parseSalaryPaste(DUPES));
+      const rec = STATE.salaryDB[sport][normName('Bam Adebayo')];
+      return rec.start === 2026 && rec.aav === 53447364;
+    })(), JSON.stringify(STATE.salaryDB[sport] && STATE.salaryDB[sport][normName('Bam Adebayo')]));
+    C(SD + 'even when the bigger contract is the expired one', (() => {
+      // same two rows, order swapped — the answer must not depend on paste order
+      const DUPES = [
+        "Bam Adebayo\tC\t MIA\t26\t2026\t2028\t3\t$160,342,092\t$53,447,364",
+        "Bam Adebayo\tC\t MIA\t23\t2021\t2025\t5\t$163,000,300\t$32,600,060",
+      ].join('\n');
+      STATE.salaryDB = {};
+      saveSalaryPaste(sport, parseSalaryPaste(DUPES));
+      return STATE.salaryDB[sport][normName('Bam Adebayo')].start === 2026;
+    })());
+    C(SD + 'and with no covering deal it keeps the later one', (() => {
+      STATE.leagues[sport].seasonYear = 2040;
+      const DUPES = [
+        "Kevin Durant\tSF\t HOU\t32\t2022\t2025\t4\t$194,219,320\t$48,554,830",
+        "Kevin Durant\tSF\t HOU\t37\t2026\t2027\t2\t$90,000,000\t$45,000,000",
+      ].join('\n');
+      STATE.salaryDB = {};
+      saveSalaryPaste(sport, parseSalaryPaste(DUPES));
+      return STATE.salaryDB[sport][normName('Kevin Durant')].start === 2026;
+    })());
+    STATE.leagues[sport].seasonYear = null;
+    closeModal();
+
+    // pasting the OTHER sport's data must not silently replace this one's database
+    STATE.salaryDB = {};
+    saveSalaryPaste(sport, parseSalaryPaste(sport === 'fba' ? NBA_PASTE : MLB_PASTE));
+    const kept = Object.keys(STATE.salaryDB[sport]).length;
+    openSalaryPaste();
+    const box = document.getElementById('sal-paste');
+    if (box) box.value = (sport === 'fba' ? MLB_PASTE : NBA_PASTE);
+    parseSalaryData();
+    const other = sport === 'fba' ? 'flb' : 'fba';
+    C(SD + 'a paste from the other sport stops and says so',
+      grab().includes(`That looks like ${SPORTS[other].label}`), grab().slice(0, 140));
+    C(SD + 'without having touched what was already saved',
+      Object.keys(STATE.salaryDB[sport] || {}).length === kept);
+    C(SD + 'it offers to file it under the sport it belongs to',
+      grab().includes(`saveSalaryPaste('${other}')`));
+    C(SD + 'and still lets you overrule it', grab().includes(`saveSalaryPaste('${sport}')`));
+    saveSalaryPaste(other);
+    C(SD + 'filing it correctly leaves both databases intact',
+      Object.keys(STATE.salaryDB[sport] || {}).length === kept
+      && Object.keys(STATE.salaryDB[other] || {}).length > 0,
+      `${sport}:${Object.keys(STATE.salaryDB[sport]||{}).length} ${other}:${Object.keys(STATE.salaryDB[other]||{}).length}`);
+    closeModal();
+    STATE.salaryDB = {};
+    saveSalaryPaste(sport, parseSalaryPaste(sport === 'fba' ? NBA_PASTE : MLB_PASTE));
+    C(SD + 'an AAV is what gets stored against the cap', (() => {
+      const one = Object.values(STATE.salaryDB[sport])[0];
+      return one.aav > 0 && one.total > one.aav;
+    })(), JSON.stringify(Object.values(STATE.salaryDB[sport])[0]));
+    closeModal();
+    STATE.salaryDB = {};
+    window._settingsScope = null;
+    window._masterUnlocked = false;
+
+    // ============================================================
     // last season's numbers, in the pool and in the draft room
     // ============================================================
     const LS = `LastSeason[${sport}]: `;
