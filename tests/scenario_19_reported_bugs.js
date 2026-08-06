@@ -688,6 +688,19 @@
     ].join('\n');
     const nba = parseSalaryPaste(NBA_PASTE);
     C(SD + 'a tab-separated basketball paste parses every row', nba.length === 6, nba.length);
+    // the real source table arrives with a MULTI-LINE HEADER. Detection used to
+    // sample only the first six lines, see no $ in any of them, fall into
+    // newline mode, and collapse the entire paste into one bogus "player" —
+    // the reported "1 salary saved"
+    C(SD + 'the same paste with the table header still parses every row', (() => {
+      const HDR = 'PLAYER\tPOS\tTEAM\nCURRENTLY WITH\nAGE\nAT SIGNING\nSTART\nEND\nYRS\nVALUE\nAAV\n';
+      const withHdr = parseSalaryPaste(HDR + NBA_PASTE);
+      return withHdr.length === 6
+        && !withHdr.some(x => /^player$/i.test(x.name))
+        && withHdr[0].name === 'Jayson Tatum' && withHdr[0].aav === 62786682;
+    })(), JSON.stringify(parseSalaryPaste('PLAYER\tPOS\tTEAM\nAAV\n' + NBA_PASTE).map(x => x.name)));
+    C(SD + 'a header line never becomes a player — a contract row carries money',
+      !parseSalaryPaste('PLAYER\tPOS\tTEAM\n' + NBA_PASTE).some(x => !x.aav && !x.total));
     C(SD + 'names with a period and an apostrophe survive',
       nba.some(x => x.name === 'R.J. Barrett') && nba.some(x => x.name === "De'Aaron Fox"),
       nba.map(x => x.name).join(' | '));
@@ -742,7 +755,7 @@
       JSON.stringify(Object.keys(STATE.salaryDB)));
     C(SD + 'and the other sport is untouched', !STATE.salaryDB[sport === 'fba' ? 'flb' : 'fba']);
     C(SD + 'the confirmation names the sport it saved to',
-      grab().includes(`${SP().label} salaries saved`), grab().slice(0, 120));
+      grab().includes(`${SP().label} players saved`), grab().slice(0, 120));
     // these lists carry an old deal and a new one on separate rows, sorted by total
     // rather than by date, so the bigger row is not necessarily the current one
     C(SD + 'a player listed twice is stored under the deal he is playing', (() => {

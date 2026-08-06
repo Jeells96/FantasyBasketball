@@ -1389,10 +1389,17 @@ function parseSalaryPaste(text) {
   // Detect ROW format: a line split by tabs (or 2+ spaces) yields many fields with
   // two $ amounts. Spreadsheet/table pastes look like this. Else use newline mode.
   const splitRow = (ln) => ln.indexOf('\t') >= 0 ? ln.split('\t') : ln.split(/\s{2,}/);
-  const looksRow = rawLines.filter(l => l.trim()).slice(0, 6).filter(l => {
+  const isRowish = (l) => {
     const f = splitRow(l).filter(x => x.trim());
     return f.length >= 5 && f.filter(x => x.trim().startsWith('$')).length >= 2;
-  }).length;
+  };
+  // Decide by scanning the WHOLE paste, never a sample. These tables arrive with a
+  // multi-line header (PLAYER / CURRENTLY WITH / AGE AT SIGNING / START / END ...),
+  // and sampling just the first six lines saw only the header — no $ anywhere — so
+  // the parser fell into newline mode, where the embedded $ amounts are never found
+  // at a line start. The entire paste collapsed into one bogus "player" and the
+  // toast said "1 salary saved".
+  const looksRow = rawLines.filter(l => l.trim() && isRowish(l)).length;
 
   if (looksRow >= 1) {
     // ROW MODE: one player per line. Fields: name, pos, [team], age, start, end, [years], $total, $aav
@@ -1402,6 +1409,9 @@ function parseSalaryPaste(text) {
       const f = splitRow(line).map(x => x.trim()).filter(x => x !== '');
       if (f.length < 3) return;
       const moneys = f.filter(x => x.startsWith('$')).map(parseMoney);
+      // a contract row carries money — a line without any $ is the header or a
+      // stray label, and turning it into a player named "PLAYER" helps nobody
+      if (!moneys.length) return;
       const nonMoney = f.filter(x => !x.startsWith('$'));
       const name = (nonMoney[0] || '').replace(/\s+[a-z]$/, '').trim();
       let pos = '', team = '', age = null, start = null, end = null, years = null;
@@ -8000,10 +8010,15 @@ window.saveSalaryPaste = function(sportKey, parsedIn) {
   STATE.salaryDB[sportKey] = db;
   save({master:true});
   // preview the result — and name the sport, because it is not always the one
-  // you were looking at when you pasted
+  // you were looking at when you pasted. The headline is UNIQUE PLAYERS: these
+  // lists repeat a player for his old deal and his new one, and "500 saved" next
+  // to 467 players in the database reads like 33 went missing.
+  const unique = Object.keys(db).length;
+  const dupes = parsed.length - unique;
   const sample = parsed.slice(0,5).map(p => `${esc(p.name)} — ${fmtMoney(p.aav)} AAV`).join('<br>');
-  openModal(`<div class="h2">✓ ${parsed.length} ${esc(SPORTS[sportKey].label)} salaries saved</div>
-    <p class="sub mb">${withAav} have an AAV value (counts vs cap). Sample:</p>
+  openModal(`<div class="h2">✓ ${unique} ${esc(SPORTS[sportKey].label)} players saved</div>
+    <p class="sub mb">${parsed.length} rows${dupes>0?` — ${dupes} duplicate${dupes!==1?'s':''} resolved to the player's current deal`:''}.
+      ${withAav} have an AAV value (counts vs cap). Sample:</p>
     <div class="card card-tight"><div class="sub" style="font-size:.75rem">${sample}</div></div>
     <button class="btn btn-block mt" onclick="closeModal();renderActive()">Done</button>`);
 };
