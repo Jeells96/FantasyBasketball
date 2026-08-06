@@ -594,8 +594,8 @@ const SPORTS = {
     label: 'Basketball',
     icon: '🏀',
     espnGame: 'fba',
-    season: 2025,               // ESPN's most recent NBA season with data (2024-25)
-    statSeason: 2025,           // real-stat season (NBA) — matches the pull season
+    season: 2026,               // ESPN labels an NBA season by its ENDING year: 2026 = the 2025-26 season
+    statSeason: 2026,           // real-stat season (NBA) — matches the pull season
     rosterSize: 13,
     statsApi: 'nba',
     proLeague: 'NBA',
@@ -1104,6 +1104,8 @@ function leaguePayload() {
     waiverPriority: lg.waiverPriority || [],
     faabSpent: lg.faabSpent || {},
     keeperCosts: lg.keeperCosts || {},
+    keepers: lg.keepers || {},
+    seasonStartedAt: lg.seasonStartedAt || 0,
     // NOTE: gameLogs and scheduleCache are intentionally NOT synced. They're large,
     // derived caches that every device fetches itself from the MLB API (free + fast).
     // Syncing them blew past Firestore's 1 MB per-document limit. They live locally only.
@@ -1145,8 +1147,13 @@ async function saveLeague(opts = {}) {
     return;
   }
   try {
-    // merge:true so a partial write can never delete fields it didn't include
-    await setDoc(doc(db, 'leagues', STATE.activeLeagueDoc), { league: payload }, { merge: true });
+    // FULL WRITE, NOT MERGE. The payload is always the complete shared league, and
+    // Firestore's merge is deep: a key deleted from a map (an expired contract, a
+    // claimed waiver, dead cap that aged out, a cleared keeper board) would survive
+    // on the server and resurrect on the next snapshot — which is exactly how a
+    // league slowly rots across seasons. The master doc has always done a full
+    // write for the same reason. The wipe guard above still refuses empty payloads.
+    await setDoc(doc(db, 'leagues', STATE.activeLeagueDoc), { league: payload });
     if (!opts.silent) toast(`☁️ Synced to league: ${LG().leagueName}`, 'ok');
   } catch(e) {
     const code = e?.code || '';
@@ -1204,6 +1211,8 @@ function applyLeague(league) {
   if (league.waiverPriority) lg.waiverPriority = league.waiverPriority;
   if (league.faabSpent) lg.faabSpent = league.faabSpent;
   if (league.keeperCosts) lg.keeperCosts = league.keeperCosts;
+  if (league.keepers) lg.keepers = league.keepers;
+  if (league.seasonStartedAt !== undefined) lg.seasonStartedAt = league.seasonStartedAt;
   // MIGRATION: contracts signed while the year bug returned 2027 have signedYear in the
   // future. Pull any contract whose signedYear is later than the current season back so
   // year 1 of the deal lands on the current season (where it belongs).
@@ -1721,12 +1730,14 @@ window.setCapOverride = function(year, val) {
   renderActive();
 };
 function currentSeasonYear() {
-  // The fantasy season year = current calendar year. (Previously this added +1,
-  // which wrongly jumped to next year during the current season.) A commissioner
-  // advances the year explicitly via the season rollover.
+  // ONE CLOCK. This is the season the league is PLAYING — the same year its stats,
+  // its schedule opener and its contracts run on. It is NOT the wall clock: an NBA
+  // season spans two calendar years and ESPN labels it by the ENDING year, so a
+  // league in the 2025-26 NBA season is simply "2026" everywhere in here. Advancing
+  // the season moves this by one, and everything derived from it moves together.
   const lg = LG();
   if (lg && lg.seasonYear) return lg.seasonYear;   // explicit league season year if set
-  return new Date().getFullYear();
+  return SP().season;                              // the sport's current data season
 }
 
 /* a player's CONTRACT record (signed), or null */
@@ -2222,7 +2233,16 @@ function scoringValues() {
 function scoringCatalog() { return SCORING_CATALOG[STATE.sport] || SCORING_CATALOG.flb; }
 
 /* The current stat season — league year, rolls over automatically. */
-function statSeasonNow() { return SP().season; }
+function statSeasonNow() {
+  // Which season's game logs to fetch. The manual season picker (a device-level
+  // override) wins; then the league's own year — a league that advanced to 2027
+  // pulls 2027, that being the whole point of advancing; else the sport default.
+  const ov = (STATE.seasonOverride || {})[STATE.sport];
+  if (ov && (ov.statSeason || ov.season)) return ov.statSeason || ov.season;
+  const lg = LG();
+  if (lg && lg.seasonYear) return lg.seasonYear;
+  return SP().season;
+}
 
 
 /* Fetch a player's game-by-game log from MLB StatsAPI for the current season.
@@ -2359,7 +2379,7 @@ async function getWeekSchedule(week) {
   if (!FEAT().schedule) return {};           // sport has no live schedule source
   const days = weekDays(week);
   const startYmd = ymd(days[0]), endYmd = ymd(days[days.length-1]);
-  const key = `${SP().season}_${startYmd}_${endYmd}`;
+  const key = `${statSeasonNow()}_${startYmd}_${endYmd}`;
   LG().scheduleCache = LG().scheduleCache || {};
   if (LG().scheduleCache[key]) return LG().scheduleCache[key];
   try {
@@ -3153,14 +3173,55 @@ function finishKeeperFlow() {
   }
   LG().keepers = keepers;
   LG().keeperCosts = costs;
-  // reset the season: fresh draft, week 1, clean lineups/waivers
+  // FINISHING THE KEEPER FLOW IS THE SEASON END for a keeper league — the same
+  // engine every league type uses, so a keeper year gets penalties, cap growth,
+  // contract aging and the stats turnover, not just a draft reset.
+  const yr = currentSeasonYear();
+  LG().rollbackSnapshot = snapshotForRollover();
+  const logs = [];
+  const log = (m) => logs.push(m);
+  applyCapSeasonEnd(yr, log);
+  // players NOT kept return to the pool, and their contracts go with them — voided,
+  // not dropped: no dead cap when a keeper year simply lets a player walk. Without
+  // this, a re-drafted player would arrive carrying his old team's deal.
+  const keptIds = new Set(Object.values(keepers).flatMap(l => l.map(x => String(x.espnId))));
+  let walked = 0;
+  Object.keys(LG().contracts || {}).forEach(pid => {
+    if (!keptIds.has(String(pid))) { delete LG().contracts[pid]; walked++; }
+  });
+  if (walked) log(`${walked} contract${walked!==1?'s':''} of unkept players ended — no dead cap`);
+  // fresh draft; keepers auto-slot at their cost rounds as it runs
   LG().draft = { started:false, complete:false, live:false, order: LG().draft.order||[], picks:[], currentPick:0,
                  draftDate:null, secPerPick: LSET().secPerPick||90, snake:true, pickStartedAt:null, paused:false };
-  LG().lineups = {}; LG().waivers = {}; LG().faabSpent = {}; LG().currentWeek = 1;
+  LG().irStash = {};
+  ensureSettings();
+  if (LG().settings.capSetFrom) LG().settings.capSetFrom = null;  // the new draft re-fixes the cap
+  turnSeasonPage(yr, log);
+  LG().seasonApplied = yr;
+  LG().currentWeek = 1;
+  logTxn('season', `Season advanced ${yr} → ${yr+1} (keeper year: ${Object.values(keepers).flat().length} keepers set)`);
   window._keep = null;
   save(); closeModal();
-  toast('New season started — keepers will auto-slot in their cost rounds during the draft', 'ok');
+  toast(`Now in ${yr+1} — keepers will auto-slot in their cost rounds during the draft`, 'ok');
   renderActive();
+}
+/* A FORFEITED PICK IS AN EMPTY SEAT AT THE DRAFT. Pick penalties are recorded in
+   removedPicks, and dynasty rookie drafts already honour them — but the MAIN draft
+   never looked, so in a redraft or keeper league losing next year's R1 cost
+   nothing at all. When the seat comes up it is consumed by a marker pick with no
+   player, and the draft moves on: the team simply does not pick that round. */
+function applyForfeitSkips() {
+  const d = LG().draft;
+  if (!d.live || d.complete) return;
+  let guard = 0;
+  while (guard++ < 200) {
+    const team = currentPickTeam(); if (!team) return;
+    const { round } = pickRoundAndSlot(currentPickIndex());
+    if (!pickRemoved(currentSeasonYear(), round, team)) return;
+    d.picks.push({ pick: currentPickIndex() + 1, round, teamId: team, playerId: null, forfeited: true });
+    logTxn('season', `${teamName(team)} forfeits their R${round} pick (over-cap penalty)`);
+    if (draftDone()) { finishDraft(); return; }
+  }
 }
 /* during the live draft: when the on-clock team owes a round to a keeper,
    the keeper IS that pick — record it and keep the draft moving. */
@@ -3382,6 +3443,7 @@ function manageDraftTimer(page) {
     if (!_draftTimer) {
       _draftTimer = setInterval(() => {
         if (!LG().draft?.live || LG().draft?.paused) { clearInterval(_draftTimer); _draftTimer=null; return; }
+        applyForfeitSkips();  // penalty seats are consumed, not picked
         checkKeeperSkips();   // keeper leagues: keepers auto-slot as their round's pick
         const left = draftSecondsLeft();
         const t = document.querySelector('.draft-timer');
@@ -3525,7 +3587,7 @@ function viewDraft() {
   const recent = d.picks.slice(-6).reverse().map(pk => {
     const pl = LG().playerPool.find(x=>String(x.espnId)===String(pk.playerId));
     return `<div class="sub" style="font-size:.72rem;padding:.15rem 0">
-      <b>#${pk.pick}</b> ${esc(teamById(pk.teamId).abbrev||teamById(pk.teamId).name)} — ${esc(pl?.name||'?')}</div>`;
+      <b>#${pk.pick}</b> ${esc(teamById(pk.teamId).abbrev||teamById(pk.teamId).name)} — ${pk.forfeited?'<span class="cell-neg">pick forfeited (penalty)</span>':esc(pl?.name||'?')}</div>`;
   }).join('');
 
   return `
@@ -4864,7 +4926,11 @@ function ilBlockReason(teamId) {
    Both limits default to 0 = unlimited, which is what every existing league gets. */
 function addsUsed(teamId, scope) {
   const name = teamName(teamId);
-  const since = scope === 'week' ? weekStartMs(currentWeekNow()) : 0;
+  // "this season" starts when the league last advanced a year — without the floor,
+  // a season limit counted every add the team had EVER made, so after the first
+  // rollover teams would eventually be locked out of adds forever
+  const seasonFloor = LG().seasonStartedAt || 0;
+  const since = scope === 'week' ? Math.max(weekStartMs(currentWeekNow()), seasonFloor) : seasonFloor;
   return (LG().transactions || []).filter(t =>
     (t.type === 'add' || t.type === 'waiver') && t.ts >= since && t.text.startsWith(name + ' ')).length;
 }
@@ -5527,7 +5593,7 @@ function viewPlayersReal() {
     `<button class="btn btn-sm ${activeStatWindow()===w?'btn-amber':'btn-ghost'}" onclick="setPtsWindow('${w}')">${label}</button>`;
 
   return `
-    <div class="eyebrow">${SP().label} pool · ${LG().playerPool.length} players${statsLive?` · ${mappedCount} linked`:''} · ${SP().statSeason} season</div>
+    <div class="eyebrow">${SP().label} pool · ${LG().playerPool.length} players${statsLive?` · ${mappedCount} linked`:''} · ${statSeasonNow()} season</div>
     <div class="h1">Players</div>
 
     ${statsLive && !havePoints ? `<div class="card card-tight mt">
@@ -5767,8 +5833,15 @@ function applyPointFields(p, log) {
    game-log endpoints already take a season argument, so this is the same fetch
    against a different year, cached separately so it can never mix with this year's.
    ============================================================ */
-function priorStatSeason() { return SP().statSeason - 1; }
-function prevLogs() { return (LG().gameLogsPrev ||= {}); }
+function priorStatSeason() { return statSeasonNow() - 1; }
+/* the cache is only valid for the season it was fetched for — after the league
+   advances a year, "last season" is a different season and the cache must go */
+function prevLogs() {
+  const lg = LG();
+  const want = priorStatSeason();
+  if (lg.gameLogsPrevYear !== want) { lg.gameLogsPrev = {}; lg.gameLogsPrevYear = want; }
+  return (lg.gameLogsPrev ||= {});
+}
 /* A finished season has no fantasy weeks — weekOfDate is anchored to THIS league's
    opener, and pointing it at last year returns nothing. Bucket by seven-day blocks
    from that season's own first game instead, which is what a week meant then. */
@@ -5837,7 +5910,8 @@ async function computePoolPrevPoints(progressFn) {
 }
 /* have we got last season for this pool yet? */
 function havePrevPoolPoints() {
-  return (LG().playerPool || []).some(p => p.prevPts != null);
+  const want = priorStatSeason();
+  return (LG().playerPool || []).some(p => p.prevPts != null && p.prevSeason === want);
 }
 function prevPoolLoading() { return _prevPoolRunning; }
 /* kicked off by selecting the last-season column, not at boot — it is a second full
@@ -5920,7 +5994,7 @@ window.showPlayer = function(espnId) {
   // last season is one request for one player, so a card always carries it — no
   // waiting on the whole-pool sweep the players page uses for its column
   const wantPrev = () => {
-    if (p.prevPts != null || !p.mlbId || !FEAT().gameLogs) return;
+    if ((p.prevPts != null && p.prevSeason === priorStatSeason()) || !p.mlbId || !FEAT().gameLogs) return;
     computeOnePlayerPrev(p).then(() => {
       // only repaint if this card is still the one on screen
       if (String(window._cardOpen) === String(espnId)) renderPlayerModal(p, false);
@@ -6620,9 +6694,7 @@ function viewSettings() {
         <span class="sub">Use salaries (this league)</span>
         <button class="btn btn-sm ${LSET().useSalaryCap?'btn-amber':'btn-ghost'}" onclick="toggleSalaryCap()">${LSET().useSalaryCap?`ON (${fmtMoney(leagueCap())})`:'OFF'}</button>
       </div>
-      ${LSET().useSalaryCap ? `
-      <button class="btn btn-block mt" style="background:var(--bad);color:#fff" onclick="openSeasonRollover()">⏭ End season & apply penalties</button>
-      ${LG().rollbackSnapshot ? `<button class="btn btn-ghost btn-block mt" onclick="undoSeasonRollover()">↩ Undo the advance to ${currentSeasonYear()} (back to ${LG().rollbackSnapshot.fromYear})</button>` : ''}` : ''}` : ''}
+` : ''}
     </div>
 
     <div class="card">
@@ -6662,6 +6734,8 @@ function viewSettings() {
           : `week ${currentWeekNow()} of ${currentSeasonYear()}`}</span></span>
         <button class="btn btn-sm btn-ghost" onclick="openAdvanceYear()">Move to ${currentSeasonYear()+1} →</button>
       </div>
+      ${inLeague ? `<button class="btn btn-block mt" style="background:var(--bad);color:#fff" onclick="openSeasonRollover()">⏭ End the ${currentSeasonYear()} season${LSET().useSalaryCap?' & apply penalties':''}</button>
+      ${LG().rollbackSnapshot ? `<button class="btn btn-ghost btn-block mt" onclick="undoSeasonRollover()">↩ Undo the advance to ${currentSeasonYear()} (back to ${LG().rollbackSnapshot.fromYear})</button>` : ''}` : ''}
       <button class="btn btn-ghost btn-block mt" onclick="openLeagueRules()">§ League rules &amp; FAQ</button>
       <button class="btn btn-ghost btn-block mt" onclick="openActivityLog()">≡ Activity (${(LG().transactions||[]).length})</button>
     </div>
@@ -8265,10 +8339,12 @@ window.openAdvanceYear = function() {
 };
 window.confirmAdvanceYear = function() {
   const from = currentSeasonYear();
-  LG().seasonYear = from + 1;
-  // a custom opener belongs to the season it was written for
-  if (LG().schedule) LG().schedule.opener = null;
-  LG().viewWeek = null;
+  // Rosters, contracts, teams and settings really are untouched — but the season
+  // TURN still happens: last year's stats file as last season, waivers and pending
+  // trades (priced against a season that is over) clear, and the calendar re-points.
+  // Without that, last year's games kept rendering as this season's totals.
+  const logs = [];
+  turnSeasonPage(from, (m) => logs.push(m));
   logTxn('season', `League moved to the ${from + 1} season`);
   save();
   toast(`Now playing ${from + 1}`, 'ok');
@@ -8290,13 +8366,16 @@ function penaltyPayableIn(teamId, startYear, picksOwed) {
   return payable;
 }
 window.openSeasonRollover = function() {
-  if (!LSET().useSalaryCap) { toast('Salaries are off for this league', 'err'); return; }
+  // Every league ends its season — a points-only league just has no cap business
+  // to settle on the way. The preview below only shows the sections that apply.
   const yr = currentSeasonYear();
-  // preview penalties per team
-  const teamLines = LG().teams.map(t => {
+  const cap = !!LSET().useSalaryCap;
+  const type = LSET().leagueType || 'redraft';
+  // preview penalties per team (cap leagues only)
+  const teamLines = cap ? LG().teams.map(t => {
     const pen = teamCapPenalty(t.id, yr);
     return { t, pen };
-  });
+  }) : [];
   const overTeams = teamLines.filter(x => x.pen.picks > 0);
   const penHtml = overTeams.length ? overTeams.map(x => {
     // say up front which of these are payable in picks and which turn into money —
@@ -8314,11 +8393,15 @@ window.openSeasonRollover = function() {
     </div>`;
   }).join('') : '<p class="sub" style="font-size:.75rem">No teams are over the cap. No pick penalties.</p>';
   const newCap = Math.round(leagueCap() * (1 + (SALCFG().capGrowthPct||0)/100));
-  openModal(`<div class="h2">Advance to ${yr+1} season</div>
+  openModal(`<div class="h2">End the ${yr} season</div>
     <div class="card card-tight mt mb" style="border-color:var(--bad)">
-      <p class="sub" style="font-size:.74rem;color:var(--bad)">⚠ This is permanent. It applies penalties, ages all contracts, and grows the cap. Make sure the season is actually over.</p>
+      <p class="sub" style="font-size:.74rem;color:var(--bad)">⚠ Make sure the season is actually over.${cap?' Penalties apply, contracts age, the cap grows.':''}
+        ${type==='redraft'?' All rosters clear for a fresh draft.':''} One undo is kept.</p>
     </div>
-    <div class="divlabel">Pick penalties (over-cap teams)</div>
+    ${type==='keeper'?`<div class="card card-tight mb" style="border-color:var(--amber)">
+      <p class="sub" style="font-size:.72rem"><b>Keeper league:</b> continuing opens keeper selection —
+      each team picks who it keeps, and finishing that applies everything below and starts the new season.</p></div>`:''}
+    ${cap ? `<div class="divlabel">Pick penalties (over-cap teams)</div>
     ${penHtml}
     ${overTeams.length ? `<p class="sub" style="font-size:.64rem;margin-top:.3rem">Going over costs both: the picks AND the
       amount you went over by, as dead cap next season. Picks already traded away stay with the team that acquired
@@ -8328,8 +8411,13 @@ window.openSeasonRollover = function() {
     <div class="row-between" style="font-size:.78rem"><span class="sub">${yr} cap</span><b>${fmtMoney(leagueCap())}</b></div>
     <div class="row-between" style="font-size:.78rem"><span class="sub">${yr+1} cap (+${SALCFG().capGrowthPct}%)</span><b class="amber">${fmtMoney(newCap)}</b></div>
     <div class="divlabel mt">Contracts</div>
-    <p class="sub" style="font-size:.72rem">Every signed contract advances one year. Contracts in their final year will expire and those players become free.</p>
-    <button class="btn btn-block mt" style="background:var(--bad);color:#fff" onclick="confirmSeasonRollover()">Apply & advance to ${yr+1}</button>
+    <p class="sub" style="font-size:.72rem">${type==='redraft'
+      ? 'A redraft season\u2019s contracts end with it — everyone returns to the pool with no dead cap.'
+      : 'Every signed contract advances one year. Contracts in their final year will expire and those players become free.'}</p>` : ''}
+    <div class="divlabel mt">Every season end</div>
+    <p class="sub" style="font-size:.72rem">Final standings are written to the activity log, this season's stats are filed
+      as last season, pending trades and waivers clear, and the league re-points at the ${yr+1} schedule.</p>
+    <button class="btn btn-block mt" style="background:var(--bad);color:#fff" onclick="confirmSeasonRollover()">${type==='keeper'?`Select keepers & end ${yr}`:`Apply & advance to ${yr+1}`}</button>
     <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Cancel</button>`);
 };
 /* SEASON ROLLOVER IS DESTRUCTIVE — so it is reversible.
@@ -8338,11 +8426,29 @@ window.openSeasonRollover = function() {
    before a disputed contract is fixed, has no other way back. We snapshot exactly
    the pieces the rollover touches (not the whole league — scores and schedules keep
    running) and restore them on undo. */
-const ROLLOVER_KEYS = ['contracts', 'deadCap', 'moneyTrades', 'draftPicks', 'lineups', 'irStash'];
+// Everything the season end touches. removedPicks is here because pick penalties
+// write to it — an undo that gave the year back but kept the forfeits would be a
+// penalty with no season attached. The whole draft object is here because redraft
+// and keeper years reset it. The game logs are here because the season turn files
+// them as last season.
+const ROLLOVER_KEYS = ['contracts', 'deadCap', 'moneyTrades', 'draftPicks', 'lineups', 'irStash',
+                       'removedPicks', 'draft', 'trades', 'waivers', 'faabSpent', 'holdovers',
+                       'gameLogs', 'gameLogsPrev', 'schedule', 'rookieDraft', 'keepers', 'keeperCosts'];
 function snapshotForRollover() {
   const lg = LG();
   const snap = { fromYear: currentSeasonYear(), at: Date.now(),
                  cap: LSET().salaryCapDollars || null,
+                 capSetFrom: LSET().capSetFrom ? JSON.parse(JSON.stringify(LSET().capSetFrom)) : null,
+                 prevYear: lg.gameLogsPrevYear ?? null,
+                 startedAt: lg.seasonStartedAt ?? null,
+                 hadSeasonYear: lg.seasonYear ?? null,
+                 pool: (lg.playerPool || []).map(p => ({
+                   id: p.espnId, ptsSeason: p.ptsSeason, seasonPts: p.seasonPts,
+                   pts7: p.pts7, pts14: p.pts14, pts30: p.pts30,
+                   bestAvg: p.bestAvg, bestAvg7: p.bestAvg7, bestAvg14: p.bestAvg14, bestAvg30: p.bestAvg30,
+                   gamesPlayed: p.gamesPlayed, weeksPlayed: p.weeksPlayed, ptsPerGame: p.ptsPerGame,
+                   prevPts: p.prevPts, prevGames: p.prevGames, prevPerGame: p.prevPerGame,
+                   prevBestAvg: p.prevBestAvg, prevSeason: p.prevSeason })),
                  picks: JSON.parse(JSON.stringify(lg.draft?.picks || [])) };
   ROLLOVER_KEYS.forEach(k => { snap[k] = JSON.parse(JSON.stringify(lg[k] || (Array.isArray(lg[k]) ? [] : {}))); });
   return snap;
@@ -8351,25 +8457,39 @@ window.undoSeasonRollover = function() {
   const lg = LG();
   const snap = lg.rollbackSnapshot;
   if (!snap) { toast('Nothing to undo', 'err'); return; }
-  ROLLOVER_KEYS.forEach(k => { lg[k] = snap[k]; });
+  ROLLOVER_KEYS.forEach(k => { if (snap[k] !== undefined) lg[k] = snap[k]; });
   lg.draft = lg.draft || {};
   lg.draft.picks = snap.picks;                       // rosters live in draft.picks
   ensureSettings();
   lg.settings.salaryCapDollars = snap.cap;
-  lg.seasonYear = snap.fromYear;
+  if (snap.capSetFrom !== undefined) lg.settings.capSetFrom = snap.capSetFrom;
+  if (snap.prevYear !== undefined) lg.gameLogsPrevYear = snap.prevYear;
+  if (snap.startedAt !== undefined) lg.seasonStartedAt = snap.startedAt;
+  // put every player's computed numbers back the way the finished season had them
+  if (snap.pool) {
+    const byId = {}; snap.pool.forEach(r => { byId[String(r.id)] = r; });
+    (lg.playerPool || []).forEach(p => {
+      const r = byId[String(p.espnId)]; if (!r) return;
+      Object.keys(r).forEach(k => { if (k !== 'id') p[k] = r[k]; });
+    });
+  }
+  lg.seasonYear = snap.hadSeasonYear !== undefined ? (snap.hadSeasonYear ?? snap.fromYear) : snap.fromYear;
+  if (!lg.seasonYear) lg.seasonYear = snap.fromYear;
   lg.seasonApplied = null;
   lg.rollbackSnapshot = null;                        // one undo, not a time machine
+  _pooledOnce = false; _prevPooledOnce = false;      // let the ensure paths re-decide
   logTxn('season', `Season advance undone — back to ${snap.fromYear}`);
   save();
   toast(`Reverted to ${snap.fromYear}`, 'ok');
   closeModal(); renderActive();
 };
-window.confirmSeasonRollover = function() {
-  const yr = currentSeasonYear();
-  LG().rollbackSnapshot = snapshotForRollover();
-  const logs = [];
-  const log = (m) => logs.push(m);
-  // 1) PENALTIES — remove picks for each over-cap team (cascade-aware)
+/* THE CAP HALF OF A SEASON END: penalties, cap growth, contract aging, dead-cap
+   expiry. Skipped wholesale when the league has no salaries — a points-only league
+   ends its season too, it just has none of this to settle. Returns the number of
+   contracts that expired. */
+function applyCapSeasonEnd(yr, log) {
+  if (!LSET().useSalaryCap) return 0;
+  // 1) PENALTIES — remove picks for each over-cap team (same-round, one-year window)
   LG().teams.forEach(t => {
     const pen = teamCapPenalty(t.id, yr);
     if (pen.picks <= 0) return;
@@ -8421,13 +8541,107 @@ window.confirmSeasonRollover = function() {
   });
   // money trades that have fully elapsed
   LG().moneyTrades = (LG().moneyTrades || []).filter(mt => (mt.startYear + (mt.years||1) - 1) > yr);
-  // record advance + set the new explicit season year
+  return expired;
+}
+
+/* A REDRAFT YEAR ENDS WITH AN EMPTY BOARD. Every roster clears for a fresh draft,
+   one-season contracts simply end (voided, not dropped — no dead cap for a season
+   reaching its natural end), and the cap unfixes so the new draft re-derives it.
+   Pick penalties were applied BEFORE this — a redraft league drafts every year, so
+   losing next year's R1 still means something. */
+function resetForRedraft(yr, log) {
+  const lg = LG();
+  const n = (lg.draft?.picks || []).length;
+  const hadContracts = Object.keys(lg.contracts || {}).length;
+  lg.contracts = {};
+  lg.draft = { started:false, complete:false, live:false, order: lg.draft?.order || [],
+               picks:[], currentPick:0, draftDate:null, secPerPick: LSET().secPerPick || 90,
+               snake:true, pickStartedAt:null, paused:false };
+  lg.irStash = {};
+  ensureSettings();
+  if (lg.settings.capSetFrom) lg.settings.capSetFrom = null;   // the next draft re-fixes it
+  log(`Redraft: ${n} roster spot${n!==1?'s':''} cleared for the ${yr + 1} draft` +
+      (hadContracts ? ` — ${hadContracts} one-season contract${hadContracts!==1?'s':''} ended` : ''));
+}
+
+/* EVERYTHING THAT TURNING THE PAGE TO A NEW SEASON MEANS, whatever the league type.
+   The finished season's stats retire into the last-season cache, everything that
+   cannot cross a season boundary is voided, and the calendar re-points. Shared by
+   the cap rollover, the keeper flow and the plain advance-a-year action, so the
+   three can never disagree about what a new season is. */
+function turnSeasonPage(yr, log) {
+  const lg = LG();
+  // the final standings go in the book before the stats that produced them retire
+  try {
+    if ((lg.teams || []).length >= 2 && Object.keys(lg.gameLogs || {}).length) {
+      const rec = computeRecords();
+      const rows = lg.teams.map(t => ({ t, r: rec[t.id] || { w:0, l:0, t:0, pf:0 } }))
+        .sort((a, b) => (b.r.w - a.r.w) || (b.r.pf - a.r.pf));
+      if (rows.some(x => x.r.w || x.r.l)) {
+        const line = rows.map((x, i) => `${i + 1}. ${x.t.name} (${x.r.w}-${x.r.l}${x.r.t ? '-' + x.r.t : ''})`).join(' · ');
+        logTxn('season', `Final ${yr} standings: ${line}`);
+        log(`${rows[0].t.name} finishes ${yr} on top (${rows[0].r.w}-${rows[0].r.l})`);
+      }
+    }
+  } catch (e) {}
+  // pending trades were priced against a season that is over
+  let voided = 0;
+  (lg.trades || []).forEach(t => {
+    if (t.status === 'pending') { t.status = 'expired'; t.resolved = Date.now(); voided++; }
+  });
+  if (voided) log(`${voided} pending trade${voided!==1?'s':''} expired with the season`);
+  // this season's logs ARE next season's "last season"
+  lg.gameLogsPrev = lg.gameLogs || {};
+  lg.gameLogsPrevYear = statSeasonNow();        // captured before the year moves
+  lg.gameLogs = {};
+  lg.scheduleCache = {};
+  lg.waivers = {}; lg.faabSpent = {}; lg.lineups = {}; lg.holdovers = {};
+  // the custom opener and week durations belonged to the season they were written for
+  lg.schedule = lg.schedule || {};
+  lg.schedule.opener = null;
+  lg.schedule.durations = {};
+  lg.viewWeek = null;
+  // last year's rookie board is done; the new year sets its own order
+  if (lg.rookieDraft && ((lg.rookieDraft.picks || []).length || lg.rookieDraft.complete || lg.rookieDraft.live)) {
+    lg.rookieDraft = { ...lg.rookieDraft, live:false, complete:false, picks:[],
+                       currentPick:0, pickStartedAt:null, paused:false, order:null, draftDate:null };
+    log('Rookie draft board reset for the new season');
+  }
+  lg.seasonYear = yr + 1;
+  lg.seasonStartedAt = Date.now();              // the season-limit adds counter restarts here
+  // every player's numbers: last season's move to the prev fields, current clear.
+  // prevLogs() self-validates against priorStatSeason, which now points at yr.
+  (lg.playerPool || []).forEach(p => {
+    const l = (lg.gameLogsPrev || {})[p.mlbId];
+    if (l && l.length) applyPrevFields(p, l);
+    else { p.prevPts = null; p.prevGames = 0; p.prevPerGame = 0; p.prevBestAvg = 0; p.prevSeason = null; }
+    p.ptsSeason = null; p.seasonPts = null; p.pts7 = 0; p.pts14 = 0; p.pts30 = 0;
+    p.bestAvg = 0; p.bestAvg7 = 0; p.bestAvg14 = 0; p.bestAvg30 = 0;
+    p.gamesPlayed = 0; p.weeksPlayed = 0; p.ptsPerGame = null;
+  });
+  // and the module-level "already fetched" latches reopen for the new season
+  _pooledOnce = false; _prevPooledOnce = false;
+}
+
+window.confirmSeasonRollover = function() {
+  const yr = currentSeasonYear();
+  const type = LSET().leagueType || 'redraft';
+  // a keeper league picks its keepers first — finishing that flow runs the rest
+  if (type === 'keeper') { closeModal(); openKeeperFlow(); return; }
+  LG().rollbackSnapshot = snapshotForRollover();
+  const logs = [];
+  const log = (m) => logs.push(m);
+  const expired = applyCapSeasonEnd(yr, log);
+  if (type === 'redraft') resetForRedraft(yr, log);
+  turnSeasonPage(yr, log);
   LG().seasonApplied = yr;
-  LG().seasonYear = yr + 1;
-  logTxn('season', `Season advanced ${yr} → ${yr+1}: ${expired} contract${expired!==1?'s':''} expired, cap now ${fmtMoney(leagueCap())}`);
+  logTxn('season', `Season advanced ${yr} → ${yr+1}` +
+    (LSET().useSalaryCap ? `: ${expired} contract${expired!==1?'s':''} expired, cap now ${fmtMoney(leagueCap())}` : ''));
   save();
   openModal(`<div class="h2">✓ Advanced to ${yr+1}</div>
-    <p class="sub mb">${expired} contract${expired!==1?'s':''} expired — those players were released to free agency. Cap is now ${fmtMoney(leagueCap())}.</p>
+    <p class="sub mb">${LSET().useSalaryCap ? `${expired} contract${expired!==1?'s':''} expired — those players were released to free agency. Cap is now ${fmtMoney(leagueCap())}.` : ''}
+      ${type === 'redraft' ? `All rosters cleared — the ${yr+1} draft room is open.` : ''}
+      Last season's stats are filed under ${yr}; the league now points at the ${yr+1} schedule.</p>
     ${logs.length?`<div class="card card-tight" style="max-height:40vh;overflow-y:auto"><div class="sub" style="font-size:.7rem;line-height:1.6">${logs.map(esc).join('<br>')}</div></div>`:''}
     <button class="btn btn-block mt" onclick="closeModal();renderActive()">Done</button>
     <button class="btn btn-ghost btn-block mt" onclick="undoSeasonRollover()">↩ Undo — put ${yr} back</button>`);
@@ -9320,6 +9534,7 @@ window.startLiveDraft = function() {
   LG().draft.paused = false;
   LG().draft.pickStartedAt = Date.now();
   if (!LG().draft.picks) LG().draft.picks = [];
+  applyForfeitSkips();               // the very first seat can be a forfeited one
   save();
   toast('Draft room is live', 'ok');
   go('draft');
@@ -9328,6 +9543,8 @@ window.startLiveDraft = function() {
 /* make a pick (manual click). enforces turn order. */
 window.makeDraftPick = function(espnId, force) {
   if (!LG().draft.live) { toast('Draft is not live', 'err'); return; }
+  applyForfeitSkips();               // a forfeited seat is never anyone's turn
+  if (!LG().draft.live) return;      // the skip may have finished the draft
   const team = currentPickTeam();
   if (!team) { finishDraft(); return; }
   const mine = String(team) === String(myTeamId());
@@ -9355,6 +9572,8 @@ function commitPick(espnId, team) {
 /* auto-pick: best available that fills an empty roster slot for the team on clock.
    Forced (bypasses turn check) — used on timer expiry for ANY team. */
 function autoPickForCurrent() {
+  applyForfeitSkips();
+  if (!LG().draft.live) return;
   const team = currentPickTeam();
   if (!team) { if (LG().draft.live) finishDraft(); return; }
   const taken = new Set(LG().draft.picks.map(p => String(p.playerId)));
@@ -10138,6 +10357,11 @@ window.autodraft = function() {
   for (let round = 0; round < ROUNDS; round++) {
     const order = round % 2 === 0 ? teamIds : [...teamIds].reverse();
     for (const teamId of order) {
+      // a seat forfeited to an over-cap penalty stays empty in an autodraft too
+      if (pickRemoved(currentSeasonYear(), round + 1, teamId)) {
+        picks.push({ pick: pickNum++, round: round+1, teamId, playerId: null, forfeited: true });
+        continue;
+      }
       const next = pool.find(p => !taken.has(String(p.espnId)));
       if (!next) break;
       taken.add(String(next.espnId));
