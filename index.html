@@ -676,7 +676,9 @@ window.setPoolSeason = function(year) {
   STATE.seasonOverride[STATE.sport] = { season: year, statSeason: year };
   saveLocal();
   renderActive();
-  toast(`Season set to ${year} — pull the pool to load it`, 'ok');
+  toast(`Season set to ${year} — the pool will refresh itself for it`, 'ok');
+  // the stamp now disagrees with statSeasonNow(), so this pulls immediately
+  if (typeof ensureFreshPool === 'function') ensureFreshPool();
 };
 
 /* ============================================================
@@ -711,6 +713,7 @@ const STATE = {
   leaguesBySport: {},           // {sport: {activeLeagueDoc, memberId, leagueName}} per-sport leagues
   sportByDoc: {},               // {leagueDocId: sport} learned, so untagged approvals resolve once
   seasonOverride: {},           // {sport: {season, statSeason}} year picked for ADP/points
+  poolMeta: {},                 // {sport: {pulledAt, season}} when/for which season the pool was pulled
   approvals: {},                // commissioner approval list (from master)
   _loaded: false,
 };
@@ -808,6 +811,7 @@ function masterPayload() {
     out[sk] = { playerPool: pool };
   }
   out.idOverrides = STATE.idOverrides;
+  out.poolMeta = STATE.poolMeta || {};     // synced, so ONE device's pull satisfies everyone
   out.approvals = STATE.approvals || {};   // commissioner approval list
   out.salaryDB = STATE.salaryDB || {};     // salary database, 1 per sport
   out.salaryConfig = STATE.salaryConfig || {};  // master salary rules
@@ -823,6 +827,7 @@ function applyMaster(master) {
   if (master.salaryConfig) STATE.salaryConfig = { ...STATE.salaryConfig, ...master.salaryConfig };
   if (master.attention) STATE.attention = master.attention;
   if (master.scoreOverrides) STATE.scoreOverrides = master.scoreOverrides;
+  if (master.poolMeta) STATE.poolMeta = master.poolMeta;
   // SELF-HEAL sport: now that approvals are loaded, make sure the active sport matches
   // the active league's approval (fixes a cross-wired sport from earlier).
   if (STATE.activeLeagueDoc && STATE.approvals) {
@@ -1006,7 +1011,9 @@ async function initFirebase() {
         // the landing gate's "Your leagues" list depends on approvals — refresh it in
         // place if that's what's currently showing (renderActive() doesn't touch the gate)
         if (typeof refreshGateIfLanding === 'function') refreshGateIfLanding();
-        // pool likely just arrived from master — compute points if needed
+        // pool likely just arrived from master — compute points if needed, and if
+        // no pool arrived at all, fetch one: the pool feeds itself now
+        if (typeof ensureFreshPool === 'function') ensureFreshPool();
         if (typeof ensurePoolPoints === 'function') ensurePoolPoints();
       }
     }, (e) => { fbErr = e.message; });
@@ -1035,6 +1042,7 @@ function subscribeLeague(docId) {
       applyLeague(incoming);
       saveLocal();
       renderActive();
+      if (typeof ensureFreshPool === 'function') ensureFreshPool();
       if (typeof ensurePoolPoints === 'function') ensurePoolPoints();
     } else if (firstSnap) {
       const haveLocal = (LG().teams && LG().teams.length) || (LG().draft && LG().draft.picks && LG().draft.picks.length);
@@ -3392,6 +3400,7 @@ function renderPage(page) {
   if (!el) return;
   switch(page) {
     case 'home':      el.innerHTML = viewMyTeam();
+                      if (typeof ensureFreshPool === 'function') ensureFreshPool();
                       if (typeof ensurePoolPoints === 'function') ensurePoolPoints();
                       if (typeof ensureFreshInjuries === 'function') ensureFreshInjuries();
                       break;
@@ -3399,15 +3408,18 @@ function renderPage(page) {
     case 'rookie':    el.innerHTML = viewRookieDraft(); break;
     case 'standings': el.innerHTML = viewStandings(); break;
     case 'matchups':  el.innerHTML = viewMatchups();
+                      if (typeof ensureFreshPool === 'function') ensureFreshPool();
                       if (typeof ensurePoolPoints === 'function') ensurePoolPoints();
                       if (typeof ensureFreshInjuries === 'function') ensureFreshInjuries();
                       break;
     case 'teams':     el.innerHTML = viewTeams(); break;
     case 'myteam':    el.innerHTML = viewMyTeam();
+                      if (typeof ensureFreshPool === 'function') ensureFreshPool();
                       if (typeof ensurePoolPoints === 'function') ensurePoolPoints();
                       if (typeof ensureFreshInjuries === 'function') ensureFreshInjuries();
                       break;
     case 'players':   el.innerHTML = viewPlayers();
+                      if (typeof ensureFreshPool === 'function') ensureFreshPool();
                       if (typeof ensurePoolPoints === 'function') ensurePoolPoints();
                       if (typeof ensureFreshInjuries === 'function') ensureFreshInjuries();
                       break;
@@ -5486,7 +5498,7 @@ function viewPlayersReal() {
   if (!LG().playerPool.length) {
     return `<div class="h1">Players</div>
       <div class="empty"><div class="big">◎</div>
-      <div class="msg">No player pool yet. Pull it from ESPN in Settings.</div>
+      <div class="msg">No player pool yet — it loads itself from ESPN. Give it a moment.</div>
       <button class="btn" onclick="go('settings')">Open Settings</button></div>`;
   }
   const mappedCount = LG().playerPool.filter(p => p.mlbId).length;
@@ -6638,20 +6650,28 @@ function viewSettings() {
 
     <div class="card">
       <div class="h2">Player pool</div>
-      <p class="sub mb">Pull the ${SP().label} player pool from ESPN. ADP, ownership &amp; stats reflect the season you pick below. No league ID needed.</p>
+      <p class="sub mb">The ${SP().label} pool keeps itself current — it pulls from ESPN when it is missing,
+        when the league moves to a new season, and weekly for ADP/ownership drift. One device's pull
+        serves the whole league; there is nothing to press.</p>
+      <p class="sub" style="font-size:.72rem">${(() => {
+        const meta = (STATE.poolMeta || {})[STATE.sport] || {};
+        const n = (LG().playerPool || []).length;
+        if (!n) return 'No pool yet — it will load itself shortly.';
+        const when = meta.pulledAt ? new Date(meta.pulledAt).toLocaleString() : 'before auto-updates existed';
+        return `<b class="amber">${n} players</b> · ${meta.season || '?'} season · updated ${when}`;
+      })()}</p>
       <label class="sub">Season for ADP &amp; stats</label>
       <div class="row mt mb" style="gap:.35rem;flex-wrap:wrap">
         ${seasonChoices().map(y => `<button class="btn btn-sm ${SP().season===y?'btn-amber':'btn-ghost'}" onclick="setPoolSeason(${y})">${y}</button>`).join('')}
       </div>
-      <button class="btn btn-block" onclick="doPullPool()">Pull ${SP().season} player pool</button>
       <button class="btn btn-ghost btn-sm mt" onclick="inspectRaw()">🔬 Inspect raw player data</button>
     </div>
 
     ${SP().statsApi === 'mlb' ? `<div class="card">
       <div class="h2">MLB mapping</div>
       <p class="sub mb">Match ESPN players to MLB IDs for real stats.</p>
-      <button class="btn ${havePool?'':'btn-ghost'}" onclick="doMapIds()" ${havePool?'':'disabled'}>
-        Map players to MLB</button>
+      <p class="sub mb" style="font-size:.7rem">Mapping runs by itself after every pool pull —
+        only name-match failures need a human.</p>
       <button class="btn btn-ghost btn-block mt" onclick="showFailedMappings()">
         View unmapped players (${LG().playerPool.filter(p=>!p.mlbId).length})</button>
       <button class="btn btn-amber btn-block mt" onclick="scoringDiag()">🧪 Test scoring on a real player</button>
@@ -6798,7 +6818,7 @@ function viewSettings() {
       <p class="sub mb">${LG().draft.complete
         ? `✓ Drafted — ${LG().draft.picks.length} picks${LSET().useSalaryCap&&LSET().capSetFrom?`, cap fixed at ${fmtMoney(leagueCap())}`:''}.`
         : LG().teams.length < 2 ? 'Add at least two teams first.'
-        : !LG().playerPool.length ? 'Pull the player pool first (site-wide admin).'
+        : !LG().playerPool.length ? 'The player pool is still loading itself.'
         : 'Run a live draft from the draft room, or fill every roster instantly here.'}</p>
       <button class="btn btn-block" onclick="commishAutodraft()"
         ${LG().teams.length>1 && LG().playerPool.length ? '' : 'disabled'}>⚡ Autodraft every team</button>
@@ -7847,12 +7867,23 @@ function espnAdp(pl, placeholder) {
   }
   return adp;
 }
-window.doPullPool = async function() {
-  try {
-    const raw = await fetchPlayerPool(slog);
-    const adpPlaceholder = detectAdpPlaceholder(raw);
-    if (adpPlaceholder != null) slog(`ESPN ADP is parked at ${adpPlaceholder} — using draft ranks instead`, 'run');
-    LG().playerPool = raw.map(pp => {
+/* Fold a raw ESPN payload into the pool. Separate from the fetch so it can be
+   tested, and because it has real rules of its own:
+   - a payload that is basically empty means ESPN hasn't published the season yet
+     (the league advanced before the sport did) — keep the pool we have
+   - players the league already depends on (rostered, trade-blocked, watched)
+     survive the top-300 trim even when ESPN ranks them below it
+   - stat identity carries over: same espnId keeps its mlbId link and computed
+     points, so a re-pull never resets a season's numbers or re-runs mapping */
+function ingestPool(raw) {
+  if (!Array.isArray(raw) || raw.length < 50) {
+    throw new Error(`ESPN returned ${raw?.length || 0} players — season not published yet, keeping the current pool`);
+  }
+  const old = LG().playerPool || [];
+  const oldById = {};
+  old.forEach(p => { oldById[String(p.espnId)] = p; });
+  const adpPlaceholder = detectAdpPlaceholder(raw);
+  let pool = raw.map(pp => {
       const pl = pp.player || pp;
       const eligible = deriveEligibility(pl.eligibleSlots, pl.defaultPositionId);
       const defPos = posName(pl.defaultPositionId);
@@ -7890,22 +7921,114 @@ window.doPullPool = async function() {
         injuryStatus: pl.injuryStatus || null,
         mlbId: null,
       };
-    }).filter(p => p.name);
+  }).filter(p => p.name);
 
-    // sort by ADP (best first), then trim to the top 300. Keeping the pool small
-    // and fixed keeps the synced Firebase doc well under the 1 MB limit. Players
-    // outside the top 300 can be loaded individually to local storage on demand.
-    // Ownership breaks ties, so the tail of equal-ADP players keeps its most-owned
-    // names inside the trim instead of whoever the payload happened to list first.
-    LG().playerPool.sort((a,b) => (a.adp - b.adp) || ((b.owned||0) - (a.owned||0)));
-    LG().playerPool = LG().playerPool.slice(0, 300);
-    const ranked = LG().playerPool.filter(p => p.adp < 9999).length;
-    slog(`Stored top ${LG().playerPool.length} players (${ranked} with real ADP)`, 'ok');
+  // sort by ADP (best first), then trim to the top 300. Keeping the pool small
+  // and fixed keeps the synced Firebase doc well under the 1 MB limit. Players
+  // outside the top 300 can be loaded individually to local storage on demand.
+  // Ownership breaks ties, so the tail of equal-ADP players keeps its most-owned
+  // names inside the trim instead of whoever the payload happened to list first.
+  pool.sort((a,b) => (a.adp - b.adp) || ((b.owned||0) - (a.owned||0)));
+  pool = pool.slice(0, 300);
+  // players the league depends on survive the trim — a re-pull must never make a
+  // rostered player vanish from the pool
+  const have = new Set(pool.map(p => String(p.espnId)));
+  const keep = new Set();
+  (LG().draft?.picks || []).forEach(pk => { if (pk.playerId != null) keep.add(String(pk.playerId)); });
+  ((LG().rookieDraft || {}).picks || []).forEach(pk => { if (pk.playerId != null) keep.add(String(pk.playerId)); });
+  Object.values(LG().tradeBlock || {}).forEach(l => (l || []).forEach(id => keep.add(String(id))));
+  Object.values(LG().watchLists || {}).forEach(l => (l || []).forEach(id => keep.add(String(id))));
+  keep.forEach(id => { if (!have.has(id) && oldById[id]) { pool.push(oldById[id]); have.add(id); } });
+  // carry stat identity and computed numbers across the re-pull. Two kinds of
+  // field: the game-log-derived ones (weekly windows, last season) NEVER come from
+  // the pool payload, so the old values always carry; the payload-supplied season
+  // numbers (NBA computes them at pull time) win only when the fresh payload
+  // actually contained games — a statless payload must not zero a real season.
+  pool.forEach(p => {
+    const o = oldById[String(p.espnId)];
+    if (!o) return;
+    if (o.mlbId != null && p.mlbId == null) p.mlbId = o.mlbId;
+    if (o.mlbTeamId != null && p.mlbTeamId == null) p.mlbTeamId = o.mlbTeamId;
+    ['pts7','pts14','pts30','bestAvg','bestAvg7','bestAvg14','bestAvg30','weeksPlayed',
+     'prevPts','prevGames','prevPerGame','prevBestAvg','prevSeason']
+      .forEach(k => { if (p[k] == null && o[k] != null) p[k] = o[k]; });
+    const freshHasStats = (p.gamesPlayed || 0) > 0;
+    ['ptsSeason','seasonPts','ptsPerGame','gamesPlayed']
+      .forEach(k => { if (!freshHasStats && o[k] != null) p[k] = o[k]; });
+  });
+  LG().playerPool = pool;
+  STATE.poolMeta = STATE.poolMeta || {};
+  STATE.poolMeta[STATE.sport] = { pulledAt: Date.now(), season: statSeasonNow() };
+  return { total: raw.length, stored: pool.length, placeholder: adpPlaceholder,
+           ranked: pool.filter(p => p.adp < 9999).length };
+}
+window.doPullPool = async function(opts = {}) {
+  try {
+    const raw = await fetchPlayerPool(slog);
+    const r = ingestPool(raw);
+    if (r.placeholder != null) slog(`ESPN ADP is parked at ${r.placeholder} — using draft ranks instead`, 'run');
+    slog(`Stored top ${r.stored} players (${r.ranked} with real ADP)`, 'ok');
+    // mapping is part of the pull, not a second chore: MLB looks up only players
+    // the carry-over didn't already link; NBA adopts its own ids instantly
+    if (FEAT().gameLogs && LG().playerPool.some(p => !p.mlbId)) {
+      try { await resolveMlbIds(slog, null); } catch (e) { slog('Mapping: ' + e.message, 'err'); }
+    }
+    _pooledOnce = false;               // let the points loop pick up the new faces
+    _prevPooledOnce = false;
     await save({master:true});
-    toast('Player pool loaded (top 300)', 'ok');
+    if (!opts.auto) toast('Player pool loaded (top 300)', 'ok');
     renderActive();
-  } catch(e) { slog('Pool fetch failed: ' + e.message, 'err'); toast(e.message, 'err'); }
+  } catch(e) {
+    slog('Pool fetch failed: ' + e.message, 'err');
+    if (!opts.auto) toast(e.message, 'err');
+    throw e;
+  }
 };
+
+/* ============================================================
+   THE POOL PULLS ITSELF. Nobody should have to know that a button in master
+   settings feeds the entire app. A pull happens when the pool is missing, when
+   it was stored for a season the league has since left, when its ADP is the
+   parked constant an old pull saved, or when it is simply a week old (ownership,
+   eligibility and injuries drift). The freshness stamp lives in the master doc,
+   so ONE device's pull satisfies every device in the league — phones don't each
+   download a 190 MB payload because someone opened the app.
+   ============================================================ */
+const POOL_REFRESH_MS = 7 * 24 * 3600 * 1000;
+let _poolPullRunning = false;
+const _poolPullTriedAt = {};           // per sport, this session — no retry storms
+function poolLooksParked() {
+  const pool = LG().playerPool || [];
+  if (pool.length < 50) return false;
+  const counts = {};
+  pool.forEach(p => { if (p.adp > 0 && p.adp < 9999) { const k = Math.round(p.adp*10)/10; counts[k] = (counts[k]||0)+1; } });
+  const top = Math.max(0, ...Object.values(counts));
+  return top >= pool.length * 0.5;
+}
+function poolNeedsRefresh() {
+  const pool = LG().playerPool || [];
+  if (!pool.length) return 'empty';
+  const meta = (STATE.poolMeta || {})[STATE.sport] || {};
+  if (meta.season && meta.season !== statSeasonNow()) return 'season';
+  if (poolLooksParked()) return 'adp';
+  if (!meta.pulledAt || Date.now() - meta.pulledAt > POOL_REFRESH_MS) return 'stale';
+  return null;
+}
+function ensureFreshPool() {
+  if (_poolPullRunning || !STATE._loaded) return;
+  if (LG().draft?.live) return;                       // never swap the pool mid-draft
+  const why = poolNeedsRefresh();
+  if (!why) return;
+  const sport = STATE.sport;
+  if (Date.now() - (_poolPullTriedAt[sport] || 0) < 3600 * 1000) return;
+  _poolPullTriedAt[sport] = Date.now();
+  _poolPullRunning = true;
+  slog(`Player pool ${why === 'empty' ? 'missing' : why === 'season' ? 'is for an old season'
+       : why === 'adp' ? 'has parked ADP' : 'is a week old'} — refreshing from ESPN`, 'run');
+  doPullPool({ auto: true })
+    .catch(() => {})                                  // logged already; retried next hour
+    .finally(() => { _poolPullRunning = false; });
+}
 
 /* compute atomic eligibility from raw ESPN slots + default position id.
    Shared by the pool pull and the re-derive button so they never diverge. */
@@ -10617,7 +10740,7 @@ setInterval(() => {
     try { auditGameIssues(); } catch(e) {}
   }
 }, 60*1000);
-setTimeout(() => { if (STATE.activeLeagueDoc) { try { processWaivers(); auditGameIssues(); } catch(e) {} } }, 4000);
+setTimeout(() => { if (STATE.activeLeagueDoc) { try { processWaivers(); auditGameIssues(); ensureFreshPool(); } catch(e) {} } }, 4000);
 
 /* URL IS THE SOURCE OF TRUTH.
    - #league=<id>  → open that league (auto-join, hash persists on refresh)
