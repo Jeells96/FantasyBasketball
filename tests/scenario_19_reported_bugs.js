@@ -348,15 +348,18 @@
     typeName(''); saveTeamName(myTid);
     C(R2 + 'a blank name is refused', teamById(myTid).name === 'My Squad');
     typeName('Team 3'); saveTeamName(myTid);
-    C(R2 + 'so is a generic one', teamById(myTid).name === 'My Squad');
+    C(R2 + 'a generic one is allowed — nobody is forced to brand their team',
+      teamById(myTid).name === 'Team 3');
     typeName('Sandlot Kings'); saveTeamName(myTid);
     C(R2 + 'a real name sticks', teamById(myTid).name === 'Sandlot Kings');
     C(R2 + 'the abbreviation follows', teamById(myTid).abbrev === 'SAN');
     C(R2 + 'MY OWN NAME IS UNTOUCHED', teamById(myTid).owner === 'Al Pine');
     C(R2 + 'and so is the member record the league identifies me by',
       LG().members.m1.name === 'Al Pine');
-    C(R2 + 'the change is logged', /My Squad is now Sandlot Kings/.test(
-      (LG().transactions || []).map(t => t.text).join(' ')));
+    C(R2 + 'each change is logged', (() => {
+      const txt = (LG().transactions || []).map(t => t.text).join(' ');
+      return /My Squad is now Team 3/.test(txt) && /Team 3 is now Sandlot Kings/.test(txt);
+    })());
 
     document.getElementById('tmp-rn')?.remove();
     typeName('Hijacked'); saveTeamName(theirTid);

@@ -39,27 +39,36 @@
   C(J + 'a team slot is created for the joiner', LG().teams.length === 1);
   const slot = LG().teams[0].id;
   C(J + 'and it is marked as not-yet-real', LG().teams[0]._new === true);
-  C(J + 'the name box is empty, not pre-filled with a generic name',
-    (document.getElementById('mb-team') || {}).value === '', '');
+  // the box arrives pre-filled with the placeholder — keeping it is fine, because
+  // the owner's real name is what keeps the join list readable
+  C(J + 'the name box comes pre-filled, ready to keep or change',
+    (document.getElementById('mb-team') || {}).value === 'Team 1',
+    (document.getElementById('mb-team') || {}).value);
   const setF = () => {
     document.getElementById('mb-first').value = 'Al';
     document.getElementById('mb-last').value = 'Pine';
   };
-  setF();
-  confirmMyTeam(slot);
+  document.getElementById('mb-team').value = '';
+  setF(); confirmMyTeam(slot);
   C(J + 'a blank team name is refused', !myTeamId());
   document.getElementById('mb-team').value = '   ';
   setF(); confirmMyTeam(slot);
   C(J + 'so is whitespace', !myTeamId());
   document.getElementById('mb-team').value = 'Team 1';
   setF(); confirmMyTeam(slot);
-  C(J + 'and so is the generic placeholder — that is the whole point', !myTeamId());
-  document.getElementById('mb-team').value = 'The Sandlot';
-  setF(); confirmMyTeam(slot);
-  C(J + 'a real name is accepted', !!myTeamId());
-  C(J + 'the team takes that name', teamById(myTeamId()).name === 'The Sandlot');
+  C(J + 'but keeping "Team 1" is allowed — nobody has to invent a brand to join',
+    !!myTeamId() && teamById(myTeamId()).name === 'Team 1');
   C(J + 'the owner is recorded', teamById(myTeamId()).owner === 'Al Pine');
   C(J + 'and it is no longer a placeholder slot', !teamById(myTeamId())._new);
+  // the readability guarantee: a kept placeholder still shows WHO it is
+  renderPage('home');
+  C(J + 'a generic team name still shows its owner on the page',
+    /Al Pine/.test(document.getElementById('page-home').innerHTML));
+  // renaming to something real later is one tap, and also allowed
+  document.body.insertAdjacentHTML('beforeend', '<div id="tmp-rn2"><input id="rn-team" value="The Sandlot"></div>');
+  saveTeamName(myTeamId());
+  document.getElementById('tmp-rn2').remove();
+  C(J + 'renaming later works', teamById(myTeamId()).name === 'The Sandlot');
 
   // backing out must not leave an unnamed team behind for the next person
   STATE.memberId = null;
@@ -67,8 +76,8 @@
   C(J + 'starting a second team adds a slot', LG().teams.length === 2);
   cancelNewTeam(LG().teams[1].id);
   C(J + 'cancelling takes the empty slot with it', LG().teams.length === 1, LG().teams.length);
-  C(J + 'leaving only real, named teams',
-    LG().teams.every(t => t.name && !/^team\s*\d+$/i.test(t.name)),
+  C(J + 'leaving only claimed teams, none half-created',
+    LG().teams.every(t => t.name && !t._new),
     LG().teams.map(t => t.name).join(','));
 
   // ============================================================
@@ -112,11 +121,21 @@
   C(P + 'taking it over works', teamById(myTeamId()).name === 'Bench Mob');
   C(P + 'and the roster came with it', teamRoster(myTeamId()).length === 5);
 
-  // an already-claimed team cannot be taken
+  // A SECOND DEVICE: an already-claimed team is offered to JOIN, with confirmation
   STATE.memberId = null;
+  const bmMember = Object.entries(LG().members).find(([, m]) => String(m.teamId) === String(withRoster))[0];
   pickMyTeam(withRoster);
-  C(P + 'a claimed team refuses a second owner',
-    /already claimed/.test(document.getElementById('modal-body').innerHTML));
+  let claimModal = document.getElementById('modal-body').innerHTML;
+  C(P + 'a claimed team says who claimed it', /Bo Ken/.test(claimModal));
+  C(P + 'and offers to join it from this device', /joinClaimedTeam\(/.test(claimModal));
+  C(P + 'while still offering the way out', /pick a different team/i.test(claimModal));
+  joinClaimedTeam(bmMember);
+  C(P + 'confirming links this device to the same member',
+    STATE.memberId === bmMember && String(myTeamId()) === String(withRoster));
+  C(P + 'no new team and no new member were created',
+    LG().teams.length === 4 && Object.keys(LG().members).length === 2,
+    `${LG().teams.length} teams, ${Object.keys(LG().members).length} members`);
+  C(P + 'and the roster is the same one', teamRoster(myTeamId()).length === 5);
   closeModal();
 
   // ============================================================

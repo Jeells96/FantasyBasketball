@@ -650,7 +650,7 @@ const SPORTS = {
 // orphan every existing league doc / device identity. Leave them alone.
 const FB_DOC_ID = 'bgl_multisport'; // single Firebase doc holds all sports
 const ADMIN_PIN = '2325';
-const APP_VERSION = 'v10.1';   // shown in Settings; the topbar shows the wordmark only
+const APP_VERSION = 'v10.2';   // shown in Settings; the topbar shows the wordmark only
 
 /* the active sport — persisted in STATE.sport */
 function SP() {
@@ -5072,11 +5072,20 @@ function getStarters(teamId, week) {
 window.pickMyTeam = function(teamId) {
   const t = teamById(teamId);
   // is this team already claimed by another member?
-  const claimedBy = Object.values(LG().members||{}).find(m => String(m.teamId)===String(teamId));
-  if (claimedBy) {
-    openModal(`<div class="h2">Team taken</div>
-      <p class="sub mt">${esc(t.name)} is already claimed by ${esc(claimedBy.name)}. Pick a different team.</p>
-      <button class="btn btn-ghost btn-block mt" onclick="closeModal();renderActive()">← Back</button>`);
+  const claimedEntry = Object.entries(LG().members||{}).find(([,m]) => String(m.teamId)===String(teamId));
+  if (claimedEntry) {
+    // A SECOND DEVICE IS NORMAL. The same person opens the league on their phone
+    // and their laptop; the claimed team is offered to JOIN, with a confirmation
+    // that says whose team it is — not a dead end telling them to pick another.
+    const [cmId, claimedBy] = claimedEntry;
+    openModal(`<div class="h2">${esc(t.name)}</div>
+      <p class="sub mt mb">This team is already claimed by <b>${esc(claimedBy.name)}</b>.</p>
+      <div class="card card-tight mb" style="border-color:var(--amber)">
+        <p class="sub" style="font-size:.74rem">If that's you on another device, join it — this device will act
+          as <b>${esc(claimedBy.name)}</b>, with full control of ${esc(t.name)}.</p>
+      </div>
+      <button class="btn btn-amber btn-block" onclick="joinClaimedTeam('${esc(cmId)}')">Yes — I'm ${esc(claimedBy.name)}, join this team</button>
+      <button class="btn btn-ghost btn-block mt" onclick="closeModal();renderActive()">← No, pick a different team</button>`);
     return;
   }
   const existing = teamRoster(teamId).length;
@@ -5091,7 +5100,8 @@ window.pickMyTeam = function(teamId) {
              ${existing ? `It comes with <b>${existing} already-drafted player${existing!==1?'s':''}</b>.` : 'Its roster is empty.'}
              <b>This is permanent</b> — you cannot swap to a different team afterwards.</p>
          </div>`}
-    <div class="field"><label>Team name</label><input class="input" id="mb-team" value="${fresh ? '' : esc(t.name||'')}" placeholder="e.g. The Sandlot"></div>
+    <div class="field"><label>Team name</label><input class="input" id="mb-team" value="${esc(t.name||'')}" placeholder="e.g. The Sandlot"></div>
+    ${fresh ? `<p class="sub" style="font-size:.62rem;margin-top:-.3rem">Keep it or change it — your own name shows next to it either way.</p>` : ''}
     <div class="field"><label>First name</label><input class="input" id="mb-first" placeholder="First"></div>
     <div class="field"><label>Last name</label><input class="input" id="mb-last" placeholder="Last"></div>
     <button class="btn btn-amber btn-block" onclick="confirmMyTeam('${teamId}')">Lock in</button>
@@ -5133,9 +5143,8 @@ window.saveTeamName = function(teamId) {
     toast('You can only rename your own team', 'err'); return;
   }
   const name = ($('rn-team')?.value || '').trim();
-  // same rules as claiming: a generic name makes the join list unreadable
+  // blank is the only thing refused — "Team 3" is a legitimate name to keep
   if (!name) { toast('Give your team a name', 'err'); return; }
-  if (/^team\s*\d+$/i.test(name)) { toast('Pick a real team name', 'err'); return; }
   if (name === t.name) { closeModal(); return; }
   const was = t.name;
   t.name = name;
@@ -5144,6 +5153,20 @@ window.saveTeamName = function(teamId) {
   save();
   toast('Team renamed', 'ok');
   closeModal(); renderActive();
+};
+/* link THIS device to an already-claimed team — the multi-device case */
+window.joinClaimedTeam = function(memberId) {
+  const m = (LG().members || {})[memberId];
+  if (!m) { toast('That member no longer exists', 'err'); renderActive(); return; }
+  STATE.memberId = memberId;
+  if (STATE.activeLeagueDoc) {
+    STATE.memberByLeague = STATE.memberByLeague || {};
+    STATE.memberByLeague[STATE.activeLeagueDoc] = memberId;
+  }
+  saveLocal();
+  closeModal();
+  toast(`This device is now ${m.name}`, 'ok');
+  renderActive();
 };
 window.cancelNewTeam = function(teamId) {
   const t = teamById(teamId);
@@ -5170,11 +5193,10 @@ window.confirmMyTeam = function(teamId) {
   const first = $('mb-first')?.value.trim();
   const last = $('mb-last')?.value.trim();
   const tname = ($('mb-team')?.value || '').trim();
-  // A TEAM NAME IS REQUIRED. Everyone who joins after you picks from a list of team
-  // names; leaving yours as "Team 4" makes that list meaningless and is how someone
-  // ends up claiming the wrong team.
+  // A name is required, but "Team 3" is a name — nobody is forced to invent a
+  // brand before they can join. The join list stays readable anyway, because the
+  // owner's real name shows next to every claimed team.
   if (!tname) { toast('Give your team a name', 'err'); return; }
-  if (/^team\s*\d+$/i.test(tname)) { toast('Pick a real team name, not "Team ' + tname.replace(/\D/g,'') + '"', 'err'); return; }
   if (!first || !last) { toast('Enter your first and last name', 'err'); return; }
   // double-check team still unclaimed (race)
   const claimedBy = Object.values(LG().members||{}).find(m => String(m.teamId)===String(teamId));
@@ -5642,6 +5664,7 @@ function viewPlayersReal() {
     ${activeFilters().length && !playerFiltersOpen() ? `<p class="sub" style="font-size:.66rem;margin-top:.25rem">Showing ${esc(activeFilterSummary())}</p>` : ''}
     ${ptsMeaning ? `<p class="sub" style="font-size:.62rem;margin-top:.15rem">
       <b>${esc(ptsLabel)}</b> = ${esc(ptsMeaning)}${prevLoading?' · <span class="amber">loading…</span>':''}</p>` : ''}
+    ${(() => { const h = poolHealthLine(); return h ? `<p class="sub" style="font-size:.62rem;margin-top:.15rem">${h}</p>` : ''; })()}
     <div style="${playerFiltersOpen()?'':'display:none'}">
     ${SP().key==='flb' ? `<div class="row" style="gap:.35rem;margin-top:.5rem">
       <button class="btn btn-sm ${playerView.grpFilter==='all'?'btn-amber':'btn-ghost'}" onclick="setGrpFilter('all')">All</button>
@@ -8019,6 +8042,7 @@ function poolNeedsRefresh() {
   if (!meta.pulledAt || Date.now() - meta.pulledAt > POOL_REFRESH_MS) return 'stale';
   return null;
 }
+let _poolPullLastError = null;   // shown on the players page so a screenshot diagnoses itself
 function ensureFreshPool() {
   if (_poolPullRunning || !STATE._loaded) return;
   if (LG().draft?.live) return;                       // never swap the pool mid-draft
@@ -8031,8 +8055,21 @@ function ensureFreshPool() {
   slog(`Player pool ${why === 'empty' ? 'missing' : why === 'season' ? 'is for an old season'
        : why === 'adp' ? 'has parked ADP' : 'is a week old'} — refreshing from ESPN`, 'run');
   doPullPool({ auto: true })
-    .catch(() => {})                                  // logged already; retried next hour
-    .finally(() => { _poolPullRunning = false; });
+    .then(() => { _poolPullLastError = null; })
+    .catch((e) => { _poolPullLastError = e?.message || 'unknown'; })   // retried next hour
+    .finally(() => { _poolPullRunning = false; renderActive(); });
+}
+/* one line of pool health for the players page — silent when everything is fine */
+function poolHealthLine() {
+  if (_poolPullRunning) return '<span class="amber">Refreshing the player pool from ESPN…</span>';
+  const why = poolNeedsRefresh();
+  if (!why) return '';
+  const what = why === 'empty' ? 'is loading itself'
+    : why === 'season' ? 'is from an old season — refreshing'
+    : why === 'adp' ? 'has stale draft data — refreshing'
+    : 'is due a refresh';
+  return `<span class="amber">Player pool ${what}.</span>${_poolPullLastError
+    ? ` <span class="cell-neg">Last try failed: ${esc(_poolPullLastError)}</span>` : ''}`;
 }
 
 /* compute atomic eligibility from raw ESPN slots + default position id.
