@@ -7810,27 +7810,53 @@ window.retryMapping = async function() {
   showFailedMappings();
 };
 
+/* ESPN PARKS EVERY UNDRAFTED PLAYER AT ONE CONSTANT ADP — 140.0 for basketball
+   (last pick of a 10x14 draft), 260.0 for baseball (10x26) — and once a season's
+   drafts are over it can stamp that constant on EVERYBODY: the live 2026 NBA feed
+   returns 140.0 for all 1,097 players, Jokic included, while his real STANDARD
+   draft rank sits right beside it at 1. Taking any positive ADP at face value made
+   the whole pool "140+", and sorting on a constant meant the top-300 trim kept an
+   arbitrary 300. Detect the constant per pull: the most common value, when it
+   covers a big share of the payload, is the placeholder and not information. */
+function detectAdpPlaceholder(raw) {
+  const counts = {};
+  let n = 0;
+  raw.forEach(pp => {
+    const a = (pp.player || pp).ownership?.averageDraftPosition;
+    if (a > 0) { const k = Math.round(a * 10) / 10; counts[k] = (counts[k] || 0) + 1; n++; }
+  });
+  let best = null, bestN = 0;
+  Object.entries(counts).forEach(([k, c]) => { if (c > bestN) { best = parseFloat(k); bestN = c; } });
+  // a real ADP spread never has 30% of the league on the same tenth of a pick
+  return (bestN >= 20 && bestN >= n * 0.3) ? best : null;
+}
+/* one player's draft slot: real ADP unless it is the placeholder, then ESPN's
+   draft rank, then ownership % — so stars stay on top in every season phase */
+function espnAdp(pl, placeholder) {
+  let adp = pl.ownership?.averageDraftPosition || 0;
+  if (placeholder != null && Math.abs(adp - placeholder) < 0.05) adp = 0;
+  if (!(adp > 0)) {
+    const ranks = pl.draftRanksByRankType || {};
+    const r = ranks.STANDARD || ranks.PPR || ranks.STANDARDDRAFT || Object.values(ranks)[0];
+    if (r && r.rank > 0) adp = r.rank;
+  }
+  if (!(adp > 0)) {
+    // last resort: order by ownership % (more-owned = earlier). Map 100%→1, 0%→9999.
+    const own = pl.ownership?.percentOwned || 0;
+    adp = own > 0 ? Math.max(1, Math.round(1000 - own * 9)) : 9999;
+  }
+  return adp;
+}
 window.doPullPool = async function() {
   try {
     const raw = await fetchPlayerPool(slog);
+    const adpPlaceholder = detectAdpPlaceholder(raw);
+    if (adpPlaceholder != null) slog(`ESPN ADP is parked at ${adpPlaceholder} — using draft ranks instead`, 'run');
     LG().playerPool = raw.map(pp => {
       const pl = pp.player || pp;
       const eligible = deriveEligibility(pl.eligibleSlots, pl.defaultPositionId);
       const defPos = posName(pl.defaultPositionId);
-      // ADP: prefer ESPN's averageDraftPosition; when that's empty (e.g. offseason or
-      // a sport with no live drafts) fall back to the player's draft rank, then to the
-      // ownership %. This keeps stars at the top instead of dumping everyone to 9999.
-      let adp = pl.ownership?.averageDraftPosition || 0;
-      if (!(adp > 0)) {
-        const ranks = pl.draftRanksByRankType || {};
-        const r = ranks.STANDARD || ranks.PPR || ranks.STANDARDDRAFT || Object.values(ranks)[0];
-        if (r && r.rank > 0) adp = r.rank;
-      }
-      if (!(adp > 0)) {
-        // last resort: order by ownership % (more-owned = earlier). Map 100%→1, 0%→9999.
-        const own = pl.ownership?.percentOwned || 0;
-        adp = own > 0 ? Math.max(1, Math.round(1000 - own * 9)) : 9999;
-      }
+      const adp = espnAdp(pl, adpPlaceholder);
       // points: MLB uses ESPN's applied total (placeholder until game logs pull);
       // NBA computes from raw ESPN stats using the league's scoring right here.
       let seasonPts = 0, ptsPerGame = null, gamesPlayed = null;
@@ -7869,7 +7895,9 @@ window.doPullPool = async function() {
     // sort by ADP (best first), then trim to the top 300. Keeping the pool small
     // and fixed keeps the synced Firebase doc well under the 1 MB limit. Players
     // outside the top 300 can be loaded individually to local storage on demand.
-    LG().playerPool.sort((a,b) => a.adp - b.adp);
+    // Ownership breaks ties, so the tail of equal-ADP players keeps its most-owned
+    // names inside the trim instead of whoever the payload happened to list first.
+    LG().playerPool.sort((a,b) => (a.adp - b.adp) || ((b.owned||0) - (a.owned||0)));
     LG().playerPool = LG().playerPool.slice(0, 300);
     const ranked = LG().playerPool.filter(p => p.adp < 9999).length;
     slog(`Stored top ${LG().playerPool.length} players (${ranked} with real ADP)`, 'ok');
