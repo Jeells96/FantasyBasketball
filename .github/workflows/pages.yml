@@ -1,0 +1,44 @@
+# Deploy the site ourselves instead of leaving it to GitHub's built-in
+# branch-based Pages pipeline.
+#
+# WHY: on 2026-08-06 two Pages runs wedged in a pre-queue "re-run requested"
+# state that GitHub's own cancel endpoint refuses to touch —
+#   409 Cannot cancel a workflow re-run that has not yet queued
+# — and every deploy after them stalled for thirteen hours while main carried
+# four merged fixes nobody could see. The built-in pipeline gives us no
+# concurrency control, no timeout, and no way to clear a jam.
+#
+# The `concurrency` block below is the whole point: a newer deploy CANCELS an
+# older one rather than queueing behind it, so a stuck run can never again
+# block the ones after it. Pushing anything is then always enough to recover.
+name: Deploy to Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:        # a manual "just deploy it" button, no commit needed
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10     # fail loudly and fast rather than hanging
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: '.'         # the app is a single index.html plus assets
+      - id: deployment
+        uses: actions/deploy-pages@v4
