@@ -856,6 +856,24 @@
     C(AD + 'and a total unknown goes to the back', espnAdp({}, null) === 9999);
 
     // ============================================================
+    // eligibility comes from atomic slots, not combo slots
+    // ============================================================
+    if (sport === 'fba') {
+      const EG = 'Elig[fba]: ';
+      STATE.sport = 'fba';
+      // real slot sets from ESPN's live 2026 payload
+      C(EG + 'a plain shooting guard is a shooting guard, not all five positions',
+        deriveEligibility([1, 5, 7, 8, 11, 12, 13], 2).join('/') === 'SG',
+        deriveEligibility([1, 5, 7, 8, 11, 12, 13], 2).join('/'));   // Gary Payton II
+      C(EG + 'a centre with the big-man combos is still just a centre',
+        deriveEligibility([4, 9, 10, 11, 12, 13], 5).join('/') === 'C');   // Jokic
+      C(EG + 'a point guard with G and G/F is still a point guard',
+        deriveEligibility([0, 5, 8, 11, 12, 13], 1).join('/') === 'PG');   // Westbrook
+      C(EG + 'a genuine dual-eligible keeps both spots',
+        deriveEligibility([0, 1, 5, 8, 11, 12, 13], 1).join('/') === 'PG/SG');
+    }
+
+    // ============================================================
     // the pool pulls itself — nobody presses a button
     // ============================================================
     const AP = `AutoPool[${sport}]: `;
