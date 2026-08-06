@@ -856,6 +856,80 @@
     C(AD + 'and a total unknown goes to the back', espnAdp({}, null) === 9999);
 
     // ============================================================
+    // the pool pulls itself — nobody presses a button
+    // ============================================================
+    const AP = `AutoPool[${sport}]: `;
+    S.setupLeague(sport, { teams: 2, week: 2, name: 'Auto' + sport });
+    STATE.poolMeta = {};
+    // freshness: every way a pool can be out of date
+    C(AP + 'a missing pool wants a pull', (() => {
+      const keep = LG().playerPool; LG().playerPool = [];
+      const r = poolNeedsRefresh(); LG().playerPool = keep; return r === 'empty';
+    })());
+    C(AP + 'a pool stamped for another season wants a pull', (() => {
+      STATE.poolMeta[sport] = { pulledAt: Date.now(), season: statSeasonNow() - 1 };
+      return poolNeedsRefresh() === 'season';
+    })());
+    C(AP + 'a parked-ADP pool wants a pull even when fresh', (() => {
+      STATE.poolMeta[sport] = { pulledAt: Date.now(), season: statSeasonNow() };
+      const olds = LG().playerPool.map(p => p.adp);
+      LG().playerPool.forEach(p => { p.adp = 140; });
+      const r = poolNeedsRefresh();
+      LG().playerPool.forEach((p, i) => { p.adp = olds[i]; });
+      return r === 'adp';
+    })());
+    C(AP + 'a week-old pool wants a pull', (() => {
+      STATE.poolMeta[sport] = { pulledAt: Date.now() - 8 * 86400000, season: statSeasonNow() };
+      return poolNeedsRefresh() === 'stale';
+    })());
+    C(AP + 'a fresh, healthy pool wants nothing', (() => {
+      STATE.poolMeta[sport] = { pulledAt: Date.now(), season: statSeasonNow() };
+      return poolNeedsRefresh() === null;
+    })());
+    C(AP + 'a live draft is never interrupted by a refresh', (() => {
+      STATE.poolMeta = {};
+      LG().draft.live = true;
+      delete _poolPullTriedAt[sport];
+      ensureFreshPool();
+      const tried = _poolPullTriedAt[sport] != null;
+      LG().draft.live = false;
+      return !tried;
+    })());
+
+    // ingest: what a pull is allowed to do to the pool it replaces
+    const mkPoolRaw = (n, offset = 0) => Array.from({ length: n }, (_, i) => ({ player: {
+      id: 10000 + offset + i, fullName: 'Fresh ' + (offset + i),
+      defaultPositionId: 1, eligibleSlots: [], proTeamId: 1,
+      ownership: { averageDraftPosition: i + 1, percentOwned: 50 },
+      draftRanksByRankType: { STANDARD: { rank: i + 1 } },
+    }}));
+    C(AP + 'a near-empty payload is refused — the season is not published yet', (() => {
+      const before = LG().playerPool.length;
+      let threw = false;
+      try { ingestPool(mkPoolRaw(5)); } catch (e) { threw = /not published/.test(e.message); }
+      return threw && LG().playerPool.length === before;
+    })());
+    C(AP + 'a rostered player outside the new top 300 survives the pull', (() => {
+      const star = LG().playerPool[0];
+      LG().draft.picks = [{ pick: 1, teamId: 't1', playerId: star.espnId }];
+      star.mlbId = star.mlbId || 'keepme';
+      ingestPool(mkPoolRaw(320));                      // all-new ids — star not among them
+      return LG().playerPool.some(p => String(p.espnId) === String(star.espnId));
+    })());
+    C(AP + 'and the stamp records the pull',
+      STATE.poolMeta[sport].season === statSeasonNow()
+      && Date.now() - STATE.poolMeta[sport].pulledAt < 60000);
+    C(AP + 'stat identity carries across a re-pull', (() => {
+      LG().draft.picks = [];
+      const before = LG().playerPool.find(p => String(p.espnId) === '10007');
+      before.mlbId = 'link7'; before.ptsSeason = 123.4; before.prevPts = 88;
+      ingestPool(mkPoolRaw(320));                      // same ids again
+      const after = LG().playerPool.find(p => String(p.espnId) === '10007');
+      return after.mlbId === 'link7' && after.ptsSeason === 123.4 && after.prevPts === 88;
+    })());
+    STATE.poolMeta = {};
+
+    // ============================================================
     // last season's numbers, in the pool and in the draft room
     // ============================================================
     const LS = `LastSeason[${sport}]: `;
