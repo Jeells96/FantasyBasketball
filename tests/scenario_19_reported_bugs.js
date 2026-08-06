@@ -826,6 +826,36 @@
     window._masterUnlocked = false;
 
     // ============================================================
+    // ADP: ESPN's parked-constant placeholder must not become the pool order
+    // ============================================================
+    const AD = `Adp[${sport}]: `;
+    const mkRaw = (n, adp, rank) => Array.from({ length: n }, (_, i) => ({ player: {
+      id: i + 1, fullName: 'P' + i,
+      ownership: { averageDraftPosition: typeof adp === 'function' ? adp(i) : adp,
+                   percentOwned: 90 - i },
+      draftRanksByRankType: rank === false ? {} : { STANDARD: { rank: i + 1 } },
+    }}));
+    // the live 2026 NBA feed: every player parked at 140.0, real ranks beside it
+    const parked = mkRaw(40, 140, true);
+    C(AD + 'an all-one-value ADP is recognised as a placeholder',
+      detectAdpPlaceholder(parked) === 140, detectAdpPlaceholder(parked));
+    C(AD + 'and the real draft rank is used instead',
+      espnAdp(parked[0].player, 140) === 1 && espnAdp(parked[7].player, 140) === 8);
+    // the live MLB feed: real ADP for the draftable range, 260.0 for everyone else
+    const mixed = mkRaw(30, (i) => i < 8 ? i + 1.5 : 260, true);
+    C(AD + 'a mostly-parked feed still flags the constant', detectAdpPlaceholder(mixed) === 260);
+    C(AD + 'real ADPs inside it are kept as-is', espnAdp(mixed[0].player, 260) === 1.5);
+    C(AD + 'and only the parked ones fall back to rank', espnAdp(mixed[20].player, 260) === 21);
+    // a healthy draft-season spread must NOT be second-guessed
+    const healthy = mkRaw(40, (i) => i * 3 + 1.2, true);
+    C(AD + 'a real spread is left alone', detectAdpPlaceholder(healthy) === null);
+    C(AD + 'small pools are never judged', detectAdpPlaceholder(mkRaw(10, 140, true)) === null);
+    // nothing to go on at all: ownership, then the 9999 tail
+    const bare = { ownership: { averageDraftPosition: 140, percentOwned: 50 } };
+    C(AD + 'no rank falls back to ownership', espnAdp(bare, 140) === Math.max(1, Math.round(1000 - 50 * 9)));
+    C(AD + 'and a total unknown goes to the back', espnAdp({}, null) === 9999);
+
+    // ============================================================
     // last season's numbers, in the pool and in the draft room
     // ============================================================
     const LS = `LastSeason[${sport}]: `;
