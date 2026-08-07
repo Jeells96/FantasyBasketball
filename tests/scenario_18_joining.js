@@ -121,9 +121,20 @@
   C(P + 'taking it over works', teamById(myTeamId()).name === 'Bench Mob');
   C(P + 'and the roster came with it', teamRoster(myTeamId()).length === 5);
 
-  // A SECOND DEVICE: an already-claimed team is offered to JOIN, with confirmation
+  // A SECOND DEVICE: an already-claimed team is offered to JOIN, with confirmation.
+  // REACHABILITY FIRST. The handler below worked from the day it was written, but
+  // taken teams rendered as a dimmed line with no control on it, so nothing could
+  // ever call it — the whole feature was invisible in the app while its test passed,
+  // because the test called pickMyTeam() directly. Assert the BUTTON exists before
+  // asserting what pressing it does.
   STATE.memberId = null;
   const bmMember = Object.entries(LG().members).find(([, m]) => String(m.teamId) === String(withRoster))[0];
+  renderPage('home');
+  const takenHtml = document.getElementById('page-home').innerHTML;
+  C(P + 'a taken team is tappable, not just dimmed text',
+    new RegExp(`pickMyTeam\\('${withRoster}'\\)`).test(takenHtml), '');
+  C(P + 'and says what tapping it is for', /This is me/.test(takenHtml));
+  C(P + 'with the second-device case explained', /second device/i.test(takenHtml));
   pickMyTeam(withRoster);
   let claimModal = document.getElementById('modal-body').innerHTML;
   C(P + 'a claimed team says who claimed it', /Bo Ken/.test(claimModal));

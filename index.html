@@ -650,7 +650,7 @@ const SPORTS = {
 // orphan every existing league doc / device identity. Leave them alone.
 const FB_DOC_ID = 'bgl_multisport'; // single Firebase doc holds all sports
 const ADMIN_PIN = '2325';
-const APP_VERSION = 'v10.2';   // shown in Settings; the topbar shows the wordmark only
+const APP_VERSION = 'v10.3';   // shown in Settings; the topbar shows the wordmark only
 
 /* the active sport — persisted in STATE.sport */
 function SP() {
@@ -913,6 +913,39 @@ function autoCorrectEligibility(sk) {
 
 /* Local storage now holds ONLY identity pointers — which league this device
    joined and which member it is. All actual league data lives in Firebase. */
+/* WHAT THIS DEVICE KEEPS WHEN THERE IS NO FIREBASE.
+   Two blobs under two keys, deliberately. Identity is tiny and must never be lost,
+   so it is written first and on its own. The league snapshot is orders of magnitude
+   bigger and is the thing that can blow the ~5MB localStorage quota — giving it its
+   own key means a quota failure there can never take identity down with it.
+   (LOCAL_LS_KEY itself is a storage identifier and must not be renamed.) */
+const LOCAL_DATA_KEY = LOCAL_LS_KEY + '_data';
+/* The derived caches are left out on purpose: they refetch themselves, and they are
+   exactly what blows the quota — 300 players times a season of game logs runs to
+   megabytes. `slim` additionally drops the player pool, as a last resort before
+   giving up entirely. */
+function localDataSnapshot(opts = {}) {
+  const SKIP = new Set(['gameLogs', 'gameLogsPrev', 'scheduleCache']);
+  const out = { v: 1, ts: Date.now(),
+                leagues: {},
+                poolMeta: STATE.poolMeta || {},
+                salaryDB: STATE.salaryDB || {},
+                salaryConfig: STATE.salaryConfig || {},
+                idOverrides: STATE.idOverrides || {},
+                scoreOverrides: STATE.scoreOverrides || {} };
+  for (const sk of Object.keys(STATE.leagues || {})) {
+    const lg = STATE.leagues[sk];
+    if (!lg) continue;
+    const copy = {};
+    for (const k of Object.keys(lg)) {
+      if (SKIP.has(k)) continue;
+      if (opts.slim && k === 'playerPool') continue;
+      copy[k] = lg[k];
+    }
+    out.leagues[sk] = copy;
+  }
+  return out;
+}
 function saveLocal() {
   // remember the active league + identity PER SPORT, so switching sports restores the
   // right league. leaguesBySport[sport] = { activeLeagueDoc, memberId, leagueName }.
@@ -955,6 +988,23 @@ function saveLocal() {
       document.cookie = `${LOCAL_LS_KEY}=${encodeURIComponent(JSON.stringify(identity))};path=/;max-age=31536000;SameSite=Lax`;
     } catch(e2) {}
   }
+  // THE LEAGUE ITSELF — teams, draft, rosters, contracts, settings, the salary DB.
+  // None of this was ever written anywhere on this device: saveLeague() would return
+  // early whenever Firebase was not ready and toast "Saved locally" having saved
+  // nothing at all. On any browser where Firebase does not load — a privacy setting,
+  // an extension, a blocked CDN, or simply offline — every league vanished on reload
+  // behind a reassuring green tick.
+  let stored = false;
+  for (const slim of [false, true]) {
+    try {
+      localStorage.setItem(LOCAL_DATA_KEY, JSON.stringify(localDataSnapshot({ slim })));
+      stored = true;
+      break;
+    } catch (e) { /* over quota — retry without the player pool, then give up */ }
+  }
+  if (!stored) { try { localStorage.removeItem(LOCAL_DATA_KEY); } catch (e) {} }
+  STATE._localSaveOk = stored;
+  window.__bglData = stored ? null : localDataSnapshot({ slim: true });   // at least survive this tab
 }
 
 function loadLocal() {
@@ -970,6 +1020,26 @@ function loadLocal() {
       if (match) id = JSON.parse(decodeURIComponent(match[1]));
     } catch(e) {}
   }
+  // The league snapshot. Firebase overwrites this the moment it syncs; when there is
+  // no Firebase it is the only copy that exists, so it is restored before anything
+  // else touches STATE.leagues. Merging over blankLeague() means a snapshot written
+  // by an older version still gains any fields added since.
+  try {
+    const rawD = localStorage.getItem(LOCAL_DATA_KEY);
+    const d = rawD ? JSON.parse(rawD) : window.__bglData;
+    if (d) {
+      for (const sk of Object.keys(d.leagues || {})) {
+        const saved = d.leagues[sk];
+        if (!saved) continue;
+        STATE.leagues[sk] = { ...blankLeague(saved.leagueName || ''), ...saved };
+      }
+      if (d.poolMeta) STATE.poolMeta = d.poolMeta;
+      if (d.salaryDB) STATE.salaryDB = d.salaryDB;
+      if (d.salaryConfig) STATE.salaryConfig = { ...STATE.salaryConfig, ...d.salaryConfig };
+      if (d.idOverrides) STATE.idOverrides = d.idOverrides;
+      if (d.scoreOverrides) STATE.scoreOverrides = d.scoreOverrides;
+    }
+  } catch (e) {}
   if (!id) return;
   STATE.leaguesBySport = id.leaguesBySport || {};
   STATE.memberByLeague = id.memberByLeague || {};
@@ -1067,7 +1137,17 @@ async function save(opts = {}) {
   } else if (STATE.activeLeagueDoc) {
     await saveLeague(opts);   // joined an approved league → sync shared data
   } else if (!opts.silent) {
-    toast('💾 Saved locally (this device)', 'ok');
+    reportLocalSave();
+  }
+}
+/* Tell the truth about the local write. A device with storage full or blocked is one
+   reload away from losing the league, and it should hear that while it can still act
+   on it — not discover it afterwards. */
+function reportLocalSave() {
+  if (STATE._localSaveOk === false) {
+    toast('⚠ Could NOT save on this device — storage is full or blocked', 'err');
+  } else {
+    toast('💾 Saved on this device', 'ok');
   }
 }
 
@@ -1143,7 +1223,9 @@ function stripUndefined(v) {
 
 async function saveLeague(opts = {}) {
   if (!fbReady || !STATE.activeLeagueDoc) {
-    if (!opts.silent) toast('💾 Saved locally', 'ok');
+    // saveLocal() has already run (see save()) — report what it actually managed,
+    // rather than a green tick over a write that never happened
+    if (!opts.silent) reportLocalSave();
     return;
   }
   const payload = stripUndefined(leaguePayload());
@@ -4250,10 +4332,17 @@ function viewMyTeam() {
         </div>
       </div>`;
     };
+    // A TAKEN TEAM STILL NEEDS A BUTTON. These used to render as a dimmed,
+    // non-interactive line — which meant the "is this you on another device?"
+    // confirmation was unreachable from the UI, however well it worked when called
+    // directly. The second-device case is the whole reason this list shows taken
+    // teams at all, so each one carries the way in.
     const takenRows = takenTeams.map(t => {
       const owner = Object.values(LG().members||{}).find(m => String(m.teamId)===String(t.id));
-      return `<div class="row-between" style="padding:.3rem 0;font-size:.74rem;opacity:.55">
-        <span>${esc(t.name)}</span><span class="sub" style="font-size:.66rem">taken · ${esc(owner?.name||'')}</span>
+      return `<div class="row-between" style="padding:.35rem 0;font-size:.74rem;align-items:center;gap:.5rem">
+        <span style="min-width:0">${esc(t.name)}
+          <span class="sub" style="font-size:.66rem;display:block">taken · ${esc(owner?.name||'')}</span></span>
+        <button class="btn btn-sm btn-ghost" style="flex:none" onclick="pickMyTeam('${t.id}')">This is me</button>
       </div>`;
     }).join('');
     return `<div class="eyebrow">${esc(LG().leagueName||'League')} · one-time choice</div>
@@ -4267,6 +4356,8 @@ function viewMyTeam() {
              : 'This league has no teams yet — yours will be the first.'}</p>`}
       <button class="btn btn-amber btn-block mt" onclick="createMyTeam()">+ Start a new team</button>
       ${takenRows ? `<div class="divlabel mt">Already taken</div>
+        <p class="sub mb" style="font-size:.68rem">Opening the league on a second device? Tap <b>This is me</b>
+          on your own team to use it here too — it stays one team, one owner.</p>
         <div class="card card-tight">${takenRows}</div>` : ''}`;
   }
 
