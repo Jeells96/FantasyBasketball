@@ -291,6 +291,99 @@
   setSort('adp');
   _newsCache = { sport: null, at: 0, items: [] };
 
+  // ============================================================
+  // clinch markers — a claim that has to be arithmetic, not a projection
+  // ============================================================
+  const CL = 'Clinch: ';
+  S.setupLeague('flb', { teams: 4, week: 5, name: 'Clinchy',
+    settings: { playoffTeams: 2, playoffStartWeek: 6, bonusWin: false } });
+  S.runDraft();
+  // drive clinchState directly off a known record: stub the two functions it reads
+  const realRecords = computeRecords, realWeekTotal = teamWeekTotal;
+  const stub = (recs, weeksPlayed) => {
+    computeRecords = () => recs;
+    // a week "counts" if anyone scored in it — mirror that so weeksLeft is derived
+    teamWeekTotal = (id, wk) => (wk <= weeksPlayed ? 10 : 0);
+  };
+  const restore = () => { computeRecords = realRecords; teamWeekTotal = realWeekTotal; };
+
+  // 5 weeks played of a 5-week regular season (playoffs start week 6) => nothing left
+  stub({ t1:{w:5,l:0,t:0,pf:0,pa:0}, t2:{w:3,l:2,t:0,pf:0,pa:0},
+         t3:{w:2,l:3,t:0,pf:0,pa:0}, t4:{w:0,l:5,t:0,pf:0,pa:0} }, 5);
+  let cs = clinchState();
+  C(CL + 'with the season over the leaders are in', cs.t1?.clinched && cs.t2?.clinched,
+    JSON.stringify(cs));
+  C(CL + 'the runaway leader has the top seed', cs.t1?.top === true);
+  C(CL + 'and the teams below the cut are out', cs.t3?.out && cs.t4?.out, JSON.stringify(cs));
+  C(CL + 'second place has NOT clinched the top seed', !cs.t2?.top);
+
+  // one week left, 2 berths. t1 on 4 is out of reach of everyone (best any other
+  // can finish is 3), but t2/t3/t4 are packed at 2/1/1 — the last spot is live.
+  stub({ t1:{w:4,l:0,t:0,pf:0,pa:0}, t2:{w:2,l:2,t:0,pf:0,pa:0},
+         t3:{w:1,l:3,t:0,pf:0,pa:0}, t4:{w:1,l:3,t:0,pf:0,pa:0} }, 4);
+  cs = clinchState();
+  C(CL + 'a leader nobody can reach has clinched with a week to play',
+    cs.t1?.clinched === true, JSON.stringify(cs));
+  C(CL + 'a team that can still be passed has NOT clinched', !cs.t2?.clinched);
+  C(CL + 'and a team that can still climb into the last spot is not eliminated',
+    !cs.t4?.out, JSON.stringify(cs));
+
+  // the honesty case: plenty of season left, so nothing is settled at all
+  stub({ t1:{w:3,l:0,t:0,pf:0,pa:0}, t2:{w:2,l:1,t:0,pf:0,pa:0},
+         t3:{w:1,l:2,t:0,pf:0,pa:0}, t4:{w:0,l:3,t:0,pf:0,pa:0} }, 3);
+  cs = clinchState();
+  C(CL + 'with two weeks left and a two-game lead, nothing is claimed',
+    Object.keys(cs).length === 0, JSON.stringify(cs));
+
+  // a rival who can only DRAW level still blocks a clinch — the tiebreak may go to them
+  stub({ t1:{w:3,l:1,t:0,pf:0,pa:0}, t2:{w:2,l:2,t:0,pf:0,pa:0},
+         t3:{w:2,l:2,t:0,pf:0,pa:0}, t4:{w:2,l:2,t:0,pf:0,pa:0} }, 4);
+  cs = clinchState();
+  C(CL + 'a rival who can only tie me still blocks my clinch',
+    !cs.t1?.clinched, JSON.stringify(cs));
+
+  // a bonus-win league pays up to two a week, so clinching takes longer.
+  // t1 leads by exactly 2 with one week to play: without the bonus the chasers
+  // top out at 5 and t1 is in; with it they can reach 6 and block the clinch.
+  LG().settings.bonusWin = true;
+  stub({ t1:{w:6,l:0,t:0,pf:0,pa:0}, t2:{w:4,l:2,t:0,pf:0,pa:0},
+         t3:{w:4,l:2,t:0,pf:0,pa:0}, t4:{w:2,l:4,t:0,pf:0,pa:0} }, 4);
+  const withBonus = clinchState();
+  LG().settings.bonusWin = false;
+  const withoutBonus = clinchState();
+  C(CL + 'a bonus-win league is harder to clinch — two wins a week are still available',
+    !withBonus.t1?.clinched && withoutBonus.t1?.clinched === true,
+    `${JSON.stringify(withBonus.t1)} vs ${JSON.stringify(withoutBonus.t1)}`);
+  restore();
+
+  // no playoffs configured means no claims at all
+  LG().settings.playoffStartWeek = 0;
+  C(CL + 'a league with no playoffs makes no clinch claims',
+    Object.keys(clinchState()).length === 0);
+  LG().settings.playoffStartWeek = 6;
+
+  // and it has to reach the page
+  S.setupLeague('flb', { teams: 4, week: 8, name: 'ClinchUI',
+    settings: { playoffTeams: 2, playoffStartWeek: 6 } });
+  S.runDraft(); S.genLogs(8);
+  renderPage('standings');
+  const sh2 = document.getElementById('page-standings').innerHTML;
+  C(CL + 'the legend explains the letters when any are shown', (() => {
+    const any = Object.keys(clinchState()).length > 0;
+    return !any || (/clinched a spot/.test(sh2) && /eliminated/.test(sh2));
+  })(), Object.keys(clinchState()).join(','));
+  C(CL + 'and says they are settled, not a projection', (() => {
+    const any = Object.keys(clinchState()).length > 0;
+    return !any || /settled, not projections/.test(sh2);
+  })());
+  C(CL + 'a pre-draft league shows no markers at all', (() => {
+    S.setupLeague('flb', { teams: 4, week: 2, name: 'PreClinch',
+      settings: { playoffTeams: 2, playoffStartWeek: 6 } });
+    renderPage('standings');
+    const h = document.getElementById('page-standings').innerHTML;
+    return !/clinched a spot/.test(h);
+  })());
+
   const bad = S.renderAll();
   C('GameWeek: every page renders', bad.length === 0, bad.join(' ; '));
 })();

@@ -650,7 +650,7 @@ const SPORTS = {
 // orphan every existing league doc / device identity. Leave them alone.
 const FB_DOC_ID = 'bgl_multisport'; // single Firebase doc holds all sports
 const ADMIN_PIN = '2325';
-const APP_VERSION = 'v10.4';   // shown in Settings; the topbar shows the wordmark only
+const APP_VERSION = 'v10.5';   // shown in Settings; the topbar shows the wordmark only
 
 /* the active sport — persisted in STATE.sport */
 function SP() {
@@ -4171,6 +4171,53 @@ function computeRecords() {
   return rec;
 }
 
+/* WHO IS ACTUALLY IN, AND WHO IS OUT.
+   The ✦ marker means "in the playoffs as it stands", which flips week to week and
+   means nothing in October. A clinch is a different claim: it is arithmetic. Count
+   the weeks nobody has played yet, work out the best and worst every team can still
+   finish on, and only assert a result that no remaining outcome can change.
+
+   Deliberately conservative in both directions. For a clinch, a rival who can merely
+   DRAW level counts as able to pass you, because the tiebreak could go their way. For
+   elimination, rivals must be strictly ahead in every remaining scenario. It also
+   ignores that two teams playing each other cannot both win out — which only ever
+   makes it slower to declare, never wrong.
+
+   Returns { teamId: { clinched, top, out } }. */
+function clinchState() {
+  const out = {};
+  const teams = LG().teams.map(t => t.id);
+  const berths = Math.min(teams.length, Number(LSET().playoffTeams) || 0);
+  const lastRegular = (Number(LSET().playoffStartWeek) || 0) - 1;
+  if (!berths || lastRegular < 1 || teams.length < 2) return out;   // no playoffs configured
+  const rec = computeRecords();
+  // Weeks still to be played = the ones computeRecords skipped because nobody has
+  // scored in them. Using its own test means the two can never disagree about which
+  // weeks are already in the record.
+  let weeksLeft = 0;
+  for (let wk = 1; wk <= lastRegular; wk++) {
+    if (!teams.some(id => teamWeekTotal(id, wk) > 0)) weeksLeft++;
+  }
+  // a bonus-win league pays up to two a week: the head-to-head and the top-half bonus
+  const maxAdd = weeksLeft * (LSET().bonusWin ? 2 : 1);
+  // half a win for a tie, matching how the table itself sorts (w + t/2 over games)
+  const now = {}, best = {};
+  teams.forEach(id => {
+    const r = rec[id] || { w: 0, t: 0 };
+    now[id] = (r.w || 0) + (r.t || 0) * 0.5;
+    best[id] = now[id] + maxAdd;
+  });
+  teams.forEach(id => {
+    const couldReach = teams.filter(o => o !== id && best[o] >= now[id]).length;
+    const surelyAhead = teams.filter(o => o !== id && now[o] > best[id]).length;
+    const st = { clinched: false, top: false, out: false };
+    if (couldReach < berths) st.clinched = true;      // at worst finishes couldReach+1
+    if (couldReach < 1) st.top = true;                // nobody can catch them at all
+    if (surelyAhead >= berths) st.out = true;         // that many finish above, certainly
+    if (st.clinched || st.out || st.top) out[id] = st;
+  });
+  return out;
+}
 function viewStandings() {
   if (!LG().teams.length) {
     return `<div class="h1">Standings</div>
@@ -4201,13 +4248,26 @@ function viewStandings() {
   const showSal = !!LSET().useSalaryCap;
   const salYear = currentSeasonYear();
   const salCap = showSal ? capForYear(salYear) : 0;
+  const clinch = predraft ? {} : clinchState();
+  const anyClinch = Object.keys(clinch).length > 0;
+  // the standard notation: z = top seed sewn up, x = through, e = out of it
+  const clinchTag = (tid) => {
+    const c = clinch[String(tid)] || clinch[tid];
+    if (!c) return '';
+    if (c.out) return `<span class="sub" style="font-size:.62rem;color:var(--bad);font-weight:700"
+      title="Eliminated — cannot finish in the top ${berths} whatever happens">e</span>`;
+    if (c.top) return `<span style="font-size:.62rem;color:var(--amber);font-weight:700"
+      title="Clinched the top seed — nobody can catch them">z</span>`;
+    return `<span style="font-size:.62rem;color:var(--good);font-weight:700"
+      title="Clinched a playoff spot — in the top ${berths} whatever happens">x</span>`;
+  };
   const body = rows.map((r,i) => {
     const isMine = String(r.team.id)===String(mine);
     const cut = berths > 0 && i === berths - 1 && i < rows.length - 1;
     return `<tr style="${isMine?'background:var(--amber-bg)':''}${cut?';border-bottom:2px solid var(--amber)':''}">
       <td class="r num" style="${i===0?'color:var(--amber);font-weight:800':''}">${i+1}${berths>0&&i<berths?'<span class="sub" style="font-size:.5rem"> ✦</span>':''}</td>
       <td style="max-width:0"><span class="plink" style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
-          onclick="setViewingTeam('${r.team.id}');go('home')">${esc(r.team.name)}${isMine?' ·&nbsp;you':''}</span>
+          onclick="setViewingTeam('${r.team.id}');go('home')">${clinchTag(r.team.id)} ${esc(r.team.name)}${isMine?' ·&nbsp;you':''}</span>
         ${r.team.owner?`<span class="sub" style="font-size:.58rem;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.team.owner)}</span>`:''}</td>
       <td class="r num" style="font-weight:700">${r.w}-${r.l}${r.t?('-'+r.t):''}</td>
       ${showSal ? (() => {
@@ -4287,6 +4347,7 @@ function viewStandings() {
       </table>
     </div>
     <p class="sub mt" style="font-size:.66rem;text-align:center">${berths>0?`<span class="amber">✦</span> = in the playoffs as it stands (top ${berths}, starting week ${LSET().playoffStartWeek||23}). `:''}${
+      anyClinch?`<b style="color:var(--good)">x</b> clinched a spot · <b style="color:var(--amber)">z</b> clinched the top seed · <b style="color:var(--bad)">e</b> eliminated — these are settled, not projections. `:''}${
       showSal?`<b>$M</b> and <b>Free</b> are millions of payroll and cap room for the ${salYear} season, against a ${fmtMoney(salCap)} cap. `:''}${
       predraft?'':'PF = points for, PA = points against. '}Tap a team to view their roster.</p>
     <button class="btn btn-ghost btn-block mt" onclick="openSeasonSchedule()">🗓 Full season schedule</button>
