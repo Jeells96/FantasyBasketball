@@ -877,6 +877,51 @@
     }
 
     // ============================================================
+    // a league survives a reload with no Firebase
+    // ============================================================
+    const LSV = `LocalSave[${sport}]: `;
+    // The reported bug: on a browser where Firebase does not load, every league
+    // vanished on reload — while the app toasted "Saved locally" having written no
+    // league data anywhere at all. saveLocal() only ever stored identity.
+    S.setupLeague(sport, { teams: 3, week: 2, name: 'Persist' + sport,
+      settings: { leagueType: 'dynasty', useSalaryCap: true } });
+    STATE.salaryDB = { [sport]: { 'someone': { aav: 5e7 } } };
+    STATE.poolMeta = { [sport]: { pulledAt: 1234567, season: statSeasonNow() } };
+    LG().gameLogs = { 999: [{ date: '2026-01-01', group: 'x', stat: {} }] };
+    S.runDraft();
+    const snap = localDataSnapshot();
+    C(LSV + 'the snapshot carries the league itself, not just identity',
+      !!snap.leagues[sport] && (snap.leagues[sport].teams || []).length === 3,
+      Object.keys(snap.leagues).join(','));
+    C(LSV + 'with the roster, which lives in draft.picks',
+      (snap.leagues[sport].draft.picks || []).length > 0);
+    C(LSV + 'and the settings that make it this kind of league',
+      snap.leagues[sport].settings.leagueType === 'dynasty');
+    C(LSV + 'the player pool comes too — it is the expensive thing to refetch',
+      (snap.leagues[sport].playerPool || []).length > 0);
+    C(LSV + 'so does the salary database and the pool stamp',
+      Object.keys(snap.salaryDB[sport] || {}).length === 1 && !!snap.poolMeta[sport]);
+    // the caches are excluded on purpose — they are what blows the 5MB quota
+    C(LSV + 'but the refetchable caches are left out, so the quota is not blown',
+      snap.leagues[sport].gameLogs === undefined
+      && snap.leagues[sport].scheduleCache === undefined
+      && snap.leagues[sport].gameLogsPrev === undefined);
+    C(LSV + 'and a slim retry drops the pool as a last resort before giving up',
+      localDataSnapshot({ slim: true }).leagues[sport].playerPool === undefined);
+    // a round trip through the snapshot restores a usable league
+    C(LSV + 'a snapshot round-trips back into a working league', (() => {
+      const json = JSON.parse(JSON.stringify(snap));
+      const back = { ...blankLeague(''), ...json.leagues[sport] };
+      return back.teams.length === 3
+        && back.draft.picks.length === snap.leagues[sport].draft.picks.length
+        && back.settings.useSalaryCap === true
+        && back.gameLogs !== undefined;      // blankLeague refills the dropped caches
+    })());
+    C(LSV + 'the save reports honestly instead of a green tick over nothing',
+      typeof reportLocalSave === 'function' && 'v' in snap);
+    STATE.poolMeta = {};
+
+    // ============================================================
     // the pool pulls itself — nobody presses a button
     // ============================================================
     const AP = `AutoPool[${sport}]: `;
