@@ -650,7 +650,7 @@ const SPORTS = {
 // orphan every existing league doc / device identity. Leave them alone.
 const FB_DOC_ID = 'bgl_multisport'; // single Firebase doc holds all sports
 const ADMIN_PIN = '2325';
-const APP_VERSION = 'v10.3';   // shown in Settings; the topbar shows the wordmark only
+const APP_VERSION = 'v10.4';   // shown in Settings; the topbar shows the wordmark only
 
 /* the active sport — persisted in STATE.sport */
 function SP() {
@@ -2127,6 +2127,7 @@ async function fetchPlayerPool(logFn) {
    carries no player ids, so entries match on normalised name, the same way the
    salary database already does. */
 const IL_REFRESH_MS = 6 * 3600 * 1000;
+const SCHED_TTL_MS = 3 * 3600 * 1000;   // probables and start times move during a week
 async function fetchInjuryReport(sportKey) {
   const path = (SPORTS[sportKey || STATE.sport] || SPORTS.flb).injuriesPath;
   if (!path) return null;
@@ -2147,6 +2148,56 @@ async function fetchInjuryReport(sportKey) {
 /* Which statuses actually merit an IL slot. Day-to-day does not: those players are
    usually still playable, ESPN doesn't allow them on an IL either, and badging them
    as injured is the same wrong answer from the other direction. */
+/* PLAYER NEWS.
+   Injury STATUS says "Day-To-Day"; news says why and for how long, which is what
+   people actually read before benching someone. ESPN's per-sport news feed is small
+   (~10KB) and CORS-open, so it is fetched once per hour for the whole league and
+   matched to players by name.
+
+   Why name-matching and not ?athlete=: probing the athlete parameter returned the
+   same articles as the unfiltered call, i.e. it does not filter. Matching headlines
+   ourselves is less elegant but actually works, and one fetch covers every player
+   rather than one request per card. */
+const NEWS_TTL_MS = 60 * 60 * 1000;
+let _newsCache = { sport: null, at: 0, items: [] };
+async function fetchLeagueNews(sportKey) {
+  const path = (SPORTS[sportKey || STATE.sport] || SPORTS.flb).injuriesPath;
+  if (!path) return [];
+  const res = await fetch(`https://site.api.espn.com/apis/site/v2/sports/${path}/news?limit=50`);
+  if (!res.ok) throw new Error('ESPN news HTTP ' + res.status);
+  const data = await res.json();
+  return (data.articles || []).map(a => ({
+    headline: a.headline || '',
+    blurb: a.description || '',
+    published: a.published || '',
+    link: (a.links?.web?.href) || '',
+    // ESPN tags most stories with the athletes they concern; when present this is
+    // far more reliable than reading the headline
+    athleteIds: (a.categories || []).filter(c => c.type === 'athlete')
+      .map(c => String(c.athleteId ?? c.id ?? '')).filter(Boolean),
+  }));
+}
+function ensureNews() {
+  const sport = STATE.sport;
+  if (_newsCache.sport === sport && Date.now() - _newsCache.at < NEWS_TTL_MS) return Promise.resolve(_newsCache.items);
+  return fetchLeagueNews(sport).then(items => {
+    _newsCache = { sport, at: Date.now(), items };
+    return items;
+  }).catch(() => _newsCache.items || []);
+}
+/* stories about one player: by ESPN athlete tag first, then by name in the text */
+function newsFor(p, items) {
+  if (!p || !items?.length) return [];
+  const id = String(p.espnId);
+  const tagged = items.filter(a => a.athleteIds.includes(id));
+  if (tagged.length) return tagged.slice(0, 3);
+  const n = normName(p.name);
+  const last = normName(lastNameOf(p.name));
+  return items.filter(a => {
+    const hay = normName(`${a.headline} ${a.blurb}`);
+    return n && (hay.includes(n) || (last.length > 3 && hay.includes(last)));
+  }).slice(0, 3);
+}
 function isIlStatus(status) { return /IL|\bDL\b|^out$/i.test(String(status || '')); }
 function isDayToDay(status) { return /day-?to-?day/i.test(String(status || '')); }
 window.refreshInjuries = async function(opts = {}) {
@@ -2211,6 +2262,12 @@ const ESPN_NBA_STATS = {
   '2': 'STL',   // steals
   '1': 'BLK',   // blocks
   '11': 'TO',   // turnovers
+  // Verified against the live 2026 payload: id 19 (FG%) came back as exactly
+  // 9/19 = 0.47368, which pins 13 = made and 14 = attempted; the free-throw and
+  // three-point pairs follow the same ordering.
+  '13': 'FGM', '14': 'FGA',
+  '15': 'FTM', '16': 'FTA',
+  '17': '3PM',
 };
 /* Compute NBA fantasy points for a player from ESPN raw stat splits, using the
    league's scoring values. Looks at PER-GAME averages so we can show a per-game
@@ -2226,6 +2283,9 @@ function nbaPointsFromEspn(pl) {
   if (!split || !split.stats) return { seasonPts: 0, perGame: 0, games: 0 };
   const raw = split.stats;
   let total = 0;
+  // NOTE: double/triple-doubles cannot come from a season TOTAL — they are a
+  // per-game fact. They are scored from the game logs (see gamePoints/bigCats);
+  // this pool figure is a placeholder until those load, and omits them.
   for (const [id, key] of Object.entries(ESPN_NBA_STATS)) {
     const v = raw[id];
     if (v != null && vals[key] != null) total += v * vals[key];
@@ -2324,8 +2384,30 @@ const SCORING_CATALOG = {
     { id: 'STL', label: 'Steals',        grp: 'stats', mlb: 'steals',        def: 2 },
     { id: 'BLK', label: 'Blocks',        grp: 'stats', mlb: 'blocks',        def: 2 },
     { id: 'TO',  label: 'Turnovers',     grp: 'stats', mlb: 'turnovers',     def: -1 },
+    // THE STANDARD SET, ADDED WITH def:0 ON PURPOSE. scoringValues() overlays
+    // customScoring on these defaults, so a league that has never touched its
+    // scoring inherits whatever we put here — a non-zero default would silently
+    // rescore every week already played. Zero changes nothing; the scoring editor
+    // has a one-tap "ESPN standard basketball" preset for anyone who wants them.
+    { id: '3PM', label: '3-pointers made', grp: 'stats', mlb: 'threesMade',   def: 0 },
+    { id: 'FGM', label: 'FG made',         grp: 'stats', mlb: 'fgMade',       def: 0 },
+    { id: 'FGA', label: 'FG attempted',    grp: 'stats', mlb: 'fgAtt',        def: 0 },
+    { id: 'FTM', label: 'FT made',         grp: 'stats', mlb: 'ftMade',       def: 0 },
+    { id: 'FTA', label: 'FT attempted',    grp: 'stats', mlb: 'ftAtt',        def: 0 },
+    // derived, not fed: count the categories that reached double figures
+    { id: 'DD',  label: 'Double-double',   grp: 'stats', def: 0, derive: (st) => bigCats(st) >= 2 ? 1 : 0 },
+    { id: 'TD',  label: 'Triple-double',   grp: 'stats', def: 0, derive: (st) => bigCats(st) >= 3 ? 1 : 0 },
   ],
 };
+/* how many of the five countable categories reached 10 in one game */
+function bigCats(st) {
+  if (!st) return 0;
+  return [st.points, st.rebounds, st.assists, st.steals, st.blocks]
+    .filter(v => (parseFloat(v) || 0) >= 10).length;
+}
+/* ESPN standard basketball scoring — the preset behind the button in the scoring
+   editor. Only the categories it names are set; anything else is left alone. */
+const NBA_STANDARD_SCORING = { PTS: 1, REB: 1, AST: 2, STL: 4, BLK: 4, TO: -2, '3PM': 1, DD: 3, TD: 5 };
 
 /* Get the active scoring values: user overrides if set, else defaults. */
 function scoringValues() {
@@ -2382,6 +2464,13 @@ async function nbaGameLog(espnId, season) {
     const i = idx[key]; if (i == null) return 0;
     const v = parseFloat(arr[i]); return isNaN(v) ? 0 : v;
   };
+  /* "9-19" -> {made:9, att:19} */
+  const madeAtt = (arr, key) => {
+    const i = idx[key];
+    const raw = i == null ? '' : String(arr[i] || '');
+    const [m, a] = raw.split('-');
+    return { made: parseFloat(m) || 0, att: parseFloat(a) || 0 };
+  };
   const meta = data.events || {};
   const out = [];
   // Regular season only — see isRegularSeasonType.
@@ -2405,6 +2494,14 @@ async function nbaGameLog(espnId, season) {
           steals:    num(s, 'steals'),
           blocks:    num(s, 'blocks'),
           turnovers: num(s, 'turnovers'),
+          // ESPN ships shooting as one combined "made-attempted" string per column
+          // ("9-19"), so each half has to be split back out to be scoreable.
+          fgMade:    madeAtt(s, 'fieldGoalsMade-fieldGoalsAttempted').made,
+          fgAtt:     madeAtt(s, 'fieldGoalsMade-fieldGoalsAttempted').att,
+          threesMade: madeAtt(s, 'threePointFieldGoalsMade-threePointFieldGoalsAttempted').made,
+          threesAtt:  madeAtt(s, 'threePointFieldGoalsMade-threePointFieldGoalsAttempted').att,
+          ftMade:    madeAtt(s, 'freeThrowsMade-freeThrowsAttempted').made,
+          ftAtt:     madeAtt(s, 'freeThrowsMade-freeThrowsAttempted').att,
         },
       });
     })));
@@ -2471,6 +2568,12 @@ async function fetchSchedule(startYmd, endYmd) {
       homeId: g.teams?.home?.team?.id, awayId: g.teams?.away?.team?.id,
       homeAbbr: g.teams?.home?.team?.abbreviation, awayAbbr: g.teams?.away?.team?.abbreviation,
       homeProb: g.teams?.home?.probablePitcher?.id, awayProb: g.teams?.away?.probablePitcher?.id,
+      // the NAMES too. Keeping only the ids answered "is this player the starter?"
+      // but never "who is my hitter facing?", which is the question hitters have.
+      // Probables are announced a day or two out, so these are frequently null and
+      // every consumer has to cope with that.
+      homeProbName: g.teams?.home?.probablePitcher?.fullName || null,
+      awayProbName: g.teams?.away?.probablePitcher?.fullName || null,
       time: g.gameDate || null,                       // ISO start time → individual locks
       status: g.status?.detailedState || null,        // Postponed/Cancelled → attention queue
     }));
@@ -2486,26 +2589,72 @@ async function getWeekSchedule(week) {
   const startYmd = ymd(days[0]), endYmd = ymd(days[days.length-1]);
   const key = `${statSeasonNow()}_${startYmd}_${endYmd}`;
   LG().scheduleCache = LG().scheduleCache || {};
-  if (LG().scheduleCache[key]) return LG().scheduleCache[key];
+  // A CACHED WEEK GOES STALE. This cache never expired, which was harmless while it
+  // only held fixtures — but probable pitchers are announced a day or two ahead, so
+  // a week fetched on Monday would show blanks all week however many starters got
+  // named. Times and postponements move too. Re-fetch a few hours old.
+  const hit = LG().scheduleCache[key];
+  const fresh = hit && (Date.now() - (LG().scheduleFetchedAt?.[key] || 0) < SCHED_TTL_MS);
+  if (hit && fresh) return hit;
   try {
     const sched = SP().statsApi === 'nba'
       ? await fetchNbaSchedule(startYmd, endYmd)
       : await fetchSchedule(startYmd, endYmd);
     LG().scheduleCache[key] = sched;
+    LG().scheduleFetchedAt = LG().scheduleFetchedAt || {};
+    LG().scheduleFetchedAt[key] = Date.now();
     return sched;
-  } catch(e) { return {}; }
+  } catch(e) { return hit || {}; }   // a failed refresh keeps whatever we had
 }
 
 /* For a player on a given calendar date, return {opp, isProbable} or null.
    Needs the player's MLB team id (we resolve it lazily and cache on the player). */
+/* "Christian Scott" -> "Scott". A day cell is ~40px wide; a surname is all that fits. */
+function lastNameOf(name) {
+  const parts = String(name || '').trim().split(/\s+/);
+  return parts.length ? parts[parts.length - 1] : '';
+}
 function playerDayMatchup(player, dateYmd, sched) {
   const teamId = player.mlbTeamId;
   if (!teamId || !sched || !sched[dateYmd]) return null;
   for (const g of sched[dateYmd]) {
-    if (g.homeId === teamId) return { opp: 'vs ' + (g.awayAbbr||''), isProbable: g.homeProb === player.mlbId };
-    if (g.awayId === teamId) return { opp: '@ ' + (g.homeAbbr||''), isProbable: g.awayProb === player.mlbId };
+    // isProbable = this player is the listed starter (a pitcher's own question).
+    // oppProb   = who they are facing (every hitter's question). Null until the
+    //             other club names someone, which is usually a day or two out.
+    if (g.homeId === teamId) return { opp: 'vs ' + (g.awayAbbr||''), oppAbbr: g.awayAbbr||'',
+      isProbable: g.homeProb === player.mlbId,
+      oppProb: g.awayProb ? { id: g.awayProb, name: g.awayProbName || '' } : null };
+    if (g.awayId === teamId) return { opp: '@ ' + (g.homeAbbr||''), oppAbbr: g.homeAbbr||'',
+      isProbable: g.awayProb === player.mlbId,
+      oppProb: g.homeProb ? { id: g.homeProb, name: g.homeProbName || '' } : null };
   }
   return null;
+}
+/* THE GAMES A PLAYER IS SCHEDULED FOR THIS WEEK — the counterpart to
+   playerWeekGames(), which counts games already PLAYED (from the logs). Nothing
+   counted the fixtures, and "how many times does he play this week" is the whole
+   basis of a basketball start/sit and most of a baseball one. Reads the cached
+   week schedule, so it is synchronous and safe to call from a render. */
+function playerScheduledGames(player, week) {
+  if (!player || !player.mlbTeamId) return [];
+  const key = `${statSeasonNow()}_${ymd(weekDays(week)[0])}_${ymd(weekDays(week)[weekDays(week).length-1])}`;
+  const sched = LG().scheduleCache?.[key];
+  if (!sched) return [];
+  return weekDays(week).map((d, i) => {
+    const dYmd = ymd(d);
+    const m = playerDayMatchup(player, dYmd, sched);
+    return m ? { ...m, date: dYmd, dayIdx: i } : null;
+  }).filter(Boolean);
+}
+/* {played, total, left} for a player's week. `left` deliberately counts fixtures
+   from today forward that have no logged game yet — a game that happened but has
+   not landed in the log yet is not "left to play". */
+function playerWeekGameCount(player, week) {
+  const sched = playerScheduledGames(player, week);
+  const logged = new Set((player.mlbId ? playerWeekGames(player.mlbId, week) : []).map(g => g.date));
+  const today = ymd(new Date());
+  const left = sched.filter(g => g.date >= today && !logged.has(g.date)).length;
+  return { played: logged.size, total: sched.length || logged.size, left };
 }
 
 /* Convert one game's MLB stat line into points using OUR scoring system.
@@ -4155,6 +4304,68 @@ function viewStandings() {
         ${rows}</div>`;
     })()}`;
 }
+/* THE BOX SCORE.
+   A matchup used to be two numbers. This is the screen a manager actually sits on
+   during a week: both lineups slot by slot, what each player has scored, how many
+   games they have left, and who is already locked in — so "am I winning" has an
+   answer beyond the margin. Everything here is computed by functions that already
+   existed; only the view was missing. */
+window.openBoxScore = function(aId, bId, week) {
+  week = Number(week) || activeWeek();
+  const slots = activeLineupSlots() || [];
+  const mine = myTeamId();
+  const side = (tid) => {
+    const roster = rosterForWeek(tid, week);
+    const starters = getStarters(tid, week).map(String);
+    return { tid, roster, starters,
+             total: teamWeekTotal(tid, week),
+             byIdx: starters.map(pid => roster.find(r => String(r.espnId) === String(pid))) };
+  };
+  const A = side(aId), B = side(bId);
+  const cell = (p, alignRight) => {
+    if (!p) return `<div class="sub" style="font-size:.68rem;opacity:.5;text-align:${alignRight?'right':'left'}">empty</div>`;
+    const pts = playerWeekScore(p, week);
+    const gc = playerWeekGameCount(p, week);
+    const lock = playerLockedForWeek(p, week);
+    return `<div style="text-align:${alignRight?'right':'left'};min-width:0">
+      <div class="plink" style="font-size:.74rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+        onclick="closeModal();showPlayer('${p.espnId}')">${esc(p.name)} ${injuryBadge(p)}</div>
+      <div class="sub" style="font-size:.58rem">${lock?'🔒 ':''}${gc.total?`${gc.played}/${gc.total} gm${gc.left?` · ${gc.left} left`:''}`:''}</div>
+      <div class="num amber" style="font-weight:700;font-size:.82rem">${pts.toFixed(1)}</div>
+    </div>`;
+  };
+  const rows = slots.map((s, i) => `
+    <div style="display:grid;grid-template-columns:1fr 3.2rem 1fr;gap:.4rem;align-items:center;
+                padding:.35rem 0;border-bottom:1px solid rgba(42,61,48,.35)">
+      ${cell(A.byIdx[i], false)}
+      <div class="sub" style="text-align:center;font-size:.6rem;letter-spacing:.05em">${esc(s.label || s.slot)}</div>
+      ${cell(B.byIdx[i], true)}
+    </div>`).join('');
+  // the bench matters: it is where the answer to "who should I have started" lives
+  const benchOf = (S) => S.roster.filter(p => !S.starters.includes(String(p.espnId)))
+    .map(p => `${esc(p.name)} ${playerWeekScore(p, week).toFixed(1)}`).join(' · ') || '—';
+  const margin = Math.abs(A.total - B.total).toFixed(1);
+  const leader = A.total === B.total ? null : (A.total > B.total ? A : B);
+  openModal(`
+    <div class="row-between" style="align-items:flex-start;gap:.5rem">
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:700;font-size:.84rem">${esc(teamById(aId).name)}${String(aId)===String(mine)?' (you)':''}</div>
+        <div class="num display ${A.total>=B.total?'amber':''}" style="font-size:1.5rem">${A.total.toFixed(1)}</div>
+      </div>
+      <div class="sub" style="text-align:center;font-size:.62rem;padding-top:.4rem">WK ${week}<br>${
+        leader ? `${esc(teamById(leader.tid).abbrev || '')} +${margin}` : 'tied'}</div>
+      <div style="flex:1;min-width:0;text-align:right">
+        <div style="font-weight:700;font-size:.84rem">${esc(teamById(bId).name)}${String(bId)===String(mine)?' (you)':''}</div>
+        <div class="num display ${B.total>=A.total?'amber':''}" style="font-size:1.5rem">${B.total.toFixed(1)}</div>
+      </div>
+    </div>
+    <div class="mb"></div>
+    ${rows || '<p class="sub">No lineup slots configured.</p>'}
+    <div class="divlabel mt">Bench</div>
+    <p class="sub" style="font-size:.62rem">${esc(teamById(aId).name)}: ${benchOf(A)}</p>
+    <p class="sub" style="font-size:.62rem">${esc(teamById(bId).name)}: ${benchOf(B)}</p>
+    <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Close</button>`);
+};
 function viewMatchups() {
   if (!LG().teams.length || !LG().draft.complete) {
     return `<div class="h1">Matchups</div>
@@ -4176,7 +4387,8 @@ function viewMatchups() {
     const aTot = teamWeekTotal(a, week), bTot = teamWeekTotal(b, week);
     const aMine = String(a)===String(mine), bMine = String(b)===String(mine);
     const aWin = aTot > bTot, bWin = bTot > aTot;
-    return `<div class="card" style="${aMine||bMine?'border-color:var(--amber)':''}">
+    return `<div class="card" style="cursor:pointer;${aMine||bMine?'border-color:var(--amber)':''}"
+      onclick="openBoxScore('${a}','${b}',${week})">
       <div class="row-between" style="align-items:center">
         <div style="flex:1">
           <div class="${aWin?'amber':''}" style="font-weight:${aWin?700:400}">${esc(teamById(a).name)}${aMine?' (you)':''}</div>
@@ -4410,6 +4622,12 @@ function viewMyTeam() {
     const isStarter = !!slot;
     const games = p.mlbId ? playerWeekGames(p.mlbId, week) : [];
     const best = p.mlbId ? playerBestGame(p.mlbId, week) : null;
+    // HOW OFTEN DOES HE PLAY THIS WEEK. In basketball this is the entire start/sit
+    // decision — a four-game week beats a better player with two — and nothing in
+    // the app counted it. Silent when the schedule for this week isn't cached yet.
+    const gc = playerWeekGameCount(p, week);
+    const gcTag = gc.total ? `<span class="sub" style="font-size:.6rem;white-space:nowrap"
+      title="${gc.played} played, ${gc.left} left this week">${gc.total} gm${gc.left ? ` · ${gc.left} left` : ''}</span>` : '';
     const cells = weekDays(week).map((d,i) => {
       const g = games.find(x => x.dayIdx === i);
       if (g) {
@@ -4422,9 +4640,15 @@ function viewMyTeam() {
       if (dYmd >= todayYmd && weekSched) {
         const m = playerDayMatchup(p, dYmd, weekSched);
         if (m) {
+          // A hitter's day is defined by the arm he is facing. The name only exists
+          // once the other club announces it — a day or two out — so this is blank
+          // more often than not and the opponent tag has to stand on its own.
+          const facing = (!m.isProbable && m.oppProb && m.oppProb.name)
+            ? `<span class="ps-tag" style="background:none;color:var(--sage-dim)"
+                 title="Probable starter: ${esc(m.oppProb.name)}">${esc(lastNameOf(m.oppProb.name))}</span>` : '';
           return `<div class="dcell upcoming">
             <span class="opp-tag">${esc(m.opp)}</span>
-            ${m.isProbable?'<span class="ps-tag">PROB</span>':''}
+            ${m.isProbable?'<span class="ps-tag">PROB</span>':facing}
           </div>`;
         }
       }
@@ -4459,6 +4683,7 @@ function viewMyTeam() {
         </span>
         <span class="row" style="gap:.5rem;align-items:center;flex-shrink:0">
           <span class="sub" style="font-size:.62rem">${esc((p.eligible||[]).join('/'))}</span>
+          ${gcTag}
           ${contractTagHtml(p, { size: '.6rem' })}
           ${LSET().useSalaryCap?`<span class="sub" style="font-size:.64rem">${fmtMoney(teamPlayerCapHit(viewingId, p, currentSeasonYear()))}</span>`:''}
           <span class="num amber" style="font-weight:700;min-width:2ch;text-align:right">${best?best.pts:'—'}</span>
@@ -4474,6 +4699,7 @@ function viewMyTeam() {
             ${injuryBadge(p)}
             <span class="plink" style="margin-left:.4rem" onclick="showPlayer('${p.espnId}')">${esc(p.name)}</span>
             <span class="sub" style="font-size:.7rem"> ${esc((p.eligible||[]).join('/'))}</span>
+            ${gcTag ? ` · ${gcTag}` : ''}
             ${contractTagHtml(p, { size: '.62rem' }) ? ` · ${contractTagHtml(p, { size: '.62rem' })}` : ''}
             ${p.heldOver ? `<span class="sub" style="font-size:.6rem;display:block;color:var(--amber)">dropped — final week here</span>`
               : pLocked && !onIR ? `<span class="sub" style="font-size:.6rem;display:block">🔒 locked</span>` : ''}
@@ -4641,11 +4867,30 @@ function viewMyTeam() {
 
         <div class="row-between" style="align-items:center">
           <div class="divlabel" style="margin:0">Starters · ${filledCount}/${(activeLineupSlots()||[]).length}</div>
-          <button class="btn btn-sm btn-ghost" onclick="toggleRosterDense()">${rosterDense()?'▦ Cards':'≡ Compact'}</button>
+          <div class="row" style="gap:.35rem;flex:none">
+            ${isMine ? `<button class="btn btn-sm btn-amber" onclick="optimizeLineup(${week})"
+              title="Fill empty slots and bench anyone who cannot score this week">⚡ Fill</button>` : ''}
+            <button class="btn btn-sm btn-ghost" onclick="toggleRosterDense()">${rosterDense()?'▦ Cards':'≡ Compact'}</button>
+          </div>
         </div>
-        ${isMine && filledCount < (activeLineupSlots()||[]).length ? `<div class="card card-tight mb" style="border-color:var(--bad)">
-          <p class="sub" style="font-size:.72rem;color:var(--bad)">⚠ ${(activeLineupSlots()||[]).length - filledCount}
-          empty starting slot${(activeLineupSlots()||[]).length - filledCount!==1?'s':''} — empty slots score 0 this week.</p></div>` : ''}
+        ${isMine ? (() => {
+          // WHAT IS ACTUALLY WRONG WITH THIS LINEUP. An empty slot was already
+          // flagged; a starter who is on the IL or has no game left scores exactly
+          // as much as an empty one and said nothing at all.
+          const empties = (activeLineupSlots()||[]).length - filledCount;
+          const dead = starters.map(pid => roster.find(r => String(r.espnId)===String(pid)))
+            .filter(Boolean)
+            .filter(p => isOnIR(p.espnId, viewingId) || playerWeekGameCount(p, week).left === 0)
+            .filter(p => !p.heldOver);
+          if (!empties && !dead.length) return '';
+          const bits = [];
+          if (empties) bits.push(`${empties} empty starting slot${empties!==1?'s':''}`);
+          if (dead.length) bits.push(`${dead.length} starter${dead.length!==1?'s':''} with no game left (${dead.slice(0,2).map(p=>esc(p.name)).join(', ')}${dead.length>2?'…':''})`);
+          return `<div class="card card-tight mb" style="border-color:var(--bad)">
+            <p class="sub" style="font-size:.72rem;color:var(--bad)">⚠ ${bits.join(' · ')} — each of those scores 0 this week.</p>
+            <button class="btn btn-sm btn-amber mt" onclick="optimizeLineup(${week})">⚡ Fix it</button>
+          </div>`;
+        })() : ''}
         ${starterCards}
 
         ${benchCards ? `<div class="divlabel mt">Bench</div>${benchCards}` : ''}
@@ -5442,6 +5687,66 @@ function ensureLineupExists(week) {
   }
 }
 
+/* ONE TAP TO SET THE WEEK.
+   Filling a lineup was slot-by-slot, every week, forever. This fills every empty
+   slot and replaces starters who cannot score — someone on the IL, or with no game
+   left to play — with the best eligible body on the bench.
+
+   What it will never do: touch a locked player (their game has started), touch a
+   held-over player (dropped mid-week, frozen here by rule), or start someone who
+   cannot score either. It ranks on the league's OWN currency via ptsFieldFor, so a
+   best-of-week league ranks by best-of-week and a total-points league by totals.
+   Nothing is destructive — every move is one tap back. */
+window.optimizeLineup = function(week) {
+  // your own team only — ensureLineupExists() is scoped to myTeamId(), and setting
+  // somebody else's lineup is a commissioner power we do not currently grant
+  const tid = myTeamId();
+  week = week || activeWeek();
+  if (!tid) { toast('Claim your team first', 'err'); return; }
+  // NO WEEK-LEVEL GATE. isWeekLocked() goes true on the Sunday BEFORE a week
+  // starts, so gating on it would hide this for the whole of the current week —
+  // precisely when a lineup needs fixing. This app locks per player, at their own
+  // first game, and the loop below honours that individually.
+  const roster = teamRoster(tid);
+  const slots = activeLineupSlots();
+  ensureLineupExists(week);
+  const assign = LG().lineups[tid][week].assignments;
+  const win = activeStatWindow();
+  const score = (p) => (p[ptsFieldFor(win, p)] ?? -Infinity);
+  const canScore = (p) => !isOnIR(p.espnId, tid) && playerWeekGameCount(p, week).left > 0;
+  const frozen = (p) => p.heldOver || playerLockedForWeek(p, week);
+
+  const moves = [];
+  // a player is "committed" if they hold a slot we are not allowed to disturb
+  const held = new Set();
+  slots.forEach((s, idx) => {
+    const cur = roster.find(r => String(r.espnId) === String(assign[idx]));
+    if (cur && frozen(cur)) held.add(String(cur.espnId));
+  });
+  slots.forEach((s, idx) => {
+    const cur = roster.find(r => String(r.espnId) === String(assign[idx]));
+    if (cur && frozen(cur)) return;                       // locked in, leave alone
+    if (cur && canScore(cur)) { held.add(String(cur.espnId)); return; }  // fine as is
+    // this slot is empty, or its occupant cannot score — find the best replacement
+    const best = roster
+      .filter(p => !held.has(String(p.espnId)))
+      .filter(p => String(p.espnId) !== String(cur?.espnId))
+      .filter(p => !frozen(p) && canScore(p) && slotEligible(s.slot, p))
+      .sort((a, b) => score(b) - score(a))[0];
+    if (!best) return;                                     // nobody better; leave it
+    for (const k of Object.keys(assign)) {                 // vacate their old slot
+      if (String(assign[k]) === String(best.espnId)) assign[k] = null;
+    }
+    assign[idx] = best.espnId;
+    held.add(String(best.espnId));
+    moves.push(cur ? `${best.name} in for ${cur.name}` : `${best.name} → ${s.label || s.slot}`);
+  });
+  if (!moves.length) { toast('Lineup is already set — nothing to change', 'ok'); return; }
+  LG().lineups[tid][week].userSet = true;
+  save();
+  toast(`${moves.length} change${moves.length!==1?'s':''}: ${moves.slice(0,2).join(', ')}${moves.length>2?'…':''}`, 'ok');
+  renderActive();
+};
 window.moveToSlot = function(espnId, slotIdx) {
   const week = activeWeek();
   const tid = myTeamId();
@@ -5706,7 +6011,8 @@ function viewPlayersReal() {
         <span style="min-width:0">
           <span class="plink" style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
             onclick="showPlayer('${p.espnId}')">${esc(p.name)}</span>
-          ${(p.injured||p.dtd||drafted)?`<span class="sub" style="font-size:.58rem;display:block;white-space:nowrap">${injuryBadge(p)} ${drafted?esc(ownerTeam):''}</span>`:''}
+          ${(p.injured||p.dtd||drafted||Math.abs(p.ownedChange||0) >= 1)?`<span class="sub" style="font-size:.58rem;display:block;white-space:nowrap">${injuryBadge(p)} ${drafted?esc(ownerTeam):''}${
+            Math.abs(p.ownedChange||0) >= 1 ? `<span style="color:${p.ownedChange>0?'var(--good)':'var(--bad)'}">${p.ownedChange>0?'▲':'▼'}${Math.abs(p.ownedChange).toFixed(1)}%</span>` : ''}</span>`:''}
         </span>
       </span></td>
       <td class="pos" style="white-space:nowrap">${esc((p.eligible||[]).join('/') || p.pos || '?')}
@@ -5766,6 +6072,7 @@ function viewPlayersReal() {
     <div class="row" style="gap:.35rem;margin-top:.4rem;flex-wrap:wrap">
       <span class="sub" style="align-self:center;font-size:.68rem">Sort:</span>
       ${sortBtn('adp','ADP')} ${sortBtn('pts','Pts')} ${sortBtn('name','Name')}${useSal?' '+sortBtn('salary','$'):''}
+      ${LG().playerPool?.some(x => x.ownedChange) ? sortBtn('ownedChange','📈 Trending') : ''}
     </div>
     ${useSal?`<div class="row" style="gap:.35rem;margin-top:.4rem;flex-wrap:wrap">
       <span class="sub" style="align-self:center;font-size:.68rem">Salary:</span>
@@ -6142,6 +6449,13 @@ window.showPlayer = function(espnId) {
     }).catch(() => {});
   };
   window._cardOpen = String(espnId);
+  // news arrives on its own, like last season's stats: one shared fetch for the
+  // whole league, cached an hour, repainting the card only if it is still open
+  if (FEAT().gameLogs) {
+    ensureNews().then(items => {
+      if (items && items.length && String(window._cardOpen) === String(espnId)) renderPlayerModal(p, false);
+    }).catch(() => {});
+  }
   // if this player's points aren't computed yet but they're mapped, fetch on demand
   if (p.ptsSeason == null && p.mlbId) {
     renderPlayerModal(p, true);  // show with a loading hint
@@ -6202,6 +6516,15 @@ function renderPlayerModal(p, loading) {
                     isNBA ? `${(p.prevPerGame??0).toFixed(1)} FP/G` : null,
                     `${p.prevGames||0} g`].filter(Boolean);
       return `<p class="sub mb" style="font-size:.68rem"><b>${p.prevSeason}</b> · ${bits.join(' · ')}</p>`;
+    })()}
+    ${(() => {
+      const news = newsFor(p, _newsCache.items);
+      if (!news.length) return '';
+      return `<div class="card card-tight mb" style="padding:.4rem .6rem">
+        <div class="divlabel" style="margin:0 0 .2rem">Latest</div>
+        ${news.map(a => `<p class="sub" style="font-size:.66rem;line-height:1.35;margin:0 0 .25rem">
+          <b>${esc(a.headline)}</b>${a.blurb ? ` — ${esc(a.blurb.slice(0, 160))}` : ''}</p>`).join('')}
+      </div>`;
     })()}
     ${LSET().useSalaryCap ? (()=>{ const r=salaryDB()[normName(p.name)]; const c=playerContract(p);
       let html = '<div class="card card-tight mb" style="font-size:.72rem;padding:.4rem .6rem;line-height:1.35">';
@@ -8031,6 +8354,11 @@ function ingestPool(raw) {
         ptsPerGame, gamesPlayed,             // NBA per-game rate (null for MLB)
         ptsSeason: SP().statsApi === 'nba' ? seasonPts : null,  // mark NBA as "has points"
         owned: Math.round((pl.ownership?.percentOwned || 0) * 10) / 10,
+        // already in the payload, previously discarded: the ownership delta is
+        // most-added / most-dropped for free, and percentStarted says whether the
+        // people who roster him actually trust him
+        ownedChange: Math.round((pl.ownership?.percentChange || 0) * 100) / 100,
+        startedPct: Math.round((pl.ownership?.percentStarted || 0) * 10) / 10,
         // Only real IL statuses count as injured — matching refreshInjuries(), so a
         // pool pull and an injury refresh can never disagree. DAY_TO_DAY is tracked
         // separately: those players are usually still playable and are not
@@ -8973,9 +9301,18 @@ window.editScoring = function() {
     ${section('Pitching', pitching)}
     ${section('Stats', other)}
     <button class="btn btn-block mt" onclick="saveScoring()">Save scoring</button>
+    ${STATE.sport === 'fba' ? `<button class="btn btn-ghost btn-block mt" onclick="applyNbaStandard()">🏀 Use ESPN standard basketball scoring</button>
+      <p class="sub" style="font-size:.62rem">Sets 3PM 1, double-double 3, triple-double 5 alongside the usual counting stats.
+        The new categories ship at 0 so no league is rescored behind its back — this turns them on.</p>` : ''}
     <button class="btn btn-ghost btn-block mt" onclick="resetScoring()">Reset to defaults</button>
     <button class="btn btn-ghost btn-block mt" onclick="closeModal()">Cancel</button>
   `);
+};
+window.applyNbaStandard = function() {
+  LG().customScoring = { ...(LG().customScoring || {}), ...NBA_STANDARD_SCORING };
+  save();
+  toast('ESPN standard basketball scoring applied', 'ok');
+  closeModal(); renderActive();
 };
 window.saveScoring = function() {
   const edits = window._scoreEdits || {};
